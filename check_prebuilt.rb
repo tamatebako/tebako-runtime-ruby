@@ -30,9 +30,12 @@ require "bundler/setup"
 require "date"
 require "json"
 require "octokit"
-require "open-uri"
+require "net/http"
 require "thor"
 
+# PrebuiltMatrix handles the generation of build matrices for Tebako runtime packages
+# across different platforms. It provides command-line interface functionality through
+# Thor to generate version-specific build configurations for various target platforms.
 class PrebuiltMatrix < Thor
   RUNTIME_REPO = "tamatebako/tebako-runtime-ruby"
   PLATFORMS = %w[macos ubuntu windows-msys alpine].freeze
@@ -40,11 +43,15 @@ class PrebuiltMatrix < Thor
   desc "generate VERSION", "Generate build matrix for given version"
   method_option :force_rebuild, type: :boolean, default: false, desc: "Force rebuild all packages"
   def generate(version)
-    builder = RuntimeBuilder.new(version, options[:force_rebuild])
+    builder = RuntimeBuilder.new(version, force_rebuild: options[:force_rebuild])
     builder.build_matrix
   end
 end
 
+# RuntimeBuilder implements the core functionality for generating build matrices
+# for Tebako runtime packages. It handles fetching platform-specific configurations,
+# managing release assets, and constructing build combinations for various platforms
+# and Ruby versions.
 class RuntimeBuilder
   RUNTIME_REPO = PrebuiltMatrix::RUNTIME_REPO
   PLATFORMS = PrebuiltMatrix::PLATFORMS
@@ -57,6 +64,7 @@ class RuntimeBuilder
               end
     @force_rebuild = force_rebuild
     @tebako_version = version
+    fetch_release_assets
   end
 
   def build_matrix
@@ -67,27 +75,43 @@ class RuntimeBuilder
   private
 
   def read_matrix_file(platform)
-    url = "https://raw.githubusercontent.com/tamatebako/tebako/v#{@tebako_version}/.github/matrices/#{platform}.json"
-    JSON.parse(URI.open(url).read)["full"]
+    uri = URI("https://raw.githubusercontent.com/tamatebako/tebako/v#{@tebako_version}/.github/matrices/#{platform}.json")
+
+    response = Net::HTTP.start(uri.host, uri.port, use_ssl: true) do |http|
+      http.get(uri.request_uri)
+    end
+
+    raise "HTTP request failed: #{response.code}" unless response.is_a?(Net::HTTPSuccess)
+
+    JSON.parse(response.body)["full"]
+  rescue JSON::ParserError => e
+    raise "Invalid JSON response: #{e.message}"
+  rescue StandardError => e
+    raise "Failed to fetch matrix file: #{e.message}"
+  end
+
+  def fetch_release_assets
+    puts "Checking release v#{@tebako_version}"
+    release = @client.release_for_tag(RUNTIME_REPO, "v#{@tebako_version}")
+    @release_assets = @client.release_assets(RUNTIME_REPO, release.id)
+  rescue Octokit::NotFound
+    warn "Warning: Release v#{@tebako_version} not found in #{RUNTIME_REPO}"
+    @release_assets = []
+  rescue Octokit::Unauthorized
+    warn "Warning: Invalid GitHub token or no access to #{RUNTIME_REPO}"
+    @release_assets = []
+  rescue Octokit::TooManyRequests
+    warn "Warning: GitHub API rate limit exceeded"
+    @release_assets = []
+  rescue Octokit::Error => e
+    warn "Warning: GitHub API error: #{e.message}"
+    @release_assets = []
   end
 
   def find_release_info(filename)
-    releases = @client.releases(RUNTIME_REPO)
-    releases.each do |release|
-      assets = @client.release_assets(RUNTIME_REPO, release.id)
-      asset = assets.find { |a| a.name == filename }
-      return { "url" => asset.browser_download_url } if asset
+    if (asset = @release_assets.find { |a| a.name == filename })
+      { "url" => asset.browser_download_url }
     end
-    nil
-  rescue Octokit::Unauthorized
-    warn "Warning: Invalid GitHub token or no access to #{RUNTIME_REPO}"
-    nil
-  rescue Octokit::TooManyRequests
-    warn "Warning: GitHub API rate limit exceeded"
-    nil
-  rescue Octokit::Error => e
-    warn "Warning: GitHub API error: #{e.message}"
-    nil
   end
 
   def load_matrices
@@ -98,23 +122,6 @@ class RuntimeBuilder
     matrices.flat_map do |platform, data|
       data["env"].map { |env| env.merge("platform" => platform.sub("-msys", "")) }
     end
-  end
-
-  def build_config(ruby_ver, env_config, arch = nil)
-    platform = env_config["platform"]
-    os = env_config["os"]
-    platform_name, arch_info = get_platform_info(platform, os, env_config, arch)
-    ext = platform == "windows" ? ".exe" : ""
-    filename = "tebako-ruby-#{@tebako_version}-#{ruby_ver}-#{platform_name}-#{arch_info}#{ext}"
-
-    {
-      "ruby_ver" => ruby_ver,
-      "env" => env_config.merge("arch" => arch_info),
-      "platform" => platform,
-      "platform_name" => platform_name,
-      "arch" => arch_info,
-      "filename" => filename
-    }
   end
 
   def get_platform_info(platform, os, env_config, arch = nil)
@@ -132,6 +139,24 @@ class RuntimeBuilder
     end
   end
 
+  def build_config(ruby_ver, env_config, arch = nil)
+    platform = env_config["platform"]
+    os = env_config["os"]
+    platform_name, arch_info = get_platform_info(platform, os, env_config, arch)
+    filename = "tebako-ruby-#{@tebako_version}-#{ruby_ver}-#{platform_name}-#{arch_info}"
+
+    {
+      "ruby_ver" => ruby_ver,
+      "os" => os,
+      #"env" => env_config.merge("arch" => arch_info),
+      "platform" => platform,
+      "platform_name" => platform_name,
+      "arch" => arch_info,
+      "filename" => filename,
+      "release" => find_release_info(filename)
+    }
+  end
+
   def build_combinations
     matrices = load_matrices
     ruby_versions = matrices.values.map { |m| m["ruby"] }.flatten.uniq
@@ -147,9 +172,8 @@ class RuntimeBuilder
         else
           combinations << build_config(ruby_ver, env_config)
         end
-        combinations.last["release"] = find_release_info(combinations.last["filename"])
       end
-    end
+    end.uniq { |config| config["filename"] }
   end
 end
 
