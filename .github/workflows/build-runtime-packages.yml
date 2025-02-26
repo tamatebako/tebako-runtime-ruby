@@ -76,16 +76,16 @@ jobs:
           echo "Building runtimes for Tebako version $version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-
-#      - name: Generate build matrix
-#        id: set-matrix
-#        env:
-#          TEBAKO_VERSION: ${{ steps.get-version.outputs.version }}
-#          FORCE_REBUILD: ${{ github.event.inputs.force_rebuild == 'true' }}
-#        run: |
-#          bundle exec bin/check_prebuilt.rb generate $TEBAKO_VERSION $([ "$FORCE_REBUILD" = "true" ] && echo "--force-rebuild")
-#          cat build-matrix.json
-#          echo "build-matrix=$(cat build-matrix.json)" >> "$GITHUB_OUTPUT"
+      - name: Generate build matrix
+        id: set-matrix
+        env:
+          TEBAKO_VERSION: ${{ steps.get-version.outputs.version }}
+          FORCE_REBUILD: ${{ github.event.inputs.force_rebuild == 'true' }}
+        run: |
+          curl https://github.com/tamatebako/tebako/blob/v0.12.15/.github/matrices/ubuntu.json > Brewfile
+          bundle exec check_prebuilt.rb generate $TEBAKO_VERSION $([ "$FORCE_REBUILD" = "true" ] && echo "--force-rebuild")
+          cat build-matrix.json
+          echo "build-matrix=$(cat build-matrix.json)" >> "$GITHUB_OUTPUT"
 
 #      - name: Upload matrix
 #        uses: actions/upload-artifact@v4
