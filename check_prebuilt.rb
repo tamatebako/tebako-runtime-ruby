@@ -148,7 +148,7 @@ class RuntimeBuilder
     {
       "ruby_ver" => ruby_ver,
       "os" => os,
-      #"env" => env_config.merge("arch" => arch_info),
+      # "env" => env_config.merge("arch" => arch_info),
       "platform" => platform,
       "platform_name" => platform_name,
       "arch" => arch_info,

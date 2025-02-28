@@ -126,38 +126,10 @@ jobs:
         run: |
           mkdir -p runtime-packages
 
-      - name: Set up Docker Buildx
-        if: matrix.env.container != null
-        uses: docker/setup-buildx-action@v3
-
-      - name: Cache Docker images
-        if: matrix.env.container != null
-        uses: actions/cache@v3
-        with:
-          path: ${{ runner.temp }}/.buildx-cache
-          key: buildx-${{ matrix.env.container }}-${{ needs.prepare.outputs.tebako-version }}
-
-      - name: Set up Docker Buildx cache
-        if: matrix.env.container != null
-        run: |
-          mkdir -p ${{ runner.temp }}/.buildx-cache-new
-          cp -r ${{ runner.temp }}/.buildx-cache/. ${{ runner.temp }}/.buildx-cache-new/ 2>/dev/null || true
-
       - name: Build runtimes using ci container
         if: matrix.env.container != null
         run: |
-          # Pull container with cache
           container="ghcr.io/tamatebako/tebako-${{ matrix.env.container }}:${{ needs.prepare.outputs.tebako-version }}"
-          docker buildx create --use
-          docker buildx build \
-            --cache-from=type=local,src=${{ runner.temp }}/.buildx-cache \
-            --cache-to=type=local,dest=${{ runner.temp }}/.buildx-cache-new,mode=max \
-            --load \
-            --pull \
-            -t $container \
-            - < <(echo "FROM $container")
-
-          # Build runtimes
           ruby_versions=$(jq -r '.ruby[]' .github/matrix.json | tr '\n' ' ')
           for ruby_ver in $ruby_versions; do
             echo "Building runtime for Ruby $ruby_ver on ${{ matrix.env.os }}/${{ matrix.env.arch }}"
@@ -165,10 +137,6 @@ jobs:
             docker run -v ${{github.workspace}}:/mnt/w -t $container \
               tebako press -m runtime -o="/mnt/w/runtime-packages/$runtime" -R=${ruby_ver} ${{ matrix.env.os == 'linux-gnu' && '--patchelf' || '' }}
           done
-
-          # Move cache (only if build succeeded)
-          rm -rf ${{ runner.temp }}/.buildx-cache
-          mv ${{ runner.temp }}/.buildx-cache-new ${{ runner.temp }}/.buildx-cache || true
 
       - name: Setup MSys
         if: matrix.env.os == 'windows'
@@ -225,179 +193,27 @@ jobs:
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: true
+
       - name: Download all runtime packages
         uses: actions/download-artifact@v4
         with:
           path: runtime-packages
           merge-multiple: true
 
-      - name: List and verify built packages
-        id: verify-packages
-        run: |
-          echo "Checking runtime packages directory:"
-          if ! ls -la runtime-packages/ 2>/dev/null; then
-            echo "Error: No runtime packages found!"
-            exit 1
-          fi
+      - name: Setup Ruby gems
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
 
-          if ! find runtime-packages -type f -name "*" | grep -q .; then
-            echo "Error: No files found in runtime-packages directory!"
-            exit 1
-          fi
-
-          echo "Found packages to upload:"
-          find runtime-packages -type f -name "*" -exec basename {} \;
-
-      - name: Update release
+      - name: Update release using Ruby script
         env:
           TEBAKO_VERSION: ${{ needs.prepare.outputs.tebako-version }}
+          FORCE_REBUILD: ${{ github.event.inputs.force_rebuild == 'true' }}
         run: |
-          # Enable debug output for curl
-          set -x
-          # Function to get or create a release
-          get_or_create_release() {
-            local tag="$1"
-            local title="$2"
-            local version="$3"
-
-            # Check if release exists
-            echo "Checking for existing release with tag: $tag" >&2
-            local release_info=$(curl -H "Authorization: Bearer $GITHUB_TOKEN" \
-              "https://api.github.com/repos/$RUNTIME_REPO/releases/tags/$tag")
-
-            # Validate JSON response
-            if ! echo "$release_info" | jq empty 2>/dev/null; then
-              echo "Error: Invalid JSON response from GitHub API" >&2
-              exit 1
-            fi
-
-            if [[ $(echo "$release_info" | jq -r '.message') == "Not Found" ]]; then
-              echo "Creating new release for $tag" >&2
-              release_info=$(curl -X POST -H "Authorization: Bearer $GITHUB_TOKEN" \
-                -H "Content-Type: application/json" \
-                -d "{\"tag_name\":\"$tag\",\"name\":\"$title\",\"body\":\"## Tebako runtime packages\n\nTebako version: $version\nBuild date: $tag\n\n\"}" \
-                "https://api.github.com/repos/$RUNTIME_REPO/releases")
-
-              # Validate JSON response for creation
-              if ! echo "$release_info" | jq empty 2>/dev/null; then
-                echo "Error: Invalid JSON response when creating release" >&2
-                exit 1
-              fi
-            fi
-
-            # Output only the JSON response
-            echo "$release_info"
-          }
-
-          # Get today's date for release tag
-          today=$(date +%Y-%m-%d)
-          release_title="Tebako runtime packages v$TEBAKO_VERSION"
-
-          # Get or create the release
-          release_info=$(get_or_create_release "v$TEBAKO_VERSION" "$release_title" "$TEBAKO_VERSION")
-
-          # Ensure we got valid JSON and can extract the ID
-          if ! echo "$release_info" | jq empty 2>/dev/null; then
-            echo "Error: Invalid JSON response from get_or_create_release"
-            exit 1
-          fi
-
-          release_id=$(echo "$release_info" | jq -r '.id')
-          if [[ -z "$release_id" || "$release_id" == "null" ]]; then
-            echo "Error: Could not extract release ID from response"
-            echo "Response was: $release_info"
-            exit 1
-          fi
-
-          # Generate release notes sections
-          windows_exes=""
-          macos_exes=""
-          linux_gnu_exes=""
-          linux_musl_exes=""
-
-          # Check for packages to upload
-          if ! compgen -G "runtime-packages/*" >/dev/null; then
-            echo "Error: No packages found to upload!"
-            exit 1
-          fi
-
-          # Upload each runtime package
-          echo "Starting package upload process..."
-          for package in runtime-packages/*; do
-            filename=$(basename "$package")
-
-            # Check if asset already exists and delete it if force rebuild
-            if [[ "${{ github.event.inputs.force_rebuild }}" == "true" ]]; then
-              assets=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
-                "https://api.github.com/repos/$RUNTIME_REPO/releases/$release_id/assets")
-
-              asset_id=$(echo "$assets" | jq -r ".[] | select(.name == \"$filename\") | .id")
-
-              if [[ -n "$asset_id" && "$asset_id" != "null" ]]; then
-                echo "Deleting existing asset: $filename (ID: $asset_id)"
-                curl -s -X DELETE -H "Authorization: Bearer $GITHUB_TOKEN" \
-                  "https://api.github.com/repos/$RUNTIME_REPO/releases/assets/$asset_id"
-              fi
-            fi
-
-            # Upload the asset
-            echo "Uploading $filename to release $release_id"
-            upload_url=$(echo "$release_info" | jq -r '.upload_url' | sed 's/{?name,label}//')
-            echo "Upload URL: $upload_url" >&2
-
-            curl -X POST -H "Authorization: Bearer $GITHUB_TOKEN" \
-              -H "Content-Type: application/octet-stream" \
-              --data-binary @"$package" \
-              "$upload_url?name=$filename"
-
-            # Add to appropriate section in release notes
-            if [[ "$filename" == *"windows"* ]]; then
-              windows_exes="$windows_exes\n- $filename"
-            elif [[ "$filename" == *"macos"* ]]; then
-              macos_exes="$macos_exes\n- $filename"
-            elif [[ "$filename" == *"linux-gnu"* ]]; then
-              linux_gnu_exes="$linux_gnu_exes\n- $filename"
-            elif [[ "$filename" == *"linux-musl"* ]]; then
-              linux_musl_exes="$linux_musl_exes\n- $filename"
-            fi
-          done
-
-          # Update release notes
-          release_body="## Tebako runtime packages\n\nTebako version: $TEBAKO_VERSION\nBuild date: $today\n"
-
-          if [[ -n "$windows_exes" ]]; then
-            release_body="$release_body\n### Windows executables$windows_exes\n"
-          fi
-
-          if [[ -n "$macos_exes" ]]; then
-            release_body="$release_body\n### MacOS executables$macos_exes\n"
-          fi
-
-          if [[ -n "$linux_gnu_exes" ]]; then
-            release_body="$release_body\n### Linux GNU executables$linux_gnu_exes\n"
-          fi
-
-          if [[ -n "$linux_musl_exes" ]]; then
-            release_body="$release_body\n### Linux musl executables$linux_musl_exes\n"
-          fi
-
-            # Construct and validate release body JSON
-            update_payload="{\"body\":\"$release_body\"}"
-            if ! echo "$update_payload" | jq empty 2>/dev/null; then
-              echo "Error: Generated invalid JSON for release update"
-              echo "Payload was: $update_payload"
-              exit 1
-            fi
-
-            # Update the release with validated JSON
-            if ! curl -X PATCH \
-              -H "Authorization: Bearer $GITHUB_TOKEN" \
-              -H "Content-Type: application/json" \
-              -H "Accept: application/vnd.github+json" \
-              -d "$update_payload" \
-              "https://api.github.com/repos/$RUNTIME_REPO/releases/$release_id" | jq empty 2>/dev/null; then
-              echo "Error: Failed to update release notes"
-              exit 1
-            fi
-
-            echo "Successfully updated release $release_id"
+          ./upload_release.rb
