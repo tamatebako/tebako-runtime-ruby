@@ -56,6 +56,7 @@ jobs:
     outputs:
       tebako-version: ${{ steps.get-version.outputs.version }}
       env-matrix: ${{ steps.set-matrix.outputs.env-matrix }}
+      ruby-matrix: ${{ steps.set-matrix.outputs.ruby-matrix }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -107,6 +108,36 @@ jobs:
           echo "env-matrix=$env" >> $GITHUB_OUTPUT
           echo "Generated matrix:"
           echo "$env" | jq .
+
+          # Determine which ruby config to use based on event
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            suffix="tidy"
+          else
+            suffix="full"
+          fi
+
+          # Read and output the matrices
+          ruby=$(jq -c ".ruby.$suffix" .github/matrix.json)
+
+          if [[ -z "$ruby" || "$ruby" == "null" ]]; then
+            echo "Error: No ruby section found in matrix.json for suffix $suffix"
+            echo "matrix.json content:"
+            cat .github/matrix.json
+            exit 1
+          fi
+
+          echo "Validating ruby section format..."
+          if ! echo "$ruby" | jq empty 2>/dev/null; then
+            echo "Error: Invalid JSON in ruby section"
+            echo "ruby section content:"
+            echo "$ruby"
+            exit 1
+          fi
+
+          echo "ruby-matrix=$ruby" >> $GITHUB_OUTPUT
+          echo "Generated matrix:"
+          echo "$ruby" | jq .
+
   build:
     name: Build runtime packages for ${{ matrix.env.os }} / ${{ matrix.env.arch }}
     needs: prepare
@@ -130,7 +161,8 @@ jobs:
         if: matrix.env.container != null
         run: |
           container="ghcr.io/tamatebako/tebako-${{ matrix.env.container }}:${{ needs.prepare.outputs.tebako-version }}"
-          ruby_versions=$(jq -r '.ruby[]' .github/matrix.json | tr '\n' ' ')
+          # Parse the JSON array from ruby-matrix output
+          ruby_versions=$(echo '${{ needs.prepare.outputs.ruby-matrix }}' | jq -r '.[]')
           for ruby_ver in $ruby_versions; do
             echo "Building runtime for Ruby $ruby_ver on ${{ matrix.env.os }}/${{ matrix.env.arch }}"
             runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-$ruby_ver-${{ matrix.env.os }}-${{ matrix.env.arch }}"
@@ -159,11 +191,12 @@ jobs:
       - name: Build runtimes using gem
         if: matrix.env.container == null && matrix.env.os != 'windows'
         run: |
-          ruby_versions=$(jq -r '.ruby[]' .github/matrix.json | tr '\n' ' ')
+          # Parse the JSON array from ruby-matrix output
+          ruby_versions=$(echo '${{ needs.prepare.outputs.ruby-matrix }}' | jq -r '.[]')
           for ruby_ver in $ruby_versions; do
             echo "Building runtime for Ruby $ruby_ver on ${{ matrix.env.os }}/${{ matrix.env.arch }}"
             runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-$ruby_ver-${{ matrix.env.os }}-${{ matrix.env.arch }}"
-            tebako press -m runtime -o="runtime-packages/$runtime" -R=${ruby_ver}
+            tebako press -m runtime -o "runtime-packages/$runtime" -R "$ruby_ver" -p .tebako
           done
 
       - name: Build runtimes using gem on Windows
@@ -171,18 +204,19 @@ jobs:
         shell: msys2 {0}
         run: |
           git config --global core.longpaths true
-          ruby_versions=$(jq -r '.ruby[]' .github/matrix.json | tr '\n' ' ')
+          # Parse the JSON array from ruby-matrix output
+          ruby_versions=$(echo '${{ needs.prepare.outputs.ruby-matrix }}' | jq -r '.[]')
           for ruby_ver in $ruby_versions; do
             echo "Building runtime for Ruby $ruby_ver on ${{ matrix.env.os }}/${{ matrix.env.arch }}"
             runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-$ruby_ver-${{ matrix.env.os }}-${{ matrix.env.arch }}"
-            ruby tebako press -m runtime -o="runtime-packages/$runtime" -R=${ruby_ver} -p .tebako
+            tebako press -m runtime -o "runtime-packages/$runtime" -R "$ruby_ver" -p .tebako
           done
 
       - name: Upload runtime package
         uses: actions/upload-artifact@v4
         with:
           name: runtime-packages-${{ matrix.env.os }}-${{ matrix.env.arch }}
-          path: runtime-packages/*
+          path: runtime-packages
           retention-days: 1
 
   release:
