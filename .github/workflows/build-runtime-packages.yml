@@ -78,65 +78,9 @@ jobs:
       - name: Generate build matrix
         id: set-matrix
         env:
-          TEBAKO_VERSION: ${{ steps.get-version.outputs.version }}
-          FORCE_REBUILD: ${{ github.event.inputs.force_rebuild == 'true' }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
         run: |
-          echo "Validating matrix.json..."
-          if ! jq empty .github/matrix.json 2>/dev/null; then
-            echo "Error: Invalid JSON in matrix.json"
-            exit 1
-          fi
-
-          # Read and validate the env section
-          echo "Extracting env section..."
-          env=$(jq -c ".env" .github/matrix.json)
-          if [[ -z "$env" || "$env" == "null" ]]; then
-            echo "Error: No env section found in matrix.json"
-            echo "matrix.json content:"
-            cat .github/matrix.json
-            exit 1
-          fi
-
-          echo "Validating env section format..."
-          if ! echo "$env" | jq empty 2>/dev/null; then
-            echo "Error: Invalid JSON in env section"
-            echo "env section content:"
-            echo "$env"
-            exit 1
-          fi
-
-          echo "env-matrix=$env" >> $GITHUB_OUTPUT
-          echo "Generated matrix:"
-          echo "$env" | jq .
-
-          # Determine which ruby config to use based on event
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            suffix="tidy"
-          else
-            suffix="full"
-          fi
-
-          # Read and output the matrices
-          ruby=$(jq -c ".ruby.$suffix" .github/matrix.json)
-
-          if [[ -z "$ruby" || "$ruby" == "null" ]]; then
-            echo "Error: No ruby section found in matrix.json for suffix $suffix"
-            echo "matrix.json content:"
-            cat .github/matrix.json
-            exit 1
-          fi
-
-          echo "Validating ruby section format..."
-          if ! echo "$ruby" | jq empty 2>/dev/null; then
-            echo "Error: Invalid JSON in ruby section"
-            echo "ruby section content:"
-            echo "$ruby"
-            exit 1
-          fi
-
-          echo "ruby-matrix=$ruby" >> $GITHUB_OUTPUT
-          echo "Generated matrix:"
-          echo "$ruby" | jq .
+          ./scripts/generate_matrix.rb
 
   build:
     name: Build runtime packages for ${{ matrix.env.os }} / ${{ matrix.env.arch }}
@@ -250,4 +194,4 @@ jobs:
           TEBAKO_VERSION: ${{ needs.prepare.outputs.tebako-version }}
           FORCE_REBUILD: ${{ github.event.inputs.force_rebuild == 'true' }}
         run: |
-          ./upload_release.rb
+          ./scripts/upload_release.rb
