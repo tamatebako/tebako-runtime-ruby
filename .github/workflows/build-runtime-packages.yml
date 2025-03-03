@@ -149,7 +149,7 @@ jobs:
         run: |
           git config --global core.longpaths true
           # Parse the JSON array from ruby-matrix output
-          ruby_versions=$(echo '${{ needs.prepare.outputs.ruby-matrix }}' | jq -r '.[]')
+          ruby_versions=$(echo '${{ needs.prepare.outputs.ruby-matrix }}' | jq -r '.[]' | tr '\n' ' ' | tr '\r' ' ')
           for ruby_ver in $ruby_versions; do
             echo "Building runtime for Ruby $ruby_ver on ${{ matrix.env.os }}/${{ matrix.env.arch }}"
             runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-$ruby_ver-${{ matrix.env.os }}-${{ matrix.env.arch }}"
