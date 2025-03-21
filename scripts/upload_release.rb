@@ -121,10 +121,8 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   end
 
   def remove_existing_asset(release, filename)
-    return unless ENV["FORCE_REBUILD"] == "true"
-    return unless (existing = release.assets.find { |a| a.name == filename })
-
     puts "Deleting existing asset #{filename}"
+    existing = release.assets.find { |a| a.name == filename }
     @client.delete_release_asset(existing.id)
   end
 
@@ -145,7 +143,14 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     filename = package.basename.to_s
     puts "Processing #{filename}..."
 
-    remove_existing_asset(release, filename)
+    if existing_asset = release.assets.find { |a| a.name == filename }
+      if ENV["FORCE_REBUILD"] != "true"
+        puts "Skipping upload of existing asset #{filename} (FORCE_REBUILD not set)"
+        return filename
+      end
+      remove_existing_asset(release, filename)
+    end
+
     perform_upload(release, package, filename)
     filename
   end
