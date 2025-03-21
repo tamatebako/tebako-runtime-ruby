@@ -28,7 +28,15 @@ name: build-runtime-packages
 on:
   push:
     branches: [ main ]
+    paths-ignore:
+      - 'docs/**'
+      - '**.adoc'
+      - '**.md'  
   pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - '**.adoc'
+      - '**.md'
   repository_dispatch:
     types: [ 'tebako release' ]
   workflow_dispatch:
