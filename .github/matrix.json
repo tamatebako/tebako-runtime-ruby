@@ -25,6 +25,6 @@
         { "host": "ubuntu-22.04-arm", "container": "alpine-3.17", "os": "linux-musl", "arch": "arm64" },
         { "host": "macos-13", "container": null, "os": "macos", "arch": "x86_64" },
         { "host": "macos-14", "container": null, "os": "macos", "arch": "arm64" },
-        { "host": "windows-2019", "container": null, "os": "windows", "arch": "x86_64" }
+        { "host": "windows-2022", "container": null, "os": "windows", "arch": "x86_64" }
     ]
 }
