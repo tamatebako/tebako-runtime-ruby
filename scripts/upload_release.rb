@@ -28,6 +28,7 @@
 
 require "bundler/setup"
 require "octokit"
+require "digest"
 require "json"
 require "pathname"
 
@@ -43,6 +44,10 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     @release_title = "Tebako runtime packages #{@tag}"
   end
 
+  def build_manifest_entries(packages)
+    packages.sort_by { |package| package.basename.to_s }.map { |package| manifest_entry(package) }
+  end
+
   def categorize_packages(filenames)
     sections = initialize_sections
     filenames.each do |filename|
@@ -50,6 +55,33 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
       sections[platform] << filename if platform
     end
     sections
+  end
+
+  def expected_package_names
+    env_json = ENV.fetch("EXPECTED_ENV_MATRIX", nil)
+    ruby_json = ENV.fetch("EXPECTED_RUBY_MATRIX", nil)
+    return [] unless env_json && ruby_json
+
+    envs = JSON.parse(env_json)
+    rubies = JSON.parse(ruby_json)
+    envs.product(rubies).map { |env, ruby| "tebako-runtime-#{@version}-#{ruby}-#{env["os"]}-#{env["arch"]}" }
+  rescue JSON::ParserError => e
+    puts "::warning::Could not compute expected package list: #{e.message}"
+    []
+  end
+
+  # Metadata files (SHA256SUMS.txt, manifest.json) are always overwritten,
+  # regardless of FORCE_REBUILD, so they never go stale on partial releases.
+  def force_upload(release, file)
+    filename = file.basename.to_s
+    remove_existing_asset(release, filename) if release.assets.find { |a| a.name == filename }
+    perform_upload(release, file, filename)
+  end
+
+  def generate_manifest(entries)
+    path = Pathname.new("manifest.json")
+    path.write("#{JSON.pretty_generate(entries)}\n")
+    path
   end
 
   def generate_release_notes(sections)
@@ -64,6 +96,8 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     sections.each do |platform, files|
       body += generate_section(platform, files)
     end
+    body += "\nChecksums: see the `SHA256SUMS.txt` asset.\n"
+    body += "Machine-readable package index: see the `manifest.json` asset.\n"
     body
   end
 
@@ -73,6 +107,12 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     section = "\n### #{platform_display_name(platform)} executables\n"
     files.each { |file| section += "- #{file}\n" }
     section
+  end
+
+  def generate_sha256sums(entries)
+    path = Pathname.new("SHA256SUMS.txt")
+    path.write("#{entries.map { |entry| "#{entry[:sha256]}  #{entry[:filename]}" }.join("\n")}\n")
+    path
   end
 
   def get_or_create_release # rubocop:disable Naming/AccessorMethodName
@@ -87,6 +127,29 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
 
   def initialize_sections
     { "windows" => [], "macos" => [], "linux-gnu" => [], "linux-musl" => [] }
+  end
+
+  def manifest_entry(package)
+    filename = package.basename.to_s
+    ruby_version, platform = parse_package_filename(filename)
+    {
+      tebako_version: @version,
+      ruby_version: ruby_version,
+      platform: platform,
+      filename: filename,
+      sha256: Digest::SHA256.file(package).hexdigest,
+      size_bytes: package.size
+    }
+  end
+
+  def parse_package_filename(filename)
+    match = /\Atebako-runtime-#{Regexp.escape(@version)}-(\d+\.\d+\.\d+)-(.+?)(?:\.exe)?\z/.match(filename)
+    unless match
+      puts "::warning::Cannot infer ruby/platform from package filename: #{filename}"
+      return [nil, nil]
+    end
+
+    [match[1], match[2]]
   end
 
   def perform_upload(release, package, filename)
@@ -114,10 +177,22 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     puts "Working with release ID: #{release.id}"
 
     packages = validate_packages_directory
+    report_missing_packages(packages)
     sections = upload_and_categorize(release, packages)
+    upload_metadata(release, packages)
     release_body = generate_release_notes(sections)
     @client.update_release(release.url, body: release_body)
     puts "Successfully updated release notes"
+  end
+
+  def report_missing_packages(packages)
+    found = packages.map { |package| package.basename.to_s.sub(/\.exe\z/, "") }
+    missing = expected_package_names - found
+    return if missing.empty?
+
+    puts "::warning::Release incomplete: #{missing.size} expected runtime package(s) are missing"
+    missing.sort.each { |name| puts "::warning::Missing runtime package: #{name}" }
+    puts "Continuing release update with #{found.size} available package(s)"
   end
 
   def remove_existing_asset(release, filename)
@@ -137,6 +212,14 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   def upload_and_categorize(release, packages)
     uploaded_files = packages.map { |package| upload_package(release, package) }
     categorize_packages(uploaded_files)
+  end
+
+  def upload_metadata(release, packages)
+    entries = build_manifest_entries(packages)
+    [generate_sha256sums(entries), generate_manifest(entries)].each do |file|
+      puts "Uploading metadata file #{file.basename} (always overwritten)"
+      force_upload(release, file)
+    end
   end
 
   def upload_package(release, package)
