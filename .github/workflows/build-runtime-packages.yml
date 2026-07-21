@@ -93,13 +93,14 @@ jobs:
           ./scripts/generate_matrix.rb
 
   build:
-    name: Build runtime packages for ${{ matrix.env.os }} / ${{ matrix.env.arch }}
+    name: Build runtime package for ${{ matrix.env.os }} / ${{ matrix.env.arch }} / Ruby ${{ matrix.ruby }}
     needs: prepare
     runs-on: ${{ matrix.env.host }}
     strategy:
       fail-fast: false
       matrix:
         env: ${{fromJson(needs.prepare.outputs.env-matrix)}}
+        ruby: ${{fromJson(needs.prepare.outputs.ruby-matrix)}}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -111,18 +112,26 @@ jobs:
         run: |
           mkdir -p runtime-packages
 
-      - name: Build runtimes using ci container
+      # Per-(platform, ruby) cache of the whole tebako prefix (.tebako), which
+      # holds both the ruby-independent deps and the ruby-specific press output.
+      # Host-native jobs only: container jobs build inside the CI container
+      # image whose deps are baked into the image itself, so there is no
+      # host-side path to cache (the container image is the cache).
+      - name: Cache tebako prefix
+        if: matrix.env.container == null
+        uses: actions/cache@v4
+        with:
+          path: .tebako
+          key: tebako-runtime-${{ matrix.env.os }}-${{ matrix.env.arch }}-${{ matrix.ruby }}-${{ needs.prepare.outputs.tebako-version }}-v${{ env.CACHE_VER }}
+
+      - name: Build runtime using ci container
         if: matrix.env.container != null
         run: |
           container="ghcr.io/tamatebako/tebako-${{ matrix.env.container }}:${{ needs.prepare.outputs.tebako-version }}"
-          # Parse the JSON array from ruby-matrix output
-          ruby_versions=$(echo '${{ needs.prepare.outputs.ruby-matrix }}' | jq -r '.[]')
-          for ruby_ver in $ruby_versions; do
-            echo "Building runtime for Ruby $ruby_ver on ${{ matrix.env.os }}/${{ matrix.env.arch }}"
-            runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-$ruby_ver-${{ matrix.env.os }}-${{ matrix.env.arch }}"
-            docker run -v ${{github.workspace}}:/mnt/w -t $container \
-              tebako press -m runtime -o="/mnt/w/runtime-packages/$runtime" -R=${ruby_ver} ${{ matrix.env.os == 'linux-gnu' && '--patchelf' || '' }}
-          done
+          echo "Building runtime for Ruby ${{ matrix.ruby }} on ${{ matrix.env.os }}/${{ matrix.env.arch }}"
+          runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby }}-${{ matrix.env.os }}-${{ matrix.env.arch }}"
+          docker run -v ${{github.workspace}}:/mnt/w -t $container \
+            tebako press -m runtime -o="/mnt/w/runtime-packages/$runtime" -R=${{ matrix.ruby }} ${{ matrix.env.os == 'linux-gnu' && '--patchelf' || '' }}
 
       - name: Setup MSys
         if: matrix.env.os == 'windows'
@@ -131,8 +140,6 @@ jobs:
           msystem: ucrt64
           path-type: minimal
           update: true
-          pacboy: >-
-            jq:p
 
       - name: Setup Tebako
         if: matrix.env.container == null
@@ -140,36 +147,31 @@ jobs:
         with:
           cache: build
           cache_ver: ${{ env.CACHE_VER }}
-          cache_path: .tebako
+          # Deps are ruby-independent, so the action's cache (keyed by tebako
+          # hash) covers only .tebako/deps and is shared across ruby versions;
+          # the ruby-specific press output is handled by the per-ruby cache above.
+          cache_path: .tebako/deps
 
-      - name: Build runtimes using gem
+      - name: Build runtime using gem
         if: matrix.env.container == null && matrix.env.os != 'windows'
         run: |
-          # Parse the JSON array from ruby-matrix output
-          ruby_versions=$(echo '${{ needs.prepare.outputs.ruby-matrix }}' | jq -r '.[]')
-          for ruby_ver in $ruby_versions; do
-            echo "Building runtime for Ruby $ruby_ver on ${{ matrix.env.os }}/${{ matrix.env.arch }}"
-            runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-$ruby_ver-${{ matrix.env.os }}-${{ matrix.env.arch }}"
-            tebako press -m runtime -o "runtime-packages/$runtime" -R "$ruby_ver" -p .tebako
-          done
+          echo "Building runtime for Ruby ${{ matrix.ruby }} on ${{ matrix.env.os }}/${{ matrix.env.arch }}"
+          runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby }}-${{ matrix.env.os }}-${{ matrix.env.arch }}"
+          tebako press -m runtime -o "runtime-packages/$runtime" -R "${{ matrix.ruby }}" -p .tebako
 
-      - name: Build runtimes using gem on Windows
+      - name: Build runtime using gem on Windows
         if: matrix.env.container == null && matrix.env.os == 'windows'
         shell: msys2 {0}
         run: |
           git config --global core.longpaths true
-          # Parse the JSON array from ruby-matrix output
-          ruby_versions=$(echo '${{ needs.prepare.outputs.ruby-matrix }}' | jq -r '.[]' | tr '\n' ' ' | tr '\r' ' ')
-          for ruby_ver in $ruby_versions; do
-            echo "Building runtime for Ruby $ruby_ver on ${{ matrix.env.os }}/${{ matrix.env.arch }}"
-            runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-$ruby_ver-${{ matrix.env.os }}-${{ matrix.env.arch }}"
-            tebako press -m runtime -o "runtime-packages/$runtime" -R "$ruby_ver" -p .tebako
-          done
+          echo "Building runtime for Ruby ${{ matrix.ruby }} on ${{ matrix.env.os }}/${{ matrix.env.arch }}"
+          runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby }}-${{ matrix.env.os }}-${{ matrix.env.arch }}"
+          tebako press -m runtime -o "runtime-packages/$runtime" -R "${{ matrix.ruby }}" -p .tebako
 
       - name: Upload runtime package
         uses: actions/upload-artifact@v4
         with:
-          name: runtime-packages-${{ matrix.env.os }}-${{ matrix.env.arch }}
+          name: runtime-packages-${{ matrix.env.os }}-${{ matrix.env.arch }}-${{ matrix.ruby }}
           path: runtime-packages
           retention-days: 1
 
@@ -177,7 +179,11 @@ jobs:
     name: Update release packages
     needs: [prepare, build]
     runs-on: ubuntu-latest
-    if: ${{ success() }}
+    # Never touch the production release from a pull request; otherwise run
+    # whenever the run was not cancelled, even if some build matrix legs
+    # failed (upload whatever artifacts exist; missing packages are reported
+    # loudly by scripts/upload_release.rb).
+    if: ${{ always() && !cancelled() && github.event_name != 'pull_request' }}
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
@@ -202,6 +208,8 @@ jobs:
       - name: Update release using Ruby script
         env:
           TEBAKO_VERSION: ${{ needs.prepare.outputs.tebako-version }}
+          EXPECTED_ENV_MATRIX: ${{ needs.prepare.outputs.env-matrix }}
+          EXPECTED_RUBY_MATRIX: ${{ needs.prepare.outputs.ruby-matrix }}
           FORCE_REBUILD: ${{ github.event.inputs.force_rebuild == 'true' }}
         run: |
           ./scripts/upload_release.rb
