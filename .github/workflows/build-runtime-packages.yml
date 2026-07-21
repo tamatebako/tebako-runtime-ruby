@@ -147,6 +147,10 @@ jobs:
         with:
           cache: build
           cache_ver: ${{ env.CACHE_VER }}
+          # Xcode selection matters on macos-15 images (the action's defaults,
+          # 14.3.1/15.0.1, are not installed there); null off-macOS, where the
+          # action falls back to its defaults and setup-xcode does not run.
+          xcode: ${{ matrix.env.xcode }}
           # Deps are ruby-independent, so the action's cache (keyed by tebako
           # hash) covers only .tebako/deps and is shared across ruby versions;
           # the ruby-specific press output is handled by the per-ruby cache above.

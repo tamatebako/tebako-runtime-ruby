@@ -24,8 +24,8 @@
         { "host": "ubuntu-22.04-arm", "container": "ubuntu-20.04", "os": "linux-gnu", "arch": "arm64" },
         { "host": "ubuntu-22.04", "container": "alpine-3.17", "os": "linux-musl", "arch": "x86_64" },
         { "host": "ubuntu-22.04-arm", "container": "alpine-3.17", "os": "linux-musl", "arch": "arm64" },
-        { "host": "macos-15-intel", "container": null, "os": "macos", "arch": "x86_64" },
-        { "host": "macos-15", "container": null, "os": "macos", "arch": "arm64" },
+        { "host": "macos-15-intel", "container": null, "os": "macos", "arch": "x86_64", "xcode": "16.1" },
+        { "host": "macos-15", "container": null, "os": "macos", "arch": "arm64", "xcode": "16.1" },
         { "host": "windows-2022", "container": null, "os": "windows", "arch": "x86_64" }
     ]
 }
