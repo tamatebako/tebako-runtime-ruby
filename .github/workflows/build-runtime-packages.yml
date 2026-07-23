@@ -199,12 +199,14 @@ jobs:
 
       # Diagnostics for tamatebako/tebako#345: on failure, surface the
       # ext/openssl mkmf log (which lib/header did extconf pick, and why did
-      # the X509 accessor probes fail) — cheap because it only fires red
-      - name: Dump ext/openssl mkmf.log on failure (Windows)
+      # the X509 accessor probes fail) and the generated ruby.exe link rule
+      # (does it carry the --start-group wrapper) — cheap, only fires red
+      - name: Dump diagnostics on failure (Windows)
         if: failure() && matrix.env.container == null && matrix.env.os == 'windows'
         shell: msys2 {0}
         run: |
           find .tebako/deps/src -path "*/ext/openssl/mkmf.log" -exec sh -c 'echo "== $1"; cat "$1"' _ {} \; || true
+          find .tebako/deps/src -maxdepth 2 -name Makefile -exec sh -c 'echo "== $1 (ruby.exe rule)"; grep -n -B2 -A6 "^ruby.exe" "$1" || true' _ {} \; || true
 
       - name: Upload runtime package
         uses: actions/upload-artifact@v4
