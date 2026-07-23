@@ -45,9 +45,27 @@ on:
         description: 'Force rebuild and overwrite existing runtime packages'
         type: boolean
         default: false
+      env_filter:
+        description: 'Platform slice: "all" or "<os>/<arch>" (e.g. "linux-musl/arm64")'
+        type: string
+        default: 'all'
+      ruby_filter:
+        description: 'Rubies: "full", "tidy", or comma-separated versions (e.g. "3.3.7,3.4.2")'
+        type: string
+        default: 'full'
+      publish:
+        description: 'Run the release job (add this run''s packages to the release)'
+        type: boolean
+        default: true
+      artifact_run_ids:
+        description: 'Extra run IDs (comma-separated) whose runtime-packages-* artifacts join the release'
+        type: string
+        default: ''
 
 concurrency:
-  group: '${{ github.workflow }}-${{ github.job }}-${{ github.head_ref || github.ref_name }}'
+  # Slice dispatches (env/ruby filters) get their own group so a debugging
+  # slice never cancels the full build (or another slice) on the same ref
+  group: '${{ github.workflow }}-${{ github.job }}-${{ github.head_ref || github.ref_name }}${{ github.event_name == ''workflow_dispatch'' && format(''-{0}-{1}'', inputs.env_filter, inputs.ruby_filter) || '''' }}'
   cancel-in-progress: true
 
 permissions:
@@ -89,6 +107,8 @@ jobs:
         id: set-matrix
         env:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
+          MATRIX_ENV_FILTER: ${{ inputs.env_filter || '' }}
+          MATRIX_RUBY_FILTER: ${{ inputs.ruby_filter || '' }}
         run: |
           ./scripts/generate_matrix.rb
 
@@ -197,8 +217,9 @@ jobs:
     # Never touch the production release from a pull request; otherwise run
     # whenever the run was not cancelled, even if some build matrix legs
     # failed (upload whatever artifacts exist; missing packages are reported
-    # loudly by scripts/upload_release.rb).
-    if: ${{ always() && !cancelled() && github.event_name != 'pull_request' }}
+    # loudly by scripts/upload_release.rb). Slice dispatches may opt out of
+    # publishing (publish=false) for pure debugging runs.
+    if: ${{ always() && !cancelled() && github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.publish) }}
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
@@ -213,6 +234,24 @@ jobs:
         with:
           path: runtime-packages
           merge-multiple: true
+
+      # Fold in artifacts produced by earlier runs (e.g. a cancelled full
+      # build) so a slice run can complete a release without rebuilding
+      # platforms it does not touch. Current-run packages win on name
+      # collisions (cp -n).
+      - name: Download runtime packages from additional runs
+        if: inputs.artifact_run_ids != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_IDS: ${{ inputs.artifact_run_ids }}
+        run: |
+          set -euo pipefail
+          for rid in ${RUN_IDS//,/ }; do
+            echo "Fetching runtime-packages-* artifacts from run $rid"
+            gh run download "$rid" --repo tamatebako/tebako-runtime-ruby \
+              -p 'runtime-packages-*' -D "runtime-packages-runs/$rid" --clobber
+          done
+          find runtime-packages-runs -type f -exec cp -n {} runtime-packages/ \;
 
       - name: Setup Ruby gems
         uses: ruby/setup-ruby@v1
