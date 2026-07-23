@@ -197,6 +197,15 @@ jobs:
           runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby }}-${{ matrix.env.os }}-${{ matrix.env.arch }}"
           tebako press -m runtime -o "runtime-packages/$runtime" -R "${{ matrix.ruby }}" -p .tebako
 
+      # Diagnostics for tamatebako/tebako#345: on failure, surface the
+      # ext/openssl mkmf log (which lib/header did extconf pick, and why did
+      # the X509 accessor probes fail) — cheap because it only fires red
+      - name: Dump ext/openssl mkmf.log on failure (Windows)
+        if: failure() && matrix.env.container == null && matrix.env.os == 'windows'
+        shell: msys2 {0}
+        run: |
+          find .tebako/deps/src -path "*/ext/openssl/mkmf.log" -exec sh -c 'echo "== $1"; cat "$1"' _ {} \; || true
+
       - name: Upload runtime package
         uses: actions/upload-artifact@v4
         with:
