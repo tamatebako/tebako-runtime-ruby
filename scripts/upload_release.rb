@@ -38,7 +38,7 @@ RUNTIME_REPO = "tamatebako/tebako-runtime-ruby"
 class ReleaseManager # rubocop:disable Metrics/ClassLength
   def initialize
     validate_environment
-    @client = Octokit::Client.new(access_token: ENV.fetch("GITHUB_TOKEN"))
+    @client = Octokit::Client.new(access_token: ENV.fetch("GITHUB_TOKEN"), auto_paginate: true)
     @version = ENV.fetch("TEBAKO_VERSION")
     @tag = "v#{@version}"
     @release_title = "Tebako runtime packages #{@tag}"
@@ -74,7 +74,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   # regardless of FORCE_REBUILD, so they never go stale on partial releases.
   def force_upload(release, file)
     filename = file.basename.to_s
-    remove_existing_asset(release, filename) if release.assets.find { |a| a.name == filename }
+    remove_existing_asset(release, filename) if find_asset(release, filename)
     perform_upload(release, file, filename)
   end
 
@@ -207,8 +207,15 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
 
   def remove_existing_asset(release, filename)
     puts "Deleting existing asset #{filename}"
-    existing = release.assets.find { |a| a.name == filename }
-    @client.delete_release_asset(existing.id)
+    existing = find_asset(release, filename)
+    @client.delete_release_asset(existing.id) if existing
+  end
+
+  # release.assets is an embedded array capped at 30 entries; with 100+
+  # packages the target asset is often beyond it. Query the dedicated
+  # (auto-paginated) assets endpoint instead.
+  def find_asset(release, filename)
+    @client.release_assets(release.id).find { |a| a.name == filename }
   end
 
   def run
@@ -236,7 +243,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     filename = package.basename.to_s
     puts "Processing #{filename}..."
 
-    if existing_asset = release.assets.find { |a| a.name == filename }
+    if existing_asset = find_asset(release, filename)
       if ENV["FORCE_REBUILD"] != "true"
         puts "Skipping upload of existing asset #{filename} (FORCE_REBUILD not set)"
         return filename
