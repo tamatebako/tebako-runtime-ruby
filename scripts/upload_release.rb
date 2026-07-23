@@ -212,10 +212,12 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   end
 
   # release.assets is an embedded array capped at 30 entries; with 100+
-  # packages the target asset is often beyond it. Query the dedicated
-  # (auto-paginated) assets endpoint instead.
+  # packages the target asset is often beyond it. Fetch the full asset
+  # list through the release's own assets rel (auto-paginated) — building
+  # the URL by hand from the release id produces a malformed path on
+  # octokit 7.
   def find_asset(release, filename)
-    @client.release_assets(release.id).find { |a| a.name == filename }
+    release.rels[:assets].get.data.find { |a| a.name == filename }
   end
 
   def run
