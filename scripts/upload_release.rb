@@ -160,14 +160,15 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
       content_type: "application/octet-stream",
       name: filename
     )
-  rescue Octokit::UnprocessableEntity
+  rescue Octokit::UnprocessableEntity, Net::WriteTimeout, Net::ReadTimeout,
+         Faraday::TimeoutError, Faraday::ConnectionFailed => e
     attempts -= 1
     raise if attempts <= 0
 
-    # GitHub asset deletion is only eventually consistent: a same-name
-    # re-upload right after remove_existing_asset can 422 (Validation
-    # Failed). Back off and retry.
-    puts "422 (Validation Failed) uploading #{filename}; retrying in 5s (#{attempts} attempt(s) left)"
+    # GitHub asset deletion is only eventually consistent (same-name
+    # re-upload right after a delete can 422), and multi-MB asset streams
+    # hit transient network timeouts. Back off and retry.
+    puts "#{e.class} uploading #{filename}; retrying in 5s (#{attempts} attempt(s) left)"
     sleep 5
     retry
   end
