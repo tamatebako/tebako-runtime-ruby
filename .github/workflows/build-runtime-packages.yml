@@ -155,13 +155,7 @@ jobs:
           container="ghcr.io/tamatebako/tebako-${{ matrix.env.container }}:${{ needs.prepare.outputs.tebako-version }}"
           echo "Building runtime for Ruby ${{ matrix.ruby }} on ${{ matrix.env.os }}/${{ matrix.env.arch }}"
           runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby }}-${{ matrix.env.os }}-${{ matrix.env.arch }}"
-          # musl-arm64 has no prebuilt libtfs package yet (first ships in
-          # libtfs v0.12.9); build the engine from source on those legs
-          PRELOAD_FLAG=""
-          if [ "${{ matrix.env.os }}" = "linux-musl" ] && [ "${{ matrix.env.arch }}" = "arm64" ]; then
-            PRELOAD_FLAG="-e DWARFS_PRELOAD=OFF"
-          fi
-          docker run -v ${{github.workspace}}:/mnt/w $PRELOAD_FLAG -t $container \
+          docker run -v ${{github.workspace}}:/mnt/w -t $container \
             tebako press -m runtime -o="/mnt/w/runtime-packages/$runtime" -R=${{ matrix.ruby }} ${{ matrix.env.os == 'linux-gnu' && '--patchelf' || '' }}
 
       - name: Setup MSys
