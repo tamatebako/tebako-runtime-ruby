@@ -53,6 +53,7 @@ class MatrixGenerator
   def process_env_matrix(data)
     @logger.info("Processing environment matrix...")
     env = validate_json_section(data, "env")
+    env = filter_env(env)
     @logger.info("Generated env matrix:")
     @logger.info(JSON.pretty_generate(env))
     write_output("env-matrix", env)
@@ -63,12 +64,38 @@ class MatrixGenerator
     raise
   end
 
+  # Optional slice filter for workflow_dispatch iteration/debugging:
+  # MATRIX_ENV_FILTER="linux-musl/arm64" selects a single os/arch pair
+  # ("all" or empty keeps every entry)
+  def filter_env(env)
+    filter = ENV.fetch("MATRIX_ENV_FILTER", "")
+    return env if filter.empty? || filter == "all"
+
+    os, arch = filter.split("/", 2)
+    selected = env.select { |e| e["os"] == os && (arch.nil? || arch.empty? || e["arch"] == arch) }
+    raise "MATRIX_ENV_FILTER '#{filter}' matched no env entries" if selected.empty?
+
+    @logger.info("MATRIX_ENV_FILTER '#{filter}' selected #{selected.size} env entry(ies)")
+    selected
+  end
+
+  # MATRIX_RUBY_FILTER: "full"/"tidy" select the named matrix.json set; a
+  # comma-separated version list ("3.3.7,3.4.2") overrides for slice
+  # dispatches; empty falls back to the event-based default
+  def select_ruby_versions(data)
+    filter = ENV.fetch("MATRIX_RUBY_FILTER", "")
+    return get_ruby_versions(data, filter) if %w[full tidy].include?(filter)
+    return filter.split(",").map(&:strip).reject(&:empty?) unless filter.empty?
+
+    suffix = determine_ruby_suffix
+    get_ruby_versions(data, suffix)
+  end
+
   def process_ruby_matrix(data)
     @logger.info("Processing ruby matrix...")
-    suffix = determine_ruby_suffix
-    ruby_versions = get_ruby_versions(data, suffix)
+    ruby_versions = select_ruby_versions(data)
 
-    @logger.info("Generated ruby matrix for #{suffix}: #{JSON.pretty_generate(ruby_versions)}")
+    @logger.info("Generated ruby matrix: #{JSON.pretty_generate(ruby_versions)}")
     write_output("ruby-matrix", ruby_versions)
   rescue StandardError => e
     @logger.error("Error processing ruby matrix: #{e.message}")
