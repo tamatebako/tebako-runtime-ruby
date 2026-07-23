@@ -206,7 +206,11 @@ jobs:
         shell: msys2 {0}
         run: |
           find .tebako/deps/src -path "*/ext/openssl/mkmf.log" -exec sh -c 'echo "== $1"; cat "$1"' _ {} \; || true
-          find .tebako/deps/src -maxdepth 2 -name Makefile -exec sh -c 'echo "== $1 (ruby.exe rule)"; grep -n -B2 -A6 "^ruby.exe" "$1" || true' _ {} \; || true
+          find .tebako/deps/src -maxdepth 2 -name Makefile -exec sh -c '
+            echo "== $1: start-group refs:"; grep -n "start-group" "$1" || echo "(none)"
+            echo "== $1: ruby.exe link rule region:"; grep -n -B4 -A6 "EXTOBJS.*-o \$@)" "$1" || true
+            echo "== $1: LIBS/MAINLIBS definitions:"; grep -n "^LIBS\|^MAINLIBS\|^EXTLIBS" "$1" || true
+          ' _ {} \; || true
 
       - name: Upload runtime package
         uses: actions/upload-artifact@v4
