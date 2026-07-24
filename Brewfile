@@ -1,0 +1,18 @@
+# frozen_string_literal: true
+
+brew "zlib"
+brew "ncurses"
+brew "libsodium"
+brew "lz4"
+brew "xz"
+brew "gdbm"
+brew "pkg-config"
+brew "libyaml"
+brew "curl"
+brew "bison"
+brew "flex"
+brew "binutils"
+brew "libffi"
+brew "jemalloc"
+brew "gnu-sed"
+brew "bash"

@@ -1,0 +1,8 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# THIS FILE WAS GENERATED AUTOMATICALLY BY TEBAKO. DO NOT CHANGE IT, PLEASE
+
+puts "Copyright (c) 2024-2025 Ribose Inc (https://www.ribose.com)"
+puts "Tebako runtime stub v@TEBAKO_VERSION@"
+puts "To run your application please call @RUNTIME_NAME@ --tebako-run <your tebako package>"

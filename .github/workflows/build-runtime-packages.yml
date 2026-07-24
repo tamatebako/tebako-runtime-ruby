@@ -1,4 +1,4 @@
-# Copyright (c) 2025 [Ribose Inc](https://www.ribose.com).
+# Copyright (c) 2025-2026 [Ribose Inc](https://www.ribose.com).
 # All rights reserved.
 # This file is a part of tamatebako
 #
@@ -31,7 +31,7 @@ on:
     paths-ignore:
       - 'docs/**'
       - '**.adoc'
-      - '**.md'  
+      - '**.md'
   pull_request:
     paths-ignore:
       - 'docs/**'
@@ -73,7 +73,7 @@ permissions:
   packages: write
 
 env:
-  CACHE_VER: 1
+  CACHE_VER: 2
   VERBOSE: no
   RUNTIME_REPO: tamatebako/tebako-runtime-ruby
 
@@ -98,8 +98,7 @@ jobs:
       - name: Get Tebako version
         id: get-version
         run: |
-          gem install tebako
-          version=$(gem info tebako | head -n 1 | awk -F'[()]' '{print $2}')
+          version=$(cat VERSION)
           echo "Building runtimes for Tebako version $version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
@@ -137,16 +136,17 @@ jobs:
         run: |
           mkdir -p runtime-packages
 
-      # Per-(platform, ruby) cache of the whole tebako prefix (.tebako), which
-      # holds both the ruby-independent deps and the ruby-specific press output.
-      # Host-native jobs only: container jobs build inside the CI container
-      # image whose deps are baked into the image itself, so there is no
-      # host-side path to cache (the container image is the cache).
-      - name: Cache tebako prefix
+      # Per-(platform, ruby) cache of the whole build prefix (.build), which
+      # holds both the ruby-independent deps and the ruby-specific build
+      # trees. Host-native jobs only: container jobs build inside the CI
+      # container image whose toolchain is baked into the image itself, so
+      # there is no host-side path to cache (the container image is the
+      # cache).
+      - name: Cache build prefix
         if: matrix.env.container == null
         uses: actions/cache@v4
         with:
-          path: .tebako
+          path: .build
           key: tebako-runtime-${{ matrix.env.os }}-${{ matrix.env.arch }}-${{ matrix.ruby }}-${{ needs.prepare.outputs.tebako-version }}-v${{ env.CACHE_VER }}
 
       - name: Build runtime using ci container
@@ -156,7 +156,14 @@ jobs:
           echo "Building runtime for Ruby ${{ matrix.ruby }} on ${{ matrix.env.os }}/${{ matrix.env.arch }}"
           runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby }}-${{ matrix.env.os }}-${{ matrix.env.arch }}"
           docker run -v ${{github.workspace}}:/mnt/w -t $container \
-            tebako press -m runtime -o="/mnt/w/runtime-packages/$runtime" -R=${{ matrix.ruby }} ${{ matrix.env.os == 'linux-gnu' && '--patchelf' || '' }}
+            /mnt/w/tools/build_runtime --ruby "${{ matrix.ruby }}" --output "/mnt/w/runtime-packages/$runtime" \
+            --prefix /root/.build ${{ matrix.env.os == 'linux-gnu' && '--patchelf' || '' }}
+
+      - name: Select XCode
+        if: matrix.env.os == 'macos'
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: ${{ matrix.env.xcode }}
 
       - name: Setup MSys
         if: matrix.env.os == 'windows'
@@ -166,36 +173,44 @@ jobs:
           path-type: minimal
           update: true
 
-      - name: Setup Tebako
-        if: matrix.env.container == null
-        uses: tamatebako/tebako/.github/actions/setup-tebako@main
-        with:
-          cache: build
-          cache_ver: ${{ env.CACHE_VER }}
-          # Xcode selection matters on macos-15 images (the action's defaults,
-          # 14.3.1/15.0.1, are not installed there); null off-macOS, where the
-          # action falls back to its defaults and setup-xcode does not run.
-          xcode: ${{ matrix.env.xcode }}
-          # Deps are ruby-independent, so the action's cache (keyed by tebako
-          # hash) covers only .tebako/deps and is shared across ruby versions;
-          # the ruby-specific press output is handled by the per-ruby cache above.
-          cache_path: .tebako/deps
+      - name: Install pacman packages
+        if: matrix.env.os == 'windows'
+        shell: msys2 {0}
+        run: |
+          pacman -Syu --needed --noconfirm git tar bison flex pactoys
+          pacboy sync --needed --noconfirm cmake:p diffutils:p          \
+            dlfcn:p ninja:p                                             \
+            gtest:p autotools:p ncurses:p ruby:p toolchain:p openssl:p  \
+            make:p libyaml:p libxslt:p
 
-      - name: Build runtime using gem
+      - name: Setup Ruby
+        if: matrix.env.container == null && matrix.env.os != 'windows'
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: 3.3
+          bundler-cache: false
+
+      - name: Install brew packages
+        if: matrix.env.os == 'macos'
+        run: |
+          brew bundle -f
+          echo "$(brew --prefix bison)/bin" >> $GITHUB_PATH
+
+      - name: Build runtime
         if: matrix.env.container == null && matrix.env.os != 'windows'
         run: |
           echo "Building runtime for Ruby ${{ matrix.ruby }} on ${{ matrix.env.os }}/${{ matrix.env.arch }}"
           runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby }}-${{ matrix.env.os }}-${{ matrix.env.arch }}"
-          tebako press -m runtime -o "runtime-packages/$runtime" -R "${{ matrix.ruby }}" -p .tebako
+          tools/build_runtime --ruby "${{ matrix.ruby }}" --output "runtime-packages/$runtime" --prefix .build
 
-      - name: Build runtime using gem on Windows
+      - name: Build runtime on Windows
         if: matrix.env.container == null && matrix.env.os == 'windows'
         shell: msys2 {0}
         run: |
           git config --global core.longpaths true
           echo "Building runtime for Ruby ${{ matrix.ruby }} on ${{ matrix.env.os }}/${{ matrix.env.arch }}"
           runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby }}-${{ matrix.env.os }}-${{ matrix.env.arch }}"
-          tebako press -m runtime -o "runtime-packages/$runtime" -R "${{ matrix.ruby }}" -p .tebako
+          tools/build_runtime --ruby "${{ matrix.ruby }}" --output "runtime-packages/$runtime" --prefix .build
 
       # Diagnostics for tamatebako/tebako#345: on failure, surface the
       # ext/openssl mkmf log (which lib/header did extconf pick, and why did
@@ -205,8 +220,8 @@ jobs:
         if: failure() && matrix.env.container == null && matrix.env.os == 'windows'
         shell: msys2 {0}
         run: |
-          find .tebako/deps/src -path "*/ext/openssl/mkmf.log" -exec sh -c 'echo "== $1"; cat "$1"' _ {} \; || true
-          find .tebako/deps/src -maxdepth 2 -name Makefile -exec sh -c '
+          find .build/deps/src -path "*/ext/openssl/mkmf.log" -exec sh -c 'echo "== $1"; cat "$1"' _ {} \; || true
+          find .build/deps/src -maxdepth 2 -name Makefile -exec sh -c '
             echo "== $1: start-group refs:"; grep -n "start-group" "$1" || echo "(none)"
             echo "== $1: ruby.exe link rule region:"; grep -n -B4 -A6 "EXTOBJS.*-o \$@)" "$1" || true
             echo "== $1: LIBS/MAINLIBS definitions:"; grep -n "^LIBS\|^MAINLIBS\|^EXTLIBS" "$1" || true

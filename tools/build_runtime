@@ -1,0 +1,108 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Copyright (c) 2026 [Ribose Inc](https://www.ribose.com).
+# All rights reserved.
+# This file is a part of the Tebako project.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions
+# are met:
+# 1. Redistributions of source code must retain the above copyright
+#    notice, this list of conditions and the following disclaimer.
+# 2. Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+# ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
+# TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+# PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS
+# BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
+
+# Build a tebako runtime package from the pre-patched ruby source published
+# by tamatebako/ruby (tfs-ruby-<version>-src.tar.gz, SHA256-verified against
+# the release SHA256SUMS). Replaces the gem's 'tebako press -m runtime'.
+#
+# Usage:
+#   tools/build_runtime --ruby 3.3.7 [--output PATH] [--prefix DIR]
+#                       [--tebako-version X.Y.Z] [--src-release TAG]
+#                       [--src-mirror URL] [--patchelf] [--jobs N]
+
+require "optparse"
+
+REPO_ROOT = File.expand_path("..", __dir__).freeze
+$LOAD_PATH.unshift(File.join(REPO_ROOT, "build", "lib"))
+
+require "tebako_runtime_builder"
+
+options = {
+  ruby: nil,
+  output: nil,
+  prefix: File.join(REPO_ROOT, ".build"),
+  tebako_version: nil,
+  src_release: TebakoRuntimeBuilder::SourceFetcher::DEFAULT_RELEASE,
+  src_mirror: nil,
+  patchelf: false,
+  jobs: nil
+}
+
+parser = OptionParser.new do |opts|
+  opts.banner = "Usage: tools/build_runtime [options]"
+  opts.on("-R", "--ruby VERSION", "Ruby version to build (e.g. 3.3.7), required") { |v| options[:ruby] = v }
+  opts.on("-o", "--output PATH", "Output runtime package path " \
+                                 "(default: runtime-packages/tebako-runtime-<tebako>-<ruby>-<platform>)") do |v|
+    options[:output] = v
+  end
+  opts.on("-p", "--prefix DIR", "Build prefix holding deps and the build trees (default: #{options[:prefix]})") do |v|
+    options[:prefix] = v
+  end
+  opts.on("--tebako-version VERSION", "Runtime contract version (default: the VERSION file)") do |v|
+    options[:tebako_version] = v
+  end
+  opts.on("--src-release TAG", "tamatebako/ruby release tag (default: #{options[:src_release]})") do |v|
+    options[:src_release] = v
+  end
+  opts.on("--src-mirror URL", "Base URL override for the source assets (file:// URLs work)") do |v|
+    options[:src_mirror] = v
+  end
+  opts.on("-P", "--patchelf", "Remove the GLIBC_PRIVATE reference (linux-gnu only)") { options[:patchelf] = true }
+  opts.on("-j", "--jobs N", Integer, "Build parallelism (default: detected core count)") { |v| options[:jobs] = v }
+  opts.on("-h", "--help", "Print this help") do
+    puts opts
+    exit 0
+  end
+end
+parser.parse!
+
+begin
+  if options[:ruby].nil?
+    puts "Missing required option: --ruby VERSION"
+    puts parser
+    exit 64
+  end
+
+  tebako_version = options[:tebako_version] || File.read(File.join(REPO_ROOT, "VERSION")).strip
+  builder = TebakoRuntimeBuilder::Builder.new(
+    repo_root: REPO_ROOT,
+    ruby_version: options[:ruby],
+    tebako_version: tebako_version,
+    prefix: options[:prefix],
+    output: options[:output],
+    patchelf: options[:patchelf],
+    jobs: options[:jobs],
+    release: options[:src_release],
+    mirror: options[:src_mirror]
+  )
+  builder.run
+rescue TebakoRuntimeBuilder::Error => e
+  puts "build_runtime failed: #{e.message} [#{e.error_code}]"
+  exit(e.error_code)
+end
+exit(0)
