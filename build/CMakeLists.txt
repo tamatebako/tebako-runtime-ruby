@@ -520,6 +520,12 @@ add_library(tebako-fs STATIC
   ${GEN_DIR}/tebako-version.h
 )
 
+# The incbin translation unit embeds ${DATA_BIN_FILE} via the assembler's
+# .incbin directive -- a dependency the build system cannot see. Without
+# OBJECT_DEPENDS an incremental rebuild (same build tree, regenerated
+# fs.bin) would relink the runtime against the STALE embedded image.
+set_source_files_properties(${GEN_DIR}/tebako-fs.cpp PROPERTIES OBJECT_DEPENDS ${DATA_BIN_FILE})
+
 if(${RUBY_VER} VERSION_LESS "3.3.0" AND ("${OSTYPE_TXT}" MATCHES "^msys*" OR "${OSTYPE_TXT}" MATCHES "^cygwin*"))
   target_compile_definitions(tebako-fs PUBLIC RB_W32_PRE_33)
 endif(${RUBY_VER} VERSION_LESS "3.3.0" AND ("${OSTYPE_TXT}" MATCHES "^msys*" OR "${OSTYPE_TXT}" MATCHES "^cygwin*"))

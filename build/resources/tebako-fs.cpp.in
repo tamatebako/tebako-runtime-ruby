@@ -1,7 +1,5 @@
 /**
 * THIS FILE WAS GENERATED AUTOMATICALLY BY TEBAKO. DO NOT CHANGE IT, PLEASE
-* (configure_file from build/resources/tebako-fs.cpp.in --
-*  the runtime-mode stub filesystem, gem Codegen#tebako_fs_cpp_stub)
 **/
 
 #include <limits.h>
