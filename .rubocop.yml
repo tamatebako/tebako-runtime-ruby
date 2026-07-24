@@ -27,6 +27,10 @@ Layout/EndOfLine:
 Metrics/ModuleLength:
   Max: 250
 
+Metrics/BlockLength:
+  Exclude:
+    - "spec/**/*"
+
 Naming/FileName:
   Enabled: false
 

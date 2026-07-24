@@ -1,0 +1,18 @@
+/**
+* THIS FILE WAS GENERATED AUTOMATICALLY BY TEBAKO. DO NOT CHANGE IT, PLEASE
+* (configure_file from build/resources/tebako-fs.cpp.in --
+*  the runtime-mode stub filesystem, gem Codegen#tebako_fs_cpp_stub)
+**/
+
+#include <limits.h>
+#include <incbin/incbin.h>
+
+namespace tebako {
+  const  char * fs_log_level   = "@LOG_LEVEL@";
+  const  char * fs_mount_point = "@FS_MOUNT_POINT@";
+  const  char * fs_entry_point = "/local/stub.rb";
+  const  char * package_cwd 	 = nullptr;
+  char   original_cwd[PATH_MAX];
+
+  INCBIN(fs, "@DATA_BIN_FILE@");
+}

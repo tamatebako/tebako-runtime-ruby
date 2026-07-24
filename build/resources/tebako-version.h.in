@@ -1,0 +1,10 @@
+/**
+* THIS FILE WAS GENERATED AUTOMATICALLY BY TEBAKO. DO NOT CHANGE IT, PLEASE
+* (configure_file from build/resources/tebako-version.h.in)
+**/
+
+#pragma once
+
+const unsigned int tebako_version_major = @TEBAKO_VERSION_MAJOR@;
+const unsigned int tebako_version_minor = @TEBAKO_VERSION_MINOR@;
+const unsigned int tebako_version_teeny = @TEBAKO_VERSION_TEENY@;

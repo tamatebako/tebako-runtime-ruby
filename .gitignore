@@ -1,0 +1,12 @@
+# Build artifacts
+.build/
+runtime-packages/
+runtime-packages-runs/
+
+# Ruby
+Gemfile.lock
+.rspec_status
+coverage/
+
+# Homebrew
+Brewfile.lock.json
