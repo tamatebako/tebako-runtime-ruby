@@ -13,7 +13,7 @@ RSpec.describe TebakoRuntimeBuilder::Mlibs do
     it "computes the group-wrapped static library list" do
       expected = "-Wl,--start-group " \
                  "-Wl,--push-state,--whole-archive -l:libtebako-fs.a -Wl,--pop-state " \
-                 "-l:libtfs.a -l:libtebako_dirent_helper_c.a " \
+                 "-l:libtfs.a " \
                  "-l:libdwarfs_reader.a -l:libdwarfs_common.a -l:libdwarfs_metadata_legacy.a " \
                  "-l:libdwarfs_decompressor.a -l:libflatbuffers.a -l:libzip.a " \
                  "-l:libfmt.a -l:libxxhash.a -l:libboost_filesystem.a -l:libboost_chrono.a " \
@@ -87,7 +87,7 @@ RSpec.describe TebakoRuntimeBuilder::Mlibs do
       # the gem's PatchLibraries produced them (the linker resolves them)
       vcpkg = File.join(root, "deps", "lib", "..", "vcpkg_installed", "arm64-osx", "lib")
       expected = "-ltebako-fs " \
-                 "#{root}/deps/lib/libtfs.a #{root}/deps/lib/libtebako_dirent_helper_c.a " \
+                 "#{root}/deps/lib/libtfs.a " \
                  "/brew/openssl@3/lib/libssl.a /brew/openssl@3/lib/libcrypto.a " \
                  "/brew/zlib/lib/libz.a /brew/gdbm/lib/libgdbm.a /brew/readline/lib/libreadline.a " \
                  "/brew/libffi/lib/libffi.a /brew/ncurses/lib/libncurses.a /brew/lz4/lib/liblz4.a " \
