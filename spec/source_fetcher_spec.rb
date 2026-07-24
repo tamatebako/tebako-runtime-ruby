@@ -42,7 +42,7 @@ RSpec.describe TebakoRuntimeBuilder::SourceFetcher do
   it "raises and deletes the download on a checksum mismatch" do
     File.write(File.join(mirror_dir, "SHA256SUMS"),
                "#{"0" * 64}  tfs-ruby-3.3.7-src.tar.gz\n")
-    FileUtils.rm_rf(File.join(cache_dir, "v0.1.0"))
+    FileUtils.rm_rf(File.join(cache_dir, described_class::DEFAULT_RELEASE))
     expect { fetcher.fetch("3.3.7") }.to raise_error(TebakoRuntimeBuilder::Error, /expected SHA256/)
     expect(Dir.glob(File.join(cache_dir, "**", "tfs-ruby-3.3.7-src.tar.gz"))).to be_empty
   end
