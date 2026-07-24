@@ -71,6 +71,11 @@
 #include <optional>
 #include <vector>
 #include <stdexcept>
+/* <cstring> for std::memcpy/std::memcmp: pulled in transitively by libc++
+   (macOS) but not by the libstdc++ in the tebako CI containers (clang-18),
+   where the vendored file fails to compile without it. One-line divergence
+   from tamatebako/tebako@207d777 -- upstream candidate. */
+#include <cstring>
 
 #ifdef _WIN32
 #include <winsock2.h>
