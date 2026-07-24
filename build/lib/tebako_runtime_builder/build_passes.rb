@@ -85,7 +85,7 @@ module TebakoRuntimeBuilder
         platform = TebakoRuntimeBuilder::Platform.new
         rbconfig = File.join(ruby_source_dir, "rbconfig.rb")
         Dir.chdir(ruby_source_dir) do
-          TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["make", "-j#{platform.ncores}"])
+          run_make_with_serial_fallback(["make", "-j#{platform.ncores}"])
           # The pre-patched tool/mkconfig.rb bakes the memfs mount point into
           # the generated rbconfig.rb (ungated), which would send
           # 'make install' into /__tebako_memfs__ on the host (EROFS) and
@@ -242,6 +242,21 @@ module TebakoRuntimeBuilder
 
         params = [patchelf, "--remove-needed-version", "libpthread.so.0", "GLIBC_PRIVATE", src_name]
         TebakoRuntimeBuilder::BuildHelpers.run_with_capture(params)
+      end
+
+      # With the common.mk exts.mk/extinit.c dependency present from the
+      # start (the gem applied it only for the final, stable build), the
+      # first full make can race the regenerated extinit.o away from a
+      # parallel ruby link ('no such file or directory: ext/extinit.o' --
+      # timing-dependent; observed on the 3-core CI runners). A failed
+      # parallel make leaves clean target state, so a serial re-run
+      # completes deterministically; keep the parallel fast path and fall
+      # back only on failure.
+      def run_make_with_serial_fallback(args)
+        TebakoRuntimeBuilder::BuildHelpers.run_with_capture(args)
+      rescue TebakoRuntimeBuilder::Error
+        puts "   ... parallel make failed (possible exts.mk/extinit.c cascade race); retrying serially"
+        TebakoRuntimeBuilder::BuildHelpers.run_with_capture(args[0..-2] + ["-j1"])
       end
 
       # Rewrite the two prefix lines of the GENERATED rbconfig.rb (every
