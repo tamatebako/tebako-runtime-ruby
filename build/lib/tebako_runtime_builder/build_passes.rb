@@ -79,7 +79,7 @@ module TebakoRuntimeBuilder
         substitute_config_status!(File.join(ruby_source_dir, "config.status"), platform, mlibs)
       end
 
-      def toolchain(ruby_source_dir, data_src_dir, stash_dir, deps_lib_dir) # rubocop:disable Metrics/AbcSize,Metrics/MethodLength
+      def toolchain(ruby_source_dir, data_src_dir, stash_dir, deps_lib_dir) # rubocop:disable Metrics/MethodLength
         puts "-- Running toolchain script"
 
         platform = TebakoRuntimeBuilder::Platform.new
@@ -101,8 +101,14 @@ module TebakoRuntimeBuilder
           # install).
           rewrite_rbconfig_prefix!(rbconfig, data_src_dir)
           FileUtils.rm_f(["verconf.h", "loadpath.o", "loadpath.obj"])
-          TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["make", "-j#{platform.ncores}"])
-          TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["make", "install", "-j#{platform.ncores}"])
+          # Serialized from here: with the common.mk exts.mk/extinit.c
+          # dependency present from the start, the rbconfig change cascades
+          # (configure-ext.mk -> exts.mk -> extinit.c -> extinit.o) and a
+          # parallel link can race the regenerated extinit.o away
+          # ('no such file or directory: ext/extinit.o'). The gem never saw
+          # this -- that patch landed only for its final, stable build.
+          TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["make", "-j1"])
+          TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["make", "install", "-j1"])
         end
 
         puts "   ... saving pristine Ruby environment to #{stash_dir}"
@@ -136,8 +142,10 @@ module TebakoRuntimeBuilder
           # against the real libtebako-fs.a
           rewrite_rbconfig_prefix!(rbconfig, platform.fs_mount_point)
           FileUtils.rm_f(["verconf.h", "loadpath.o", "loadpath.obj", "ruby#{platform.exe_suffix}"])
-          TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["make", "ruby", "-j#{platform.ncores}"]) if rv.ruby3x?
-          TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["make", "-j#{platform.ncores}"])
+          # Serialized (see the toolchain pass): the rbconfig flip re-triggers
+          # the exts.mk/extinit.c cascade; the link must not race it
+          TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["make", "ruby", "-j1"]) if rv.ruby3x?
+          TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["make", "-j1"])
         end
 
         src_name = File.join(ruby_source_dir, "ruby#{platform.exe_suffix}")
