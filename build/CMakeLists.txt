@@ -188,8 +188,10 @@ string(SUBSTRING ${RUBY_VER} 0 3 RUBY_VER_BASE)
 string(CONCAT RUBY_API_VER ${RUBY_VER_BASE} ".0")
 
 # libtfs (former libdwarfs-wr): DWARFS_WR_TAG selects the libtfs git tag for
-# the source build and the matching GitHub release for the prebuilt package
-def_ext_prj_g(DWARFS_WR "v0.12.10")
+# the source build and the matching GitHub release for the prebuilt package.
+# v0.13.0: the legacy tebako C/C++ API is fully removed (modern tebako_fs_*
+# only) and the pure-C dirent helper is merged into libtfs.a.
+def_ext_prj_g(DWARFS_WR "v0.13.0")
 
 # Provisions libtfs (prebuilt package or vcpkg toolchain for the source
 # build), the prebuilt mkdwarfs, and -- for the prebuilt path -- the
@@ -316,12 +318,11 @@ configure_file(${CMAKE_SOURCE_DIR}/resources/stub.rb.in ${GEN_DIR}/local/stub.rb
 
 # ...................................................................
 # The libraries provided by libtfs (prebuilt package or source build):
-# libtfs.a plus its pure-C dirent helper. These forward-declarations and
-# BUILD_BYPRODUCTS are required to support 'Ninja'
+# libtfs.a (v0.13.0 merges the former pure-C dirent helper). These
+# forward-declarations and BUILD_BYPRODUCTS are required to support 'Ninja'
 # Otherwise add_dependencies would be enough for 'Unix makefiles' generator
 
 set(__LIBTFS "${DEPS_LIB_DIR}/libtfs.a")
-set(__LIBTFS_HELPER "${DEPS_LIB_DIR}/libtebako_dirent_helper_c.a")
 
 if(DWARFS_PRELOAD)
   # Everything for the prebuilt path (download, SHA256 verification,
@@ -359,7 +360,6 @@ else(DWARFS_PRELOAD)
                ${LIBTFS_VCPKG_EP_TRIPLET_ARG}
                -GNinja
     BUILD_BYPRODUCTS ${__LIBTFS}
-                     ${__LIBTFS_HELPER}
   )
 endif(DWARFS_PRELOAD)
 

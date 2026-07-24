@@ -44,7 +44,7 @@ module TebakoRuntimeBuilder
 
     DARWIN_BREW_LIBS_31 = [["openssl@3", "ssl"], ["openssl@3", "crypto"]].freeze
 
-    DARWIN_DEP_LIBS_1 = ["tfs", "tebako_dirent_helper_c"].freeze
+    DARWIN_DEP_LIBS_1 = ["tfs"].freeze
     # Referenced by full path from the vcpkg triplet lib dir (see
     # darwin_libraries): Apple ld does not implement the GNU-style
     # -l:<filename> library search, so -l:libX.a refs do not resolve.
@@ -58,14 +58,15 @@ module TebakoRuntimeBuilder
     # --start-group/--end-group around the libtfs + transitive static archives:
     # the dwarfs reader set has circular member-level references that trip GNU
     # ld's single-pass scanning when built with clang (compression registrar).
-    # libtfs (libtfs.a + its pure-C dirent helper) and the transitive static
-    # set resolved by vcpkg into deps/vcpkg_installed/<triplet>/lib: the
-    # dwarfs reader side, flatbuffers, zip and the C++ support libs.
+    # libtfs.a (v0.13.0: the legacy API is removed and the former pure-C
+    # dirent helper is merged in) and the transitive static set resolved by
+    # vcpkg into deps/vcpkg_installed/<triplet>/lib: the dwarfs reader side,
+    # flatbuffers, zip and the C++ support libs.
     # Compression codecs register explicitly (compression_registry ctor),
     # so no --whole-archive compression lib is needed anymore.
     COMMON_LINUX_LIBRARIES = [
       "-Wl,--push-state,--whole-archive -l:libtebako-fs.a -Wl,--pop-state",
-      "-l:libtfs.a", "-l:libtebako_dirent_helper_c.a",
+      "-l:libtfs.a",
       "-l:libdwarfs_reader.a", "-l:libdwarfs_common.a", "-l:libdwarfs_metadata_legacy.a",
       "-l:libdwarfs_decompressor.a", "-l:libflatbuffers.a", "-l:libzip.a",
       "-l:libfmt.a", "-l:libxxhash.a", "-l:libboost_filesystem.a",
