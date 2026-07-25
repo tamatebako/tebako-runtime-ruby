@@ -172,7 +172,8 @@ module TebakoRuntimeBuilder
       return lib if name.nil?
 
       vcpkg_lib_dir = Dir.glob(File.join(@deps_lib_dir, "..", "vcpkg_installed", "*", "lib")).min
-      Dir.glob(File.join(vcpkg_lib_dir.to_s, "lib#{name}*.a")).min || lib
+      candidate = Dir.glob(File.join(vcpkg_lib_dir.to_s, "lib#{name}*.a")).min
+      candidate ? File.expand_path(candidate) : lib
     end
 
     def process_brew_libs!(libs, brew_libs)
