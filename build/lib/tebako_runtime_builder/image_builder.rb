@@ -91,17 +91,18 @@ module TebakoRuntimeBuilder
     def check_toolchain_ruby! # rubocop:disable Metrics/AbcSize,Metrics/MethodLength
       ruby = File.join(@tbd, "ruby#{@platform.exe_suffix}")
       probe = <<~RUBY
+        puts $LOAD_PATH
+        puts "rubygems.rb exists in this ruby's view: \#{File.exist?(File.join(#{@data_src_dir.dump}, "lib/ruby/#{@ruby_ver.api_version}/rubygems.rb"))}"
         begin
           require "rubygems"
           puts "RUBYGEMS-OK"
         rescue Exception => e
           puts "\#{e.class}: \#{e.message}"
           puts e.backtrace.first(8)
-          exit 3
         end
       RUBY
-      load_path = TebakoRuntimeBuilder::BuildHelpers.run_with_capture([ruby, "-e", probe])
-      if load_path.include?("RUBYGEMS-OK")
+      probe_out = TebakoRuntimeBuilder::BuildHelpers.run_with_capture([ruby, "-e", probe])
+      if probe_out.include?("RUBYGEMS-OK")
         puts "   ... toolchain ruby loads rubygems fine"
         return
       end
@@ -110,8 +111,8 @@ module TebakoRuntimeBuilder
       rubygems_rb = File.join(@data_src_dir, "lib", "ruby", api, "rubygems.rb")
       present = File.file?(rubygems_rb)
       listing = Dir.exist?(File.dirname(rubygems_rb)) ? Dir.children(File.dirname(rubygems_rb)).first(20) : []
-      puts "   ... toolchain ruby cannot load rubygems (file present: #{present}):"
-      puts load_path
+      puts "   ... toolchain ruby cannot load rubygems (host sees the file present: #{present}):"
+      puts probe_out
       puts "   ... #{File.dirname(rubygems_rb)} contains: #{listing.join(", ")}" if listing.any?
       raise TebakoRuntimeBuilder::Error.new("toolchain ruby cannot load rubygems from #{@data_src_dir}", 130)
     end
