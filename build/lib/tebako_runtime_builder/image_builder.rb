@@ -26,6 +26,7 @@
 # POSSIBILITY OF SUCH DAMAGE.
 
 require "fileutils"
+require "open3"
 
 module TebakoRuntimeBuilder
   # Builds the runtime package filesystem image (fs.bin) from the stashed
@@ -127,6 +128,13 @@ module TebakoRuntimeBuilder
       if arch_rbconfig
         puts "   ... installed rbconfig prefix lines (#{arch_rbconfig}):"
         puts File.readlines(arch_rbconfig).grep(/CONFIG\["prefix"\]|CONFIG\["RUBY_EXEC_PREFIX"\]|TOPDIR|DESTDIR =/)
+      end
+      begin
+        strings, = Open3.capture2e("strings", ruby)
+        puts "   ... compiled-in paths in #{ruby}:"
+        puts strings.lines.grep(%r{/__tebako_memfs__|o/sD:|/lib/ruby}).first(12)
+      rescue StandardError
+        nil
       end
       raise TebakoRuntimeBuilder::Error.new("toolchain ruby cannot load rubygems from #{@data_src_dir}", 130)
     end
