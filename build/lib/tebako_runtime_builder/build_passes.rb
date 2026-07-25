@@ -91,6 +91,7 @@ module TebakoRuntimeBuilder
 
         platform = TebakoRuntimeBuilder::Platform.new
         rbconfig = File.join(ruby_source_dir, "rbconfig.rb")
+        install_out = nil
         Dir.chdir(ruby_source_dir) do
           run_make_with_serial_fallback(["make", "-j#{platform.ncores}"])
           # The pre-patched tool/mkconfig.rb bakes the memfs mount point into
@@ -115,7 +116,7 @@ module TebakoRuntimeBuilder
           # ('no such file or directory: ext/extinit.o'). The gem never saw
           # this -- that patch landed only for its final, stable build.
           TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["make", "-j1"])
-          TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["make", "install", "-j1"])
+          install_out = TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["make", "install", "-j1"])
         end
 
         puts "   ... saving pristine Ruby environment to #{stash_dir}"
@@ -125,6 +126,13 @@ module TebakoRuntimeBuilder
         bin = File.join(data_src_dir, "bin")
         installed = Dir.exist?(bin) ? Dir.children(bin).first(8).join(", ") : "(no bin dir)"
         puts "   ... toolchain installed: #{installed}"
+        unless Dir.exist?(bin)
+          # make install exited 0 yet installed nothing -- dump the evidence
+          puts "   ... captured 'make install' output (tail):"
+          puts install_out.lines.last(30)
+          puts "   ... rewritten rbconfig prefix lines:"
+          puts File.readlines(rbconfig).grep(/CONFIG\["prefix"\]|CONFIG\["RUBY_EXEC_PREFIX"\]|DESTDIR =/)
+        end
 
         # The stub driver served the toolchain link; the final relink must
         # resolve -ltebako-fs to the real library in the CMake binary dir.
