@@ -90,22 +90,22 @@ module TebakoRuntimeBuilder
     # rubygems/gem_runner' -- fail loud with the evidence instead.
     def check_toolchain_ruby! # rubocop:disable Metrics/AbcSize,Metrics/MethodLength
       ruby = File.join(@tbd, "ruby#{@platform.exe_suffix}")
-      load_path = TebakoRuntimeBuilder::BuildHelpers.run_with_capture([ruby, "-e", "puts $LOAD_PATH"])
-      missing = []
-      missing << "$LOAD_PATH lacks #{@data_src_dir}" unless load_path.include?(@data_src_dir)
+      probe = 'begin; require "rubygems"; puts "RUBYGEMS-OK"; ' \
+              'rescue Exception => e; puts "#{e.class}: #{e.message}"; puts e.backtrace.first(8); exit 3; end'
+      load_path = TebakoRuntimeBuilder::BuildHelpers.run_with_capture([ruby, "-e", probe])
+      if load_path.include?("RUBYGEMS-OK")
+        puts "   ... toolchain ruby loads rubygems fine"
+        return
+      end
+
       api = @ruby_ver.api_version
       rubygems_rb = File.join(@data_src_dir, "lib", "ruby", api, "rubygems.rb")
-      unless File.file?(rubygems_rb)
-        lib_root = File.join(@data_src_dir, "lib", "ruby", api)
-        listing = Dir.exist?(lib_root) ? Dir.children(lib_root).first(20) : ["<missing #{lib_root}>"]
-        missing << "#{rubygems_rb} is absent; #{lib_root} contains: #{listing.join(", ")}"
-      end
-      return if missing.empty?
-
-      puts "   ... toolchain environment is broken:"
+      present = File.file?(rubygems_rb)
+      listing = Dir.exist?(File.dirname(rubygems_rb)) ? Dir.children(File.dirname(rubygems_rb)).first(20) : []
+      puts "   ... toolchain ruby cannot load rubygems (file present: #{present}):"
       puts load_path
-      missing.each { |item| puts "   ... #{item}" }
-      raise TebakoRuntimeBuilder::Error.new(missing.join("; "), 130)
+      puts "   ... #{File.dirname(rubygems_rb)} contains: #{listing.join(", ")}" if listing.any?
+      raise TebakoRuntimeBuilder::Error.new("toolchain ruby cannot load rubygems from #{@data_src_dir}", 130)
     end
 
     def deploy_env
