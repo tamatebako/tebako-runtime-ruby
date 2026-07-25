@@ -62,8 +62,14 @@ module TebakoRuntimeBuilder
 
         platform = TebakoRuntimeBuilder::Platform.new(ostype)
         rv = TebakoRuntimeBuilder::RubyVersion.new(ruby_ver)
-        mlibs = TebakoRuntimeBuilder::Mlibs.new(platform, deps_lib_dir).compute(rv, with_compression: true)
-        substitute_tebako_mlibs!(File.join(ruby_source_dir, "template", "Makefile.in"), mlibs)
+        # The @TEBAKO_MLIBS@ template placeholder exists only in the
+        # linux-gnu/darwin/musl scenario trees; the msys scenario delivers
+        # MAINLIBS through the config.status substitution (postconfigure)
+        # instead, so there is no template substitution to make there.
+        unless platform.msys?
+          mlibs = TebakoRuntimeBuilder::Mlibs.new(platform, deps_lib_dir).compute(rv, with_compression: true)
+          substitute_tebako_mlibs!(File.join(ruby_source_dir, "template", "Makefile.in"), mlibs)
+        end
         build_toolchain_stub(platform, deps_lib_dir, mount_point, cc)
       end
 

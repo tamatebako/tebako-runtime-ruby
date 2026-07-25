@@ -59,6 +59,15 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
       expect { described_class.prepare("x86_64-linux-gnu", ruby_src, deps_lib_dir, "3.3.7", "/__tebako_memfs__", "cc") }
         .to raise_error(TebakoRuntimeBuilder::Error, /does not exist/)
     end
+
+    it "skips the template substitution on msys (MAINLIBS comes via config.status there)" do
+      File.write(File.join(ruby_src, "template", "Makefile.in"), "MAINLIBS = @MAINLIBS@\n")
+      expect do
+        described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tebako_memfs__", "cc")
+      end.not_to raise_error
+      expect(File.read(File.join(ruby_src, "template", "Makefile.in"))).to eq("MAINLIBS = @MAINLIBS@\n")
+      expect(File.file?(File.join(deps_lib_dir, "libtebako-fs.a"))).to be(true)
+    end
   end
 
   describe ".postconfigure" do
