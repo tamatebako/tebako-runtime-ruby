@@ -89,7 +89,7 @@ module TebakoRuntimeBuilder
     # When it is off -- or the recreated environment is incomplete -- every
     # stdlib require fails with a misleading 'cannot load such file --
     # rubygems/gem_runner' -- fail loud with the evidence instead.
-    def check_toolchain_ruby! # rubocop:disable Metrics/AbcSize,Metrics/MethodLength,Metrics/CyclomaticComplexity
+    def check_toolchain_ruby! # rubocop:disable Metrics
       ruby = File.join(@tbd, "ruby#{@platform.exe_suffix}")
       begin
         strings, = Open3.capture2e("strings", ruby)
