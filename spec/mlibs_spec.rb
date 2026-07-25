@@ -72,6 +72,7 @@ RSpec.describe TebakoRuntimeBuilder::Mlibs do
       let(:root) { Dir.mktmpdir }
 
       before do
+        FileUtils.mkdir_p(File.join(root, "deps", "lib"))
         triplet_lib = File.join(root, "deps", "vcpkg_installed", "x64-mingw-static", "lib")
         FileUtils.mkdir_p(triplet_lib)
         FileUtils.touch(File.join(triplet_lib, "libboost_filesystem-gcc16-mt-x64-1_90.a"))

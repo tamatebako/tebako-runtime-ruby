@@ -111,7 +111,7 @@ module TebakoRuntimeBuilder
     # so the plain -l:libboost_*.a references in COMMON_LINUX_LIBRARIES do
     # not resolve on msys; they are globbed by full path instead (darwin
     # style) to stay independent of the tag drift
-    MSYS_BOOST_LIBS = ["boost_filesystem", "boost_chrono"].freeze
+    MSYS_BOOST_LIBS = %w[boost_filesystem boost_chrono].freeze
 
     # prefix_resolver maps a Homebrew package name to its prefix (darwin);
     # injectable so the list computation is spec-able off macOS
