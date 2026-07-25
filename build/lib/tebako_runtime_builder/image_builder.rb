@@ -92,6 +92,10 @@ module TebakoRuntimeBuilder
       ruby = File.join(@tbd, "ruby#{@platform.exe_suffix}")
       probe = <<~RUBY
         puts $LOAD_PATH
+        puts "rbconfig prefix: \#{RbConfig::CONFIG["prefix"]}"
+        puts "rbconfig RUBY_EXEC_PREFIX: \#{RbConfig::CONFIG["RUBY_EXEC_PREFIX"]}"
+        puts "rbconfig rubylibprefix: \#{RbConfig::CONFIG["rubylibprefix"]}"
+        puts "expanded rubylibprefix: \#{RbConfig.expand(RbConfig::CONFIG["rubylibprefix"].to_s)}"
         puts "rubygems.rb exists in this ruby's view: \#{File.exist?(File.join(#{@data_src_dir.dump}, "lib/ruby/#{@ruby_ver.api_version}/rubygems.rb"))}"
         begin
           require "rubygems"
