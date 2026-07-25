@@ -115,10 +115,13 @@ jobs:
     name: Build runtime package for ${{ matrix.env.os }} / ${{ matrix.env.arch }} / Ruby ${{ matrix.ruby }}
     needs: prepare
     runs-on: ${{ matrix.env.host }}
-    # Windows legs are advisory: the Ruby build on UCRT64 is broken upstream
-    # (win32.c clock_gettime/clock_getres collide with modern winpthreads
-    # headers; tebako's own windows-msys CI has been red for months). The
-    # release job runs always() and publishes the POSIX packages.
+    # Windows legs are advisory until the msys scenario source compiles on
+    # UCRT64: the v0.2.1 msys trees carry the full msys patch set but two
+    # compile bugs in the io-routing shims (tamatebako/ruby, not this repo):
+    # dir.c tfs_closedir returns the void rb_w32_closedir(), and the 4.x
+    # prism_compile.c shim uses O_RDONLY without <fcntl.h>. The consumer-side
+    # machinery (two-pass overlay flow) is proven up to those errors; the
+    # advisory flips off when a fixed scenario release lands.
     continue-on-error: ${{ matrix.env.os == 'windows' }}
     strategy:
       fail-fast: false

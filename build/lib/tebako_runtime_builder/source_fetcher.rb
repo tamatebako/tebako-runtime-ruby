@@ -50,9 +50,38 @@ module TebakoRuntimeBuilder
       "tfs-ruby-#{ruby_version}-src.tar.gz"
     end
 
+    # Per-platform scenario asset naming on tamatebako/ruby releases (item
+    # 20): the linux-gnu scenario ships unsuffixed for back-compat
+    # (tfs-ruby-<v>-src.tar.gz, proven correct for gnu AND macos runtimes);
+    # musl and msys ship their own scenarios. msys needs TWO trees -- the
+    # GNUmakefile.in pass split (pass1: toolchain build with the implib/exp
+    # generation rule active; pass2: the final build) -- which the consumer
+    # must not re-derive.
+    def self.scenario_asset_names(ruby_version, platform)
+      base = "tfs-ruby-#{ruby_version}-src"
+      if platform.msys?
+        ["#{base}-msys-pass1.tar.gz", "#{base}-msys-pass2.tar.gz"]
+      elsif platform.musl?
+        ["#{base}-linux-musl.tar.gz"]
+      else
+        ["#{base}.tar.gz"]
+      end
+    end
+
+    # Fetch every scenario asset the target platform needs; returns an array
+    # of [tarball_path, sha256] pairs (one for gnu/macos/musl, two for msys:
+    # pass1 then pass2).
+    def fetch_assets(ruby_version, platform)
+      self.class.scenario_asset_names(ruby_version, platform).map { |name| fetch_asset(name) }
+    end
+
     # Returns [tarball_path, sha256] for the requested ruby version
-    def fetch(ruby_version) # rubocop:disable Metrics/MethodLength
-      name = asset_name(ruby_version)
+    def fetch(ruby_version)
+      fetch_asset(asset_name(ruby_version))
+    end
+
+    # Returns [tarball_path, sha256] for the named release asset
+    def fetch_asset(name) # rubocop:disable Metrics/MethodLength
       sha256 = expected_sha256(name)
       tarball = File.join(@cache_dir, @release, name)
       return [tarball, sha256] if File.file?(tarball) && Digest::SHA256.file(tarball).hexdigest == sha256

@@ -59,6 +59,15 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
       expect { described_class.prepare("x86_64-linux-gnu", ruby_src, deps_lib_dir, "3.3.7", "/__tebako_memfs__", "cc") }
         .to raise_error(TebakoRuntimeBuilder::Error, /does not exist/)
     end
+
+    it "skips the template substitution on msys (MAINLIBS comes via config.status there)" do
+      File.write(File.join(ruby_src, "template", "Makefile.in"), "MAINLIBS = @MAINLIBS@\n")
+      expect do
+        described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tebako_memfs__", "cc")
+      end.not_to raise_error
+      expect(File.read(File.join(ruby_src, "template", "Makefile.in"))).to eq("MAINLIBS = @MAINLIBS@\n")
+      expect(File.file?(File.join(deps_lib_dir, "libtebako-fs.a"))).to be(true)
+    end
   end
 
   describe ".postconfigure" do
@@ -93,6 +102,46 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
       expect do
         described_class.postconfigure("x86_64-linux-gnu", ruby_src, deps_lib_dir, "3.3.7")
       end.to output(/Warning: no config.status MAINLIBS pattern matched/).to_stdout
+    end
+  end
+
+  describe ".overlay" do
+    let(:pass2_dir) { File.join(root, "pass2-tree", "tfs-ruby-3.3.7-src") }
+    let(:work_dir) { File.join(root, "work") }
+    let(:tarball) { File.join(root, "tfs-ruby-3.3.7-src-msys-pass2.tar.gz") }
+
+    before do
+      FileUtils.mkdir_p(File.join(pass2_dir, "cygwin"))
+      File.write(File.join(pass2_dir, "cygwin", "GNUmakefile.in"), "pass2 variant\n")
+      File.write(File.join(pass2_dir, "main.c"), "same content\n")
+
+      # the built pass-1 tree: one differing file, one identical file, one
+      # build artifact the overlay must preserve
+      FileUtils.mkdir_p(File.join(ruby_src, "cygwin"))
+      File.write(File.join(ruby_src, "cygwin", "GNUmakefile.in"), "pass1 variant\n")
+      File.write(File.join(ruby_src, "main.c"), "same content\n")
+      File.write(File.join(ruby_src, "tebako.def"), "EXPORTS\n  ruby_api\n")
+      File.write(File.join(ruby_src, "ruby.obj"), "object-bytes")
+
+      Dir.chdir(root) do
+        system("tar -czf #{tarball} -C pass2-tree tfs-ruby-3.3.7-src") || raise("tar failed")
+      end
+    end
+
+    it "replaces only content-differing files and preserves build artifacts" do
+      same_mtime = File.mtime(File.join(ruby_src, "main.c"))
+      sleep 0.05
+      described_class.overlay(tarball, Digest::SHA256.file(tarball).hexdigest, ruby_src, work_dir)
+
+      expect(File.read(File.join(ruby_src, "cygwin", "GNUmakefile.in"))).to eq("pass2 variant\n")
+      expect(File.mtime(File.join(ruby_src, "main.c"))).to eq(same_mtime)
+      expect(File.file?(File.join(ruby_src, "tebako.def"))).to be(true)
+      expect(File.binread(File.join(ruby_src, "ruby.obj"))).to eq("object-bytes")
+    end
+
+    it "rejects a tarball whose sha256 does not match" do
+      expect { described_class.overlay(tarball, "0" * 64, ruby_src, work_dir) }
+        .to raise_error(TebakoRuntimeBuilder::Error, /expected SHA256/)
     end
   end
 end

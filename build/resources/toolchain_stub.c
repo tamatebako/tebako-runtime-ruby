@@ -26,6 +26,8 @@
 #error "TEBAKO_STUB_MOUNT_POINT must be defined (the memfs mount point)"
 #endif
 
+#include <sys/types.h>
+
 int tebako_main(int *argc, char ***argv)
 {
     (void)argc;
@@ -46,4 +48,15 @@ int tebako_is_running_miniruby(void)
 const char *tebako_original_pwd(void)
 {
     return "";
+}
+
+/* Referenced by the ruby < 3.3 msys builds (the real driver provides it
+   under RB_W32_PRE_33); harmless elsewhere */
+ssize_t rb_w32_pread(int fd, void *buf, size_t size, size_t offset)
+{
+    (void)fd;
+    (void)buf;
+    (void)size;
+    (void)offset;
+    return -1;
 }
