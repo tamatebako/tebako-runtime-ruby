@@ -122,6 +122,9 @@ module TebakoRuntimeBuilder
         FileUtils.rm_rf(stash_dir, secure: true)
         FileUtils.mkdir_p(stash_dir)
         FileUtils.cp_r "#{data_src_dir}/.", stash_dir
+        bin = File.join(data_src_dir, "bin")
+        installed = Dir.exist?(bin) ? Dir.children(bin).first(8).join(", ") : "(no bin dir)"
+        puts "   ... toolchain installed: #{installed}"
 
         # The stub driver served the toolchain link; the final relink must
         # resolve -ltebako-fs to the real library in the CMake binary dir.

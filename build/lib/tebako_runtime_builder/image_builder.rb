@@ -102,6 +102,14 @@ module TebakoRuntimeBuilder
         puts "   ... strings failed: #{e.message}"
       end
 
+      # Host-side snapshot of the recreated environment: definitive when the
+      # toolchain ruby is too broken to even run the probe (or is absent).
+      puts "   ... host view of the packaging environment:"
+      [@tbd, File.join(@data_src_dir, "lib", "ruby"),
+       File.join(@data_src_dir, "lib", "ruby", @ruby_ver.api_version)].each do |d|
+        puts "     #{d}: #{Dir.exist?(d) ? Dir.children(d).first(12).join(", ") : "(missing)"}"
+      end
+
       probe = <<~RUBY
         puts $LOAD_PATH
         begin
@@ -118,7 +126,10 @@ module TebakoRuntimeBuilder
           puts e.backtrace.first(8)
         end
       RUBY
-      probe_out = TebakoRuntimeBuilder::BuildHelpers.run_with_capture([ruby, "-e", probe], env: deploy_env)
+      # --disable-gems: a broken rbconfig otherwise kills the interpreter in
+      # gem_prelude before the probe prints anything. capture2e directly (not
+      # run_with_capture): a failing probe must report, not raise.
+      probe_out, = Open3.capture2e(deploy_env, ruby, "--disable-gems", "-e", probe)
       if probe_out.include?("RUBYGEMS-OK")
         puts "   ... toolchain ruby loads rubygems fine"
         return
@@ -172,14 +183,17 @@ module TebakoRuntimeBuilder
     # comes out doubled: <exe dir>D:/a/.../o/s/lib/... Ship the real lib
     # dirs via RUBYLIB -- prepended ahead of the compiled entries -- so
     # rbconfig/rubygems/stdlib resolve. Entries are joined with ";" because
-    # the consumer is a win32 ruby.
+    # the consumer is a win32 ruby. The arch dir is located through the
+    # installed rbconfig.rb: lib/ruby/<api> also holds plain stdlib dirs
+    # (bigdecimal/, rubygems/, ...), so a directory scan cannot pick it out.
     def toolchain_rubylib # rubocop:disable Metrics
       lib_ruby = File.join(@data_src_dir, "lib", "ruby")
       api = @ruby_ver.api_version
-      arch = Dir.children(File.join(lib_ruby, api))
-                .find { |e| File.directory?(File.join(lib_ruby, api, e)) }
+      rbconfig = Dir.glob(File.join(lib_ruby, api, "*", "rbconfig.rb")).first
+      arch = rbconfig ? File.basename(File.dirname(rbconfig)) : nil
       roots = %w[site_ruby vendor_ruby].map { |b| File.join(lib_ruby, b, api) } << File.join(lib_ruby, api)
-      roots.flat_map { |r| [r, File.join(r, arch)] }.select { |d| File.directory?(d) }.join(";")
+      roots.flat_map { |r| arch ? [r, File.join(r, arch)] : [r] }
+           .select { |d| File.directory?(d) }.join(";")
     end
 
     def install_gem(name, ver = nil)
