@@ -51,7 +51,9 @@ const char *tebako_original_pwd(void)
 }
 
 /* Referenced by the ruby < 3.3 msys builds (the real driver provides it
-   under RB_W32_PRE_33); harmless elsewhere */
+   under RB_W32_PRE_33); ruby >= 3.3 defines it in win32.c, so it is
+   compiled in only for the older lines */
+#ifdef RB_W32_PRE_33
 ssize_t rb_w32_pread(int fd, void *buf, size_t size, size_t offset)
 {
     (void)fd;
@@ -60,3 +62,4 @@ ssize_t rb_w32_pread(int fd, void *buf, size_t size, size_t offset)
     (void)offset;
     return -1;
 }
+#endif

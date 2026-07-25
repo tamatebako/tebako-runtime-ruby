@@ -70,7 +70,7 @@ module TebakoRuntimeBuilder
           mlibs = TebakoRuntimeBuilder::Mlibs.new(platform, deps_lib_dir).compute(rv, with_compression: true)
           substitute_tebako_mlibs!(File.join(ruby_source_dir, "template", "Makefile.in"), mlibs)
         end
-        build_toolchain_stub(platform, deps_lib_dir, mount_point, cc)
+        build_toolchain_stub(platform, deps_lib_dir, mount_point, cc, rv)
       end
 
       def postconfigure(ostype, ruby_source_dir, deps_lib_dir, ruby_ver)
@@ -253,13 +253,17 @@ module TebakoRuntimeBuilder
       # <deps_lib_dir>/libtebako-fs.a (the deps lib dir precedes the CMake
       # binary dir in the ruby link flags, so the stub wins the toolchain
       # link; it is removed by the toolchain pass)
-      def build_toolchain_stub(platform, deps_lib_dir, mount_point, cc) # rubocop:disable Metrics/MethodLength
+      def build_toolchain_stub(platform, deps_lib_dir, mount_point, cc, ruby_ver) # rubocop:disable Metrics/MethodLength
         puts "   ... building the toolchain stub libtebako-fs.a"
         FileUtils.mkdir_p(deps_lib_dir)
         obj = File.join(deps_lib_dir, "tebako-toolchain-stub.o")
         lib = File.join(deps_lib_dir, "libtebako-fs.a")
+        defines = ["-DTEBAKO_STUB_MOUNT_POINT=\"#{mount_point}\""]
+        # ruby >= 3.3 defines rb_w32_pread in win32.c; only the older msys
+        # lines need the stub's fallback
+        defines << "-DRB_W32_PRE_33" if platform.msys? && !ruby_ver.ruby33?
         TebakoRuntimeBuilder::BuildHelpers.run_with_capture(
-          [cc, "-c", TOOLCHAIN_STUB_C, "-DTEBAKO_STUB_MOUNT_POINT=\"#{mount_point}\"", "-o", obj]
+          [cc, "-c", TOOLCHAIN_STUB_C, *defines, "-o", obj]
         )
         TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["ar", "rcs", lib, obj])
         if platform.macos?
