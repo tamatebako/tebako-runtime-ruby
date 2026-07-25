@@ -294,12 +294,21 @@ module TebakoRuntimeBuilder
         overlay_src = File.join(work_dir, "overlay-src")
         FileUtils.rm_rf(overlay_src, secure: true)
         FileUtils.mkdir_p(overlay_src)
-        TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["tar", "-xzf", pass2_tarball, "-C", overlay_src])
+        # GNU tar parses 'D:/...' as a remote host on msys; use the /d/...
+        # form there
+        args = ["tar", "-xzf", msys_tar_path(pass2_tarball), "-C", msys_tar_path(overlay_src)]
+        TebakoRuntimeBuilder::BuildHelpers.run_with_capture(args)
         root = Dir.children(overlay_src).map { |child| File.join(overlay_src, child) }
                                         .find { |path| File.directory?(path) }
         raise TebakoRuntimeBuilder::Error.new("overlay tarball carries no source tree", 130) if root.nil?
 
         root
+      end
+
+      def msys_tar_path(path)
+        return path unless TebakoRuntimeBuilder::Platform.new.msys?
+
+        TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["cygpath", "-u", path]).strip
       end
 
       def overlay_differing_files(root, ruby_source_dir)
