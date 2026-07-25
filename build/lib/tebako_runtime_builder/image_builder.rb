@@ -39,7 +39,7 @@ module TebakoRuntimeBuilder
   # (DeployHelper#configure: '@needs_bundler = true unless ruby31?',
   # #update_rubygems: 'return if ruby31?') make the rubygems update and the
   # bundler install no-ops, so they are not carried here.
-  class ImageBuilder
+  class ImageBuilder # rubocop:disable Metrics/ClassLength
     def initialize(platform, ruby_ver, stash_dir, data_src_dir, data_pre_dir, data_bin_file, deps_bin_dir) # rubocop:disable Metrics/ParameterLists
       @platform = platform
       @ruby_ver = ruby_ver
