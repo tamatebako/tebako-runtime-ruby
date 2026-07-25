@@ -128,8 +128,9 @@ module TebakoRuntimeBuilder
         puts "   ... toolchain installed: #{installed}"
         unless Dir.exist?(bin)
           # make install exited 0 yet installed nothing -- dump the evidence
-          puts "   ... captured 'make install' output (tail):"
-          puts install_out.lines.last(30)
+          puts "   ... #{data_src_dir} top level: #{Dir.children(data_src_dir).join(", ")}"
+          puts "   ... captured 'make install' section headers:"
+          puts install_out.lines.grep(/installing|Installed|skipping|skipped|unknown install|error|cannot/i).first(80)
           puts "   ... rewritten rbconfig prefix lines:"
           puts File.readlines(rbconfig).grep(/CONFIG\["prefix"\]|CONFIG\["RUBY_EXEC_PREFIX"\]|DESTDIR =/)
         end
