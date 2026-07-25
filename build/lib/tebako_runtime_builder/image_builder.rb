@@ -90,8 +90,16 @@ module TebakoRuntimeBuilder
     # rubygems/gem_runner' -- fail loud with the evidence instead.
     def check_toolchain_ruby! # rubocop:disable Metrics/AbcSize,Metrics/MethodLength
       ruby = File.join(@tbd, "ruby#{@platform.exe_suffix}")
-      probe = 'begin; require "rubygems"; puts "RUBYGEMS-OK"; ' \
-              'rescue Exception => e; puts "#{e.class}: #{e.message}"; puts e.backtrace.first(8); exit 3; end'
+      probe = <<~RUBY
+        begin
+          require "rubygems"
+          puts "RUBYGEMS-OK"
+        rescue Exception => e
+          puts "\#{e.class}: \#{e.message}"
+          puts e.backtrace.first(8)
+          exit 3
+        end
+      RUBY
       load_path = TebakoRuntimeBuilder::BuildHelpers.run_with_capture([ruby, "-e", probe])
       if load_path.include?("RUBYGEMS-OK")
         puts "   ... toolchain ruby loads rubygems fine"
