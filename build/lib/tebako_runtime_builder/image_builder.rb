@@ -84,11 +84,14 @@ module TebakoRuntimeBuilder
     end
 
     # The deploy gem commands run the toolchain ruby from the recreated
-    # environment; its compiled-in prefix must point at it (the toolchain
-    # pass rewrites rbconfig.rb and regenerates verconf.h to achieve that).
-    # When it is off -- or the recreated environment is incomplete -- every
-    # stdlib require fails with a misleading 'cannot load such file --
-    # rubygems/gem_runner' -- fail loud with the evidence instead.
+    # environment. On msys/mingw, configure forces LOAD_RELATIVE, so the
+    # toolchain ruby prepends its exe dir to the compiled-in absolute prefix
+    # and every load-path entry comes out doubled (o/sD:/a/.../o/s/lib/...).
+    # deploy_env therefore carries the real lib dirs in RUBYLIB, which lands
+    # ahead of the compiled entries; this gate probes with that same env so
+    # it validates exactly what the deploy pass gets. When stdlib still does
+    # not resolve, every gem command fails with a misleading 'cannot load
+    # such file -- rubygems/gem_runner' -- fail loud with the evidence instead.
     def check_toolchain_ruby! # rubocop:disable Metrics
       ruby = File.join(@tbd, "ruby#{@platform.exe_suffix}")
       begin
@@ -115,7 +118,7 @@ module TebakoRuntimeBuilder
           puts e.backtrace.first(8)
         end
       RUBY
-      probe_out = TebakoRuntimeBuilder::BuildHelpers.run_with_capture([ruby, "-e", probe])
+      probe_out = TebakoRuntimeBuilder::BuildHelpers.run_with_capture([ruby, "-e", probe], env: deploy_env)
       if probe_out.include?("RUBYGEMS-OK")
         puts "   ... toolchain ruby loads rubygems fine"
         return
@@ -154,12 +157,29 @@ module TebakoRuntimeBuilder
     end
 
     def deploy_env
-      {
+      env = {
         "GEM_HOME" => @tgd,
         "GEM_PATH" => @tgd,
         "GEM_SPEC_CACHE" => File.join(@data_src_dir, "spec_cache"),
         "TEBAKO_PASS_THROUGH" => "1"
       }
+      env["RUBYLIB"] = toolchain_rubylib if @platform.msys?
+      env
+    end
+
+    # On msys/mingw the toolchain ruby is always LOAD_RELATIVE (configure
+    # forces it) and its compiled-in prefix is absolute, so its load path
+    # comes out doubled: <exe dir>D:/a/.../o/s/lib/... Ship the real lib
+    # dirs via RUBYLIB -- prepended ahead of the compiled entries -- so
+    # rbconfig/rubygems/stdlib resolve. Entries are joined with ";" because
+    # the consumer is a win32 ruby.
+    def toolchain_rubylib # rubocop:disable Metrics
+      lib_ruby = File.join(@data_src_dir, "lib", "ruby")
+      api = @ruby_ver.api_version
+      arch = Dir.children(File.join(lib_ruby, api))
+                .find { |e| File.directory?(File.join(lib_ruby, api, e)) }
+      roots = %w[site_ruby vendor_ruby].map { |b| File.join(lib_ruby, b, api) } << File.join(lib_ruby, api)
+      roots.flat_map { |r| [r, File.join(r, arch)] }.select { |d| File.directory?(d) }.join(";")
     end
 
     def install_gem(name, ver = nil)
