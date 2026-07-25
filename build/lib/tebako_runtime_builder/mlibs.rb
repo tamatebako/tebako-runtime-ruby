@@ -103,7 +103,9 @@ module TebakoRuntimeBuilder
       "-static-libgcc",          "-static-libstdc++",       "-l:libssl.a",             "-l:libcrypto.a",
       "-l:libz.a",               "-l:libwinpthread.a",      "-lcrypt32",               "-lshlwapi",
       "-lwsock32",               "-liphlpapi",              "-limagehlp",              "-lbcrypt",
-      "-lole32",                 "-loleaut32",              "-luuid",                  "-lws2_32"
+      "-lwsock32",               "-liphlpapi",              "-limagehlp",              "-lbcrypt",
+      "-lole32",                 "-loleaut32",              "-luuid",                  "-lws2_32",
+      "-lpsapi"
     ].freeze
 
     # The libtfs-deps windows package ships the boost static libs under
@@ -159,7 +161,17 @@ module TebakoRuntimeBuilder
 
     def msys_libraries(ruby_ver, with_compression)
       libraries = with_compression ? ["-Wl,-Bstatic"] : []
-      libraries += COMMON_LINUX_LIBRARIES.map { |lib| msys_boost_reference(lib) } + MSYS_LIBRARIES
+      # The dwarfs reader set + codecs go inside a group: miniruby.exe links
+      # with a bare $(MAINLIBS) rule (no group of its own), and GNU ld's
+      # single-pass scan needs it to resolve the circular member refs
+      # (decompressor_registry -> compression registrar in libdwarfs_common).
+      # COMMON_ARCHIEVE_LIBRARIES adds bz2 (libzip) and the codec set; psapi
+      # covers GetProcessMemoryInfo (libdwarfs_common util.cpp).
+      libraries += ["-Wl,--start-group"] +
+                   COMMON_LINUX_LIBRARIES.map { |lib| msys_boost_reference(lib) } +
+                   COMMON_ARCHIEVE_LIBRARIES +
+                   ["-Wl,--end-group"] +
+                   MSYS_LIBRARIES
       linux_libraries(libraries, ruby_ver, with_compression)
     end
 
