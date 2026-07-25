@@ -85,19 +85,27 @@ module TebakoRuntimeBuilder
     # The deploy gem commands run the toolchain ruby from the recreated
     # environment; its compiled-in prefix must point at it (the toolchain
     # pass rewrites rbconfig.rb and regenerates verconf.h to achieve that).
-    # When it is off, every stdlib require fails with a misleading
-    # 'cannot load such file -- rubygems/gem_runner' -- fail loud with the
-    # evidence instead.
+    # When it is off -- or the recreated environment is incomplete -- every
+    # stdlib require fails with a misleading 'cannot load such file --
+    # rubygems/gem_runner' -- fail loud with the evidence instead.
     def check_toolchain_ruby!
       ruby = File.join(@tbd, "ruby#{@platform.exe_suffix}")
       load_path = TebakoRuntimeBuilder::BuildHelpers.run_with_capture([ruby, "-e", "puts $LOAD_PATH"])
-      return if load_path.include?(@data_src_dir)
+      missing = []
+      missing << "$LOAD_PATH lacks #{@data_src_dir}" unless load_path.include?(@data_src_dir)
+      api = @ruby_ver.api_version
+      rubygems_rb = File.join(@data_src_dir, "lib", "ruby", api, "rubygems.rb")
+      unless File.file?(rubygems_rb)
+        lib_root = File.join(@data_src_dir, "lib", "ruby", api)
+        listing = Dir.exist?(lib_root) ? Dir.children(lib_root).first(20) : ["<missing #{lib_root}>"]
+        missing << "#{rubygems_rb} is absent; #{lib_root} contains: #{listing.join(", ")}"
+      end
+      return if missing.empty?
 
-      puts "   ... toolchain ruby load path does NOT contain #{@data_src_dir}:"
+      puts "   ... toolchain environment is broken:"
       puts load_path
-      raise TebakoRuntimeBuilder::Error.new(
-        "toolchain ruby compiled-in prefix is wrong (expected #{@data_src_dir} in $LOAD_PATH)", 130
-      )
+      missing.each { |item| puts "   ... #{item}" }
+      raise TebakoRuntimeBuilder::Error.new(missing.join("; "), 130)
     end
 
     def deploy_env
