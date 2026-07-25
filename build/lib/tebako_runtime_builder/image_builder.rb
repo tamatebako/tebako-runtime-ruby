@@ -74,11 +74,30 @@ module TebakoRuntimeBuilder
     def deploy(stub_dir)
       puts "-- Running deploy script"
 
+      check_toolchain_ruby!
       TebakoRuntimeBuilder::BuildHelpers.with_env(deploy_env) do
         install_gem("tebako-runtime")
         deploy_stub(stub_dir)
       end
       TebakoRuntimeBuilder::Stripper.strip(@platform, @data_src_dir)
+    end
+
+    # The deploy gem commands run the toolchain ruby from the recreated
+    # environment; its compiled-in prefix must point at it (the toolchain
+    # pass rewrites rbconfig.rb and regenerates verconf.h to achieve that).
+    # When it is off, every stdlib require fails with a misleading
+    # 'cannot load such file -- rubygems/gem_runner' -- fail loud with the
+    # evidence instead.
+    def check_toolchain_ruby!
+      ruby = File.join(@tbd, "ruby#{@platform.exe_suffix}")
+      load_path = TebakoRuntimeBuilder::BuildHelpers.run_with_capture([ruby, "-e", "puts $LOAD_PATH"])
+      return if load_path.include?(@data_src_dir)
+
+      puts "   ... toolchain ruby load path does NOT contain #{@data_src_dir}:"
+      puts load_path
+      raise TebakoRuntimeBuilder::Error.new(
+        "toolchain ruby compiled-in prefix is wrong (expected #{@data_src_dir} in $LOAD_PATH)", 130
+      )
     end
 
     def deploy_env
