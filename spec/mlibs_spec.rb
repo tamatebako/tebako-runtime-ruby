@@ -62,6 +62,35 @@ RSpec.describe TebakoRuntimeBuilder::Mlibs do
     it "carries the windows system libs" do
       expect(mlibs.compute(ruby_ver)).to include("-lws2_32")
     end
+
+    context "with tagged boost archives in the vcpkg triplet" do
+      subject(:mlibs) do
+        described_class.new(TebakoRuntimeBuilder::Platform.new("x64-mingw-ucrt", "x86_64"),
+                            File.join(root, "deps", "lib"))
+      end
+
+      let(:root) { Dir.mktmpdir }
+
+      before do
+        triplet_lib = File.join(root, "deps", "vcpkg_installed", "x64-mingw-static", "lib")
+        FileUtils.mkdir_p(triplet_lib)
+        FileUtils.touch(File.join(triplet_lib, "libboost_filesystem-gcc16-mt-x64-1_90.a"))
+        FileUtils.touch(File.join(triplet_lib, "libboost_chrono-gcc16-mt-x64-1_90.a"))
+      end
+
+      after do
+        FileUtils.remove_entry(root)
+      end
+
+      it "resolves the boost references to the tagged archives by full path" do
+        triplet_lib = File.join(root, "deps", "vcpkg_installed", "x64-mingw-static", "lib")
+        result = mlibs.compute(ruby_ver)
+        expect(result).to include("#{triplet_lib}/libboost_filesystem-gcc16-mt-x64-1_90.a")
+        expect(result).to include("#{triplet_lib}/libboost_chrono-gcc16-mt-x64-1_90.a")
+        expect(result).not_to include("-l:libboost_filesystem.a")
+        expect(result).not_to include("-l:libboost_chrono.a")
+      end
+    end
   end
 
   context "on darwin" do

@@ -106,6 +106,13 @@ module TebakoRuntimeBuilder
       "-lole32",                 "-loleaut32",              "-luuid",                  "-lws2_32"
     ].freeze
 
+    # The libtfs-deps windows package ships the boost static libs under
+    # toolset/version-tagged names (libboost_filesystem-gcc16-mt-x64-1_90.a),
+    # so the plain -l:libboost_*.a references in COMMON_LINUX_LIBRARIES do
+    # not resolve on msys; they are globbed by full path instead (darwin
+    # style) to stay independent of the tag drift
+    MSYS_BOOST_LIBS = ["boost_filesystem", "boost_chrono"].freeze
+
     # prefix_resolver maps a Homebrew package name to its prefix (darwin);
     # injectable so the list computation is spec-able off macOS
     def initialize(platform, deps_lib_dir, prefix_resolver: nil)
@@ -152,8 +159,20 @@ module TebakoRuntimeBuilder
 
     def msys_libraries(ruby_ver, with_compression)
       libraries = with_compression ? ["-Wl,-Bstatic"] : []
-      libraries += COMMON_LINUX_LIBRARIES + MSYS_LIBRARIES
+      libraries += COMMON_LINUX_LIBRARIES.map { |lib| msys_boost_reference(lib) } + MSYS_LIBRARIES
       linux_libraries(libraries, ruby_ver, with_compression)
+    end
+
+    # Resolve the boost archive references in COMMON_LINUX_LIBRARIES to the
+    # actual (tagged) file in the vcpkg triplet lib dir on msys; anything
+    # else passes through unchanged. An unresolved boost ref falls back to
+    # the plain -l: form so a genuine absence fails loudly at link time.
+    def msys_boost_reference(lib)
+      name = MSYS_BOOST_LIBS.find { |boost| lib == "-l:lib#{boost}.a" }
+      return lib if name.nil?
+
+      vcpkg_lib_dir = Dir.glob(File.join(@deps_lib_dir, "..", "vcpkg_installed", "*", "lib")).min
+      Dir.glob(File.join(vcpkg_lib_dir.to_s, "lib#{name}*.a")).min || lib
     end
 
     def process_brew_libs!(libs, brew_libs)
