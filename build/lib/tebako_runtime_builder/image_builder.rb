@@ -133,6 +133,11 @@ module TebakoRuntimeBuilder
         puts "   ... verconf.h defines:"
         puts File.readlines(verconf).grep(/RUBY_EXEC_PREFIX|RUBY_LIB_PREFIX/)
       end
+      tree_rbconfig = File.join(@deps_bin_dir, "..", "src", "_ruby_#{@ruby_ver.ruby_version}", "rbconfig.rb")
+      if File.file?(tree_rbconfig)
+        puts "   ... build-tree rbconfig prefix lines (#{tree_rbconfig}):"
+        puts File.readlines(tree_rbconfig).grep(/CONFIG\["prefix"\]|CONFIG\["RUBY_EXEC_PREFIX"\]|TOPDIR|DESTDIR =/)
+      end
       arch_rbconfig = Dir.glob(File.join(@data_src_dir, "lib", "ruby", api, "*", "rbconfig.rb")).first
       if arch_rbconfig
         puts "   ... installed rbconfig prefix lines (#{arch_rbconfig}):"
