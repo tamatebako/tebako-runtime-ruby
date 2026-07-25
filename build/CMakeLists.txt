@@ -179,6 +179,13 @@ if ("-${RUBY_VER}" STREQUAL "-" OR "-${RUBY_HASH}" STREQUAL "-" OR "-${RUBY_TARB
   message(FATAL_ERROR "Ruby version, source tarball and its SHA256 must be specified (RUBY_VER, RUBY_TARBALL, RUBY_HASH)")
 endif()
 
+# msys consumes the two-pass scenario source: the pass-1 tarball drives the
+# main tree (toolchain build); the pass-2 tree (final-build GNUmakefile.in
+# variant) is overlaid after the toolchain stage.
+if(IS_MSYS AND ("-${RUBY_TARBALL_P2}" STREQUAL "-" OR "-${RUBY_HASH_P2}" STREQUAL "-"))
+  message(FATAL_ERROR "msys builds need the pass-2 source tarball and its SHA256 (RUBY_TARBALL_P2, RUBY_HASH_P2)")
+endif()
+
 set(RUBY_PRJ _ruby_${RUBY_VER})
 set(RUBY_SOURCE_DIR ${DEPS}/src/${RUBY_PRJ})
 set(RUBY_BINARY_DIR ${DEPS}/src/${RUBY_PRJ})
@@ -457,8 +464,17 @@ message(STATUS "libyaml Ruby option='${LIBYAML_RUBY_OPTION}'")
 #   prepare       -- substitute @TEBAKO_MLIBS@ in template/Makefile.in and
 #                    build the stub libtebako-fs.a for the toolchain link
 #   postconfigure -- substitute S["MAINLIBS"] in the generated config.status
-#   toolchain     -- make + make install, stash the pristine environment,
-#                    drop the stub libtebako-fs.a
+#   toolchain     -- make + make install, stash the pristine environment
+#   overlay       -- (msys only) lay the pass-2 source tree onto the built
+#                    pass-1 tree, then re-run prepare for the substituted
+#                    files the overlay restored
+set(RUBY_PASS2_COMMANDS "")
+if(IS_MSYS)
+  set(RUBY_PASS2_COMMANDS
+    COMMAND ${RUBY_INTERP} ${CMAKE_SOURCE_DIR}/tools/build_pass.rb overlay ${RUBY_TARBALL_P2} ${RUBY_HASH_P2} ${RUBY_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR}
+    COMMAND ${RUBY_INTERP} ${CMAKE_SOURCE_DIR}/tools/build_pass.rb prepare ${OSTYPE_TXT} ${RUBY_SOURCE_DIR} ${DEPS_LIB_DIR} ${RUBY_VER} ${FS_MOUNT_POINT} "${CMAKE_C_COMPILER}"
+  )
+endif()
 ExternalProject_Add(${RUBY_PRJ}
   PREFIX ${DEPS}
   URL ${RUBY_TARBALL}
@@ -484,6 +500,7 @@ ExternalProject_Add(${RUBY_PRJ}
                                                         LIBS=\"${RUBY_LIBS}\""
   COMMAND ${RUBY_INTERP} ${CMAKE_SOURCE_DIR}/tools/build_pass.rb postconfigure ${OSTYPE_TXT} ${RUBY_SOURCE_DIR} ${DEPS_LIB_DIR} ${RUBY_VER}
   COMMAND ${RUBY_INTERP} ${CMAKE_SOURCE_DIR}/tools/build_pass.rb toolchain ${RUBY_SOURCE_DIR} ${DATA_SRC_DIR} ${RUBY_STASH_DIR} ${DEPS_LIB_DIR}
+  ${RUBY_PASS2_COMMANDS}
   INSTALL_COMMAND  ""
 )
 
@@ -505,7 +522,7 @@ set(CMAKE_CXX_EXTENSIONS   OFF)
 # Packaged filesystem
 
 add_custom_target(packaged_filesystem
-  COMMAND ${RUBY_INTERP} ${CMAKE_SOURCE_DIR}/tools/build_pass.rb deploy ${RUBY_VER} ${RUBY_STASH_DIR} ${DATA_SRC_DIR} ${DATA_PRE_DIR} ${DATA_BIN_FILE} ${GEN_DIR}/local ${DEPS_BIN_DIR}
+  COMMAND ${RUBY_INTERP} ${CMAKE_SOURCE_DIR}/tools/build_pass.rb deploy ${RUBY_VER} ${RUBY_STASH_DIR} ${DATA_SRC_DIR} ${DATA_PRE_DIR} ${DATA_BIN_FILE} ${GEN_DIR}/local ${DEPS_BIN_DIR} ${RUBY_SOURCE_DIR} ${RUNTIME_NAME}
   DEPENDS setup
   BYPRODUCTS ${DATA_BIN_FILE}
 )

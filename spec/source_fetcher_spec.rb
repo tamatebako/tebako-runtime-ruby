@@ -59,4 +59,70 @@ RSpec.describe TebakoRuntimeBuilder::SourceFetcher do
   it "names assets per the tamatebako/ruby release contract" do
     expect(fetcher.asset_name("4.0.6")).to eq("tfs-ruby-4.0.6-src.tar.gz")
   end
+
+  describe ".scenario_asset_names" do
+    it "resolves the unsuffixed linux-gnu scenario for gnu and macos" do
+      expect(described_class.scenario_asset_names("3.3.7",
+                                                  TebakoRuntimeBuilder::Platform.new("x86_64-linux-gnu", "x86_64")))
+        .to eq(["tfs-ruby-3.3.7-src.tar.gz"])
+      expect(described_class.scenario_asset_names("3.3.7",
+                                                  TebakoRuntimeBuilder::Platform.new("arm64-darwin23", "arm64")))
+        .to eq(["tfs-ruby-3.3.7-src.tar.gz"])
+    end
+
+    it "resolves the musl scenario for linux-musl" do
+      expect(described_class.scenario_asset_names("3.3.7",
+                                                  TebakoRuntimeBuilder::Platform.new("x86_64-linux-musl", "x86_64")))
+        .to eq(["tfs-ruby-3.3.7-src-linux-musl.tar.gz"])
+    end
+
+    it "resolves the two-pass msys scenario for msys/mingw" do
+      expect(described_class.scenario_asset_names("3.3.7",
+                                                  TebakoRuntimeBuilder::Platform.new("x64-mingw-ucrt", "x86_64")))
+        .to eq(["tfs-ruby-3.3.7-src-msys-pass1.tar.gz", "tfs-ruby-3.3.7-src-msys-pass2.tar.gz"])
+    end
+  end
+
+  describe "#fetch_assets" do
+    before do
+      %w[tfs-ruby-3.3.7-src-linux-musl.tar.gz tfs-ruby-3.3.7-src-msys-pass1.tar.gz
+         tfs-ruby-3.3.7-src-msys-pass2.tar.gz].each do |name|
+        File.binwrite(File.join(mirror_dir, name), "content-of-#{name}")
+      end
+      File.write(File.join(mirror_dir, "SHA256SUMS"),
+                 ["#{sha256}  tfs-ruby-3.3.7-src.tar.gz",
+                  "#{Digest::SHA256.hexdigest("content-of-tfs-ruby-3.3.7-src-linux-musl.tar.gz")}  " \
+                  "tfs-ruby-3.3.7-src-linux-musl.tar.gz",
+                  "#{Digest::SHA256.hexdigest("content-of-tfs-ruby-3.3.7-src-msys-pass1.tar.gz")}  " \
+                  "tfs-ruby-3.3.7-src-msys-pass1.tar.gz",
+                  "#{Digest::SHA256.hexdigest("content-of-tfs-ruby-3.3.7-src-msys-pass2.tar.gz")}  " \
+                  "tfs-ruby-3.3.7-src-msys-pass2.tar.gz"].join("\n") << "\n")
+    end
+
+    it "fetches the single musl scenario asset, verified" do
+      platform = TebakoRuntimeBuilder::Platform.new("x86_64-linux-musl", "x86_64")
+      assets = fetcher.fetch_assets("3.3.7", platform)
+      expect(assets.length).to eq(1)
+      path, sum = assets[0]
+      expect(sum).to eq(Digest::SHA256.hexdigest("content-of-tfs-ruby-3.3.7-src-linux-musl.tar.gz"))
+      expect(File.binread(path)).to eq("content-of-tfs-ruby-3.3.7-src-linux-musl.tar.gz")
+    end
+
+    it "fetches both msys pass trees in order, each verified" do
+      platform = TebakoRuntimeBuilder::Platform.new("x64-mingw-ucrt", "x86_64")
+      assets = fetcher.fetch_assets("3.3.7", platform)
+      expect(assets.length).to eq(2)
+      expect(assets.map { |path,| File.basename(path) })
+        .to eq(["tfs-ruby-3.3.7-src-msys-pass1.tar.gz", "tfs-ruby-3.3.7-src-msys-pass2.tar.gz"])
+      expect(File.binread(assets[0][0])).to eq("content-of-tfs-ruby-3.3.7-src-msys-pass1.tar.gz")
+      expect(File.binread(assets[1][0])).to eq("content-of-tfs-ruby-3.3.7-src-msys-pass2.tar.gz")
+    end
+
+    it "fetches the unsuffixed asset for gnu" do
+      platform = TebakoRuntimeBuilder::Platform.new("x86_64-linux-gnu", "x86_64")
+      path, sum = fetcher.fetch_assets("3.3.7", platform)[0]
+      expect(sum).to eq(sha256)
+      expect(File.binread(path)).to eq(tarball_content)
+    end
+  end
 end

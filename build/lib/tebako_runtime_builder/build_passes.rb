@@ -25,6 +25,7 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
+require "digest"
 require "fileutils"
 
 module TebakoRuntimeBuilder
@@ -79,7 +80,7 @@ module TebakoRuntimeBuilder
         substitute_config_status!(File.join(ruby_source_dir, "config.status"), platform, mlibs)
       end
 
-      def toolchain(ruby_source_dir, data_src_dir, stash_dir, deps_lib_dir) # rubocop:disable Metrics/MethodLength
+      def toolchain(ruby_source_dir, data_src_dir, stash_dir, deps_lib_dir) # rubocop:disable Metrics/AbcSize,Metrics/MethodLength
         puts "-- Running toolchain script"
 
         platform = TebakoRuntimeBuilder::Platform.new
@@ -117,23 +118,47 @@ module TebakoRuntimeBuilder
         FileUtils.cp_r "#{data_src_dir}/.", stash_dir
 
         # The stub driver served the toolchain link; the final relink must
-        # resolve -ltebako-fs to the real library in the CMake binary dir
-        FileUtils.rm_f(File.join(deps_lib_dir, "libtebako-fs.a"))
+        # resolve -ltebako-fs to the real library in the CMake binary dir.
+        # On msys the pass-2 overlay build still links against the stub, so
+        # it is removed by the finalize pass there instead.
+        FileUtils.rm_f(File.join(deps_lib_dir, "libtebako-fs.a")) unless platform.msys?
       end
 
-      def deploy(ruby_ver, stash_dir, data_src_dir, data_pre_dir, data_bin_file, stub_dir, deps_bin_dir) # rubocop:disable Metrics/ParameterLists
+      # msys two-pass flow: overlay the pass-2 source tree (carrying the
+      # final-build GNUmakefile.in variant) onto the built pass-1 tree,
+      # replicating the gem's "pass2 patches onto the same tree" semantics
+      # without re-deriving the pass split. Only files whose content differs
+      # (today: cygwin/GNUmakefile.in alone) are replaced -- fresh mtimes, so
+      # make regenerates exactly what the pass change affects; pass-1 build
+      # artifacts (objects, the generated implib/exp/def files) are left
+      # alone. The tarball hash is re-verified before extraction.
+      def overlay(pass2_tarball, pass2_sha256, ruby_source_dir, work_dir)
+        puts "-- Running overlay script (msys pass-2 tree)"
+
+        verify_tarball!(pass2_tarball, pass2_sha256)
+        root = extract_overlay(pass2_tarball, work_dir)
+        puts "   ... overlaid #{overlay_differing_files(root, ruby_source_dir)} pass-2 file(s) onto #{ruby_source_dir}"
+      end
+
+      def deploy(ruby_ver, stash_dir, data_src_dir, data_pre_dir, data_bin_file, stub_dir, deps_bin_dir, # rubocop:disable Metrics/ParameterLists
+                 ruby_source_dir = nil, runtime_name = nil)
         rv = TebakoRuntimeBuilder::RubyVersion.new(ruby_ver)
         platform = TebakoRuntimeBuilder::Platform.new
         TebakoRuntimeBuilder::ImageBuilder.new(platform, rv, stash_dir, data_src_dir, data_pre_dir,
                                                data_bin_file, deps_bin_dir).build(stub_dir)
+        create_implib(ruby_source_dir, data_src_dir, runtime_name, rv) if platform.msys?
       end
 
-      def finalize(ostype, ruby_source_dir, output, ruby_ver, patchelf = nil) # rubocop:disable Metrics/AbcSize,Metrics/MethodLength
+      def finalize(ostype, ruby_source_dir, output, ruby_ver, deps_lib_dir, patchelf = nil) # rubocop:disable Metrics/AbcSize,Metrics/MethodLength,Metrics/ParameterLists
         puts "-- Running finalize script"
 
         platform = TebakoRuntimeBuilder::Platform.new(ostype)
         rv = TebakoRuntimeBuilder::RubyVersion.new(ruby_ver)
         rbconfig = File.join(ruby_source_dir, "rbconfig.rb")
+        # Drop the stub driver (the toolchain pass removed it already
+        # everywhere except msys): the relink must resolve -ltebako-fs to the
+        # real library in the CMake binary dir
+        FileUtils.rm_f(File.join(deps_lib_dir, "libtebako-fs.a"))
         Dir.chdir(ruby_source_dir) do
           # Flip the generated rbconfig.rb back to the memfs mount point so
           # the final ruby program links with the packaged load paths
@@ -242,6 +267,66 @@ module TebakoRuntimeBuilder
 
         params = [patchelf, "--remove-needed-version", "libpthread.so.0", "GLIBC_PRIVATE", src_name]
         TebakoRuntimeBuilder::BuildHelpers.run_with_capture(params)
+      end
+
+      def verify_tarball!(tarball, sha256)
+        actual = Digest::SHA256.file(tarball).hexdigest
+        return if actual == sha256
+
+        raise TebakoRuntimeBuilder::Error.new(
+          "#{File.basename(tarball)}: expected SHA256 #{sha256}, got #{actual}", 121
+        )
+      end
+
+      def extract_overlay(pass2_tarball, work_dir)
+        overlay_src = File.join(work_dir, "overlay-src")
+        FileUtils.rm_rf(overlay_src, secure: true)
+        FileUtils.mkdir_p(overlay_src)
+        TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["tar", "-xzf", pass2_tarball, "-C", overlay_src])
+        root = Dir.children(overlay_src).map { |child| File.join(overlay_src, child) }
+                                        .find { |path| File.directory?(path) }
+        raise TebakoRuntimeBuilder::Error.new("overlay tarball carries no source tree", 130) if root.nil?
+
+        root
+      end
+
+      def overlay_differing_files(root, ruby_source_dir)
+        replaced = 0
+        Dir.glob(File.join(root, "**", "*"), File::FNM_DOTMATCH).each do |src|
+          next unless File.file?(src)
+
+          dest = File.join(ruby_source_dir, src.delete_prefix("#{root}/"))
+          next if File.file?(dest) && FileUtils.compare_file(src, dest)
+
+          FileUtils.mkdir_p(File.dirname(dest))
+          FileUtils.cp(src, dest)
+          replaced += 1
+        end
+        replaced
+      end
+
+      # msys only: the import library the packaged mkmf-driven gem extensions
+      # link against (gem Packager.create_implib). tebako.def was generated
+      # by the pass-1 build's dlltool exp rule; the DllMain entry is dropped
+      # from the per-package def file.
+      def create_implib(src_dir, data_src_dir, app_name, ruby_ver)
+        a_name = File.basename(app_name, ".*")
+        puts "   ... creating Windows import library for #{a_name}.exe"
+        def_file = create_def(src_dir, a_name)
+        params = ["dlltool", "-d", def_file, "-D", "#{a_name}.exe", "--output-lib",
+                  File.join(data_src_dir, "lib", "libx64-ucrt-ruby#{ruby_ver.lib_version}.a")]
+        TebakoRuntimeBuilder::BuildHelpers.run_with_capture(params)
+      end
+
+      def create_def(src_dir, app_name)
+        def_file = File.join(src_dir, "#{app_name}.def")
+        File.open(def_file, "w") do |file|
+          file.puts "LIBRARY #{app_name}.exe"
+          File.readlines(File.join(src_dir, "tebako.def")).each do |line|
+            file.puts line unless line.include?("DllMain")
+          end
+        end
+        def_file
       end
 
       # With the common.mk exts.mk/extinit.c dependency present from the

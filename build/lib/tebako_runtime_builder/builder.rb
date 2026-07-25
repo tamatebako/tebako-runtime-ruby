@@ -48,10 +48,11 @@ module TebakoRuntimeBuilder
     end
 
     def run
-      tarball, sha256 = fetcher.fetch(@ruby_version)
+      assets = fetcher.fetch_assets(@ruby_version, @platform)
       puts "-- Building tebako runtime for ruby #{@ruby_version} " \
-           "(tebako #{@tebako_version}, #{@platform.host_id})"
-      cmake_configure(tarball, sha256)
+           "(tebako #{@tebako_version}, #{@platform.host_id}, " \
+           "#{assets.map { |path,| File.basename(path) }.join(" + ")})"
+      cmake_configure(assets)
       cmake_build
       finalize
       @output
@@ -89,7 +90,8 @@ module TebakoRuntimeBuilder
       @jobs || @platform.ncores
     end
 
-    def cmake_configure(tarball, sha256) # rubocop:disable Metrics/MethodLength
+    def cmake_configure(assets) # rubocop:disable Metrics/AbcSize,Metrics/MethodLength
+      (tarball, sha256) = assets[0]
       args = ["cmake",
               "-DCMAKE_BUILD_TYPE=Release",
               "-DRUBY_VER:STRING=#{@ruby_version}",
@@ -99,6 +101,10 @@ module TebakoRuntimeBuilder
               "-DDEPS:STRING=#{deps}",
               "-DTEBAKO_VERSION:STRING=#{@tebako_version}",
               "-DLOG_LEVEL:STRING=error"]
+      if assets.length == 2
+        (tarball_p2, sha256_p2) = assets[1]
+        args += ["-DRUBY_TARBALL_P2:STRING=file://#{tarball_p2}", "-DRUBY_HASH_P2:STRING=#{sha256_p2}"]
+      end
       args << "-DREMOVE_GLIBC_PRIVATE=ON" if @patchelf && @platform.linux_gnu?
       args += ["-G", @platform.m_files, "-B", output_folder, "-S", File.join(@repo_root, "build")]
 
@@ -118,7 +124,8 @@ module TebakoRuntimeBuilder
     def finalize
       FileUtils.mkdir_p(File.dirname(output))
       patchelf = @patchelf && @platform.linux_gnu? ? File.join(deps, "bin", "patchelf") : nil
-      TebakoRuntimeBuilder::BuildPasses.finalize(@platform.ostype, ruby_source_dir, output, @ruby_version, patchelf)
+      TebakoRuntimeBuilder::BuildPasses.finalize(@platform.ostype, ruby_source_dir, output, @ruby_version,
+                                                 File.join(deps, "lib"), patchelf)
     end
   end
 end

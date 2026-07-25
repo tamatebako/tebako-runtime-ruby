@@ -78,23 +78,37 @@ begin
     #       ARGV[5] -- DATA_BIN_FILE
     #       ARGV[6] -- STUB_DIR
     #       ARGV[7] -- DEPS_BIN_DIR
-    unless ARGV.length == 8
+    #       ARGV[8] -- RUBY_SOURCE_DIR (msys implib)
+    #       ARGV[9] -- RUNTIME_NAME (msys implib)
+    unless ARGV.length == 10
       raise TebakoRuntimeBuilder::Error,
-            "build_pass deploy command expects 8 arguments, #{ARGV.length} has been provided."
+            "build_pass deploy command expects 10 arguments, #{ARGV.length} has been provided."
     end
-    TebakoRuntimeBuilder::BuildPasses.deploy(ARGV[1], ARGV[2], ARGV[3], ARGV[4], ARGV[5], ARGV[6], ARGV[7])
+    TebakoRuntimeBuilder::BuildPasses.deploy(ARGV[1], ARGV[2], ARGV[3], ARGV[4], ARGV[5], ARGV[6], ARGV[7],
+                                             ARGV[8], ARGV[9])
+  when "overlay"
+    #       ARGV[1] -- PASS2_TARBALL
+    #       ARGV[2] -- PASS2_SHA256
+    #       ARGV[3] -- RUBY_SOURCE_DIR
+    #       ARGV[4] -- WORK_DIR
+    unless ARGV.length == 5
+      raise TebakoRuntimeBuilder::Error,
+            "build_pass overlay command expects 5 arguments, #{ARGV.length} has been provided."
+    end
+    TebakoRuntimeBuilder::BuildPasses.overlay(ARGV[1], ARGV[2], ARGV[3], ARGV[4])
   when "finalize"
     #       ARGV[1] -- OSTYPE
     #       ARGV[2] -- RUBY_SOURCE_DIR
     #       ARGV[3] -- OUTPUT
     #       ARGV[4] -- RUBY_VER
-    #       ARGV[5] -- patchelf path (optional, "none" to skip)
-    unless [5, 6].include?(ARGV.length)
+    #       ARGV[5] -- DEPS_LIB_DIR
+    #       ARGV[6] -- patchelf path (optional, "none" to skip)
+    unless [6, 7].include?(ARGV.length)
       raise TebakoRuntimeBuilder::Error,
-            "build_pass finalize command expects 5 or 6 arguments, #{ARGV.length} has been provided."
+            "build_pass finalize command expects 6 or 7 arguments, #{ARGV.length} has been provided."
     end
-    patchelf = ARGV[5].nil? || ARGV[5] == "none" ? nil : ARGV[5]
-    TebakoRuntimeBuilder::BuildPasses.finalize(ARGV[1], ARGV[2], ARGV[3], ARGV[4], patchelf)
+    patchelf = ARGV[6].nil? || ARGV[6] == "none" ? nil : ARGV[6]
+    TebakoRuntimeBuilder::BuildPasses.finalize(ARGV[1], ARGV[2], ARGV[3], ARGV[4], ARGV[5], patchelf)
   else
     raise TebakoRuntimeBuilder::Error, "build_pass cannot process #{ARGV[0]} command"
   end
