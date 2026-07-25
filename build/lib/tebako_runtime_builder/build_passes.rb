@@ -141,8 +141,10 @@ module TebakoRuntimeBuilder
       def overlay(pass2_tarball, pass2_sha256, ruby_source_dir, work_dir)
         puts "-- Running overlay script (msys pass-2 tree)"
 
-        verify_tarball!(pass2_tarball, pass2_sha256)
-        root = extract_overlay(pass2_tarball, work_dir)
+        # RUBY_TARBALL_P2 arrives in ExternalProject URL form (file://...)
+        path = pass2_tarball.sub(%r{\Afile://}, "")
+        verify_tarball!(path, pass2_sha256)
+        root = extract_overlay(path, work_dir)
         puts "   ... overlaid #{overlay_differing_files(root, ruby_source_dir)} pass-2 file(s) onto #{ruby_source_dir}"
       end
 
