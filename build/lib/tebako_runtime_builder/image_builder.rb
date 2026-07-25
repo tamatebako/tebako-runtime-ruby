@@ -91,13 +91,22 @@ module TebakoRuntimeBuilder
     # rubygems/gem_runner' -- fail loud with the evidence instead.
     def check_toolchain_ruby! # rubocop:disable Metrics/AbcSize,Metrics/MethodLength
       ruby = File.join(@tbd, "ruby#{@platform.exe_suffix}")
+      begin
+        strings, = Open3.capture2e("strings", ruby)
+        puts "   ... compiled-in paths in #{ruby}:"
+        puts strings.lines.grep(%r{__tebako_memfs__|o/sD:|tebako-runtime-ruby}).first(12)
+      rescue StandardError => e
+        puts "   ... strings failed: #{e.message}"
+      end
+
       probe = <<~RUBY
         puts $LOAD_PATH
-        puts "rbconfig prefix: \#{RbConfig::CONFIG["prefix"]}"
-        puts "rbconfig RUBY_EXEC_PREFIX: \#{RbConfig::CONFIG["RUBY_EXEC_PREFIX"]}"
-        puts "rbconfig rubylibprefix: \#{RbConfig::CONFIG["rubylibprefix"]}"
-        puts "expanded rubylibprefix: \#{RbConfig.expand(RbConfig::CONFIG["rubylibprefix"].to_s)}"
-        puts "rubygems.rb exists in this ruby's view: \#{File.exist?(File.join(#{@data_src_dir.dump}, "lib/ruby/#{@ruby_ver.api_version}/rubygems.rb"))}"
+        begin
+          puts "rbconfig prefix: \#{RbConfig::CONFIG["prefix"] rescue "n/a"}"
+          puts "rbconfig RUBY_EXEC_PREFIX: \#{RbConfig::CONFIG["RUBY_EXEC_PREFIX"] rescue "n/a"}"
+        rescue Exception
+          nil
+        end
         begin
           require "rubygems"
           puts "RUBYGEMS-OK"
