@@ -37,7 +37,7 @@ module TebakoRuntimeBuilder
   # SHA256SUMS manifest. Only the asset names and the SHA256SUMS format are
   # part of the contract -- never the repository's internal patch layout.
   class SourceFetcher
-    DEFAULT_RELEASE = "v0.2.8"
+    DEFAULT_RELEASE = "v0.2.9"
     MAX_REDIRECTS = 5
 
     def initialize(cache_dir:, release: DEFAULT_RELEASE, mirror: nil)
