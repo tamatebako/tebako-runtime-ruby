@@ -106,13 +106,18 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
         # The ruby-4.0-linux statx case (tamatebako/ruby 4a04a8a): btime
         # either resolves or comes back unsupported -- never a syscall
         # error. ruby < 4.0 on linux routes File.birthtime through an
-        # unshimmed statx(2) on the memfs path (ENOENT); the shim coverage
-        # starts at 4.0 (tfs_statx), so pend there until it is backported.
-        if smoke.platform.linux? && artifact.ruby_major < 4
-          pending "ruby #{artifact.ruby_version} linux routes File.birthtime through an unshimmed statx(2)"
-        end
+        # unshimmed statx(2) on the memfs path (ENOENT); whether that
+        # surfaces depends on the build host's statx fallback, so treat
+        # the syscall-error shape as a skip (never a hard pend: a pass
+        # flips pending into a failure). Any "fail" on >= 4.0 is a real
+        # regression (tfs_statx covers it).
         expect(run).to be_booted, boot_failure(run)
-        expect(%w[ok unsupported]).to include(run.state("birthtime"))
+        state = run.state("birthtime")
+        if state == "fail" && smoke.platform.linux? && artifact.ruby_major < 4
+          skip "ruby #{artifact.ruby_version} linux routes File.birthtime " \
+               "through an unshimmed statx(2) (ENOENT) — shim coverage starts at 4.0"
+        end
+        expect(%w[ok unsupported]).to include(state)
       end
 
       it "answers File.exist? on present and missing memfs paths" do
