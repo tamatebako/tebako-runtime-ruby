@@ -102,13 +102,11 @@ begin
     #       ARGV[3] -- OUTPUT
     #       ARGV[4] -- RUBY_VER
     #       ARGV[5] -- DEPS_LIB_DIR
-    #       ARGV[6] -- patchelf path (optional, "none" to skip)
-    unless [6, 7].include?(ARGV.length)
+    unless ARGV.length == 6
       raise TebakoRuntimeBuilder::Error,
-            "build_pass finalize command expects 6 or 7 arguments, #{ARGV.length} has been provided."
+            "build_pass finalize command expects 6 arguments, #{ARGV.length} has been provided."
     end
-    patchelf = ARGV[6].nil? || ARGV[6] == "none" ? nil : ARGV[6]
-    TebakoRuntimeBuilder::BuildPasses.finalize(ARGV[1], ARGV[2], ARGV[3], ARGV[4], ARGV[5], patchelf)
+    TebakoRuntimeBuilder::BuildPasses.finalize(ARGV[1], ARGV[2], ARGV[3], ARGV[4], ARGV[5])
   else
     raise TebakoRuntimeBuilder::Error, "build_pass cannot process #{ARGV[0]} command"
   end

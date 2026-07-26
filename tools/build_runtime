@@ -33,7 +33,7 @@
 # Usage:
 #   tools/build_runtime --ruby 3.3.7 [--output PATH] [--prefix DIR]
 #                       [--tebako-version X.Y.Z] [--src-release TAG]
-#                       [--src-mirror URL] [--patchelf] [--jobs N]
+#                       [--src-mirror URL] [--jobs N]
 #                       [--no-image] [--tfs PATH]
 
 require "optparse"
@@ -50,7 +50,6 @@ options = {
   tebako_version: nil,
   src_release: TebakoRuntimeBuilder::SourceFetcher::DEFAULT_RELEASE,
   src_mirror: nil,
-  patchelf: false,
   jobs: nil,
   image: true,
   tfs: nil
@@ -85,7 +84,6 @@ parser = OptionParser.new do |opts|
   opts.on("--src-mirror URL", "Base URL override for the source assets (file:// URLs work)") do |v|
     options[:src_mirror] = v
   end
-  opts.on("-P", "--patchelf", "Remove the GLIBC_PRIVATE reference (linux-gnu only)") { options[:patchelf] = true }
   opts.on("-j", "--jobs N", Integer, "Build parallelism (default: detected core count)") { |v| options[:jobs] = v }
   image_options(opts, options)
   opts.on("-h", "--help", "Print this help") do
@@ -109,7 +107,6 @@ begin
     tebako_version: tebako_version,
     prefix: options[:prefix],
     output: options[:output],
-    patchelf: options[:patchelf],
     jobs: options[:jobs],
     release: options[:src_release],
     mirror: options[:src_mirror],

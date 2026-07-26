@@ -183,7 +183,7 @@ module TebakoRuntimeBuilder
         create_implib(ruby_source_dir, data_src_dir, runtime_name, rv) if platform.msys?
       end
 
-      def finalize(ostype, ruby_source_dir, output, ruby_ver, deps_lib_dir, patchelf = nil) # rubocop:disable Metrics/AbcSize,Metrics/MethodLength,Metrics/ParameterLists
+      def finalize(ostype, ruby_source_dir, output, ruby_ver, deps_lib_dir) # rubocop:disable Metrics/AbcSize,Metrics/MethodLength
         puts "-- Running finalize script"
 
         platform = TebakoRuntimeBuilder::Platform.new(ostype)
@@ -208,7 +208,6 @@ module TebakoRuntimeBuilder
         end
 
         src_name = File.join(ruby_source_dir, "ruby#{platform.exe_suffix}")
-        run_patchelf(src_name, patchelf)
         TebakoRuntimeBuilder::Stripper.strip_file(src_name, output)
         puts "Created tebako runtime package at \"#{output}\""
       end
@@ -298,13 +297,6 @@ module TebakoRuntimeBuilder
           TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["ranlib", "-no_warning_for_no_symbols", "-c", lib])
         end
         FileUtils.rm_f(obj)
-      end
-
-      def run_patchelf(src_name, patchelf)
-        return if patchelf.nil?
-
-        params = [patchelf, "--remove-needed-version", "libpthread.so.0", "GLIBC_PRIVATE", src_name]
-        TebakoRuntimeBuilder::BuildHelpers.run_with_capture(params)
       end
 
       def verify_tarball!(tarball, sha256)

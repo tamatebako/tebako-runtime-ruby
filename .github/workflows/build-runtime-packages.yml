@@ -152,7 +152,7 @@ jobs:
           runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby }}-${{ matrix.env.os }}-${{ matrix.env.arch }}"
           docker run -v ${{github.workspace}}:/mnt/w -t $container \
             /mnt/w/tools/build_runtime --ruby "${{ matrix.ruby }}" --output "/mnt/w/runtime-packages/$runtime" \
-            --prefix /root/.build ${{ matrix.env.os == 'linux-gnu' && '--patchelf' || '' }}
+            --prefix /root/.build
 
       - name: Select XCode
         if: matrix.env.os == 'macos'

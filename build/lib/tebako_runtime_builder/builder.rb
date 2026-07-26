@@ -34,14 +34,13 @@ module TebakoRuntimeBuilder
   # then relink and strip the runtime binary to the output path.
   class Builder
     def initialize(repo_root:, ruby_version:, tebako_version:, prefix:, output:, # rubocop:disable Metrics/ParameterLists,Metrics/MethodLength
-                   patchelf: false, jobs: nil, release: SourceFetcher::DEFAULT_RELEASE, mirror: nil,
+                   jobs: nil, release: SourceFetcher::DEFAULT_RELEASE, mirror: nil,
                    image: true, tfs: nil)
       @repo_root = repo_root
       @ruby_version = ruby_version
       @tebako_version = tebako_version
       @prefix = File.expand_path(prefix)
       @output = output
-      @patchelf = patchelf
       @jobs = jobs
       @release = release
       @mirror = mirror
@@ -115,7 +114,6 @@ module TebakoRuntimeBuilder
         (tarball_p2, sha256_p2) = assets[1]
         args += ["-DRUBY_TARBALL_P2:STRING=file://#{tarball_p2}", "-DRUBY_HASH_P2:STRING=#{sha256_p2}"]
       end
-      args << "-DREMOVE_GLIBC_PRIVATE=ON" if @patchelf && @platform.linux_gnu?
       args += ["-G", @platform.m_files, "-B", output_folder, "-S", File.join(@repo_root, "build")]
 
       FileUtils.mkdir_p(output_folder)
@@ -133,9 +131,8 @@ module TebakoRuntimeBuilder
 
     def finalize
       FileUtils.mkdir_p(File.dirname(output))
-      patchelf = @patchelf && @platform.linux_gnu? ? File.join(deps, "bin", "patchelf") : nil
       TebakoRuntimeBuilder::BuildPasses.finalize(@platform.ostype, ruby_source_dir, output, @ruby_version,
-                                                 File.join(deps, "lib"), patchelf)
+                                                 File.join(deps, "lib"))
     end
 
     # The layout tree the deploy pass assembled (the CMake project's

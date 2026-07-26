@@ -19,7 +19,7 @@ tools/build_runtime --ruby 3.3.7
 
 produces `runtime-packages/tebako-runtime-$(cat VERSION)-3.3.7-<platform>`
 (see `tools/build_runtime --help` for options: output path, build prefix,
-`--src-release`/`--src-mirror` overrides, `--patchelf`, `--jobs`).
+`--src-release`/`--src-mirror` overrides, `--jobs`).
 
 ## Runtime filesystem image (item 30)
 

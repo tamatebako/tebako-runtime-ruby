@@ -53,7 +53,6 @@
 #   -DRUNTIME_NAME:STRING=<runtime package base name, for stub.rb>
 #   [-DDEPS:STRING=<deps folder>]   (default: <binary dir>/deps)
 #   [-DLOG_LEVEL:STRING=error]
-#   [-DREMOVE_GLIBC_PRIVATE=ON]     (linux-gnu: build patchelf)
 
 cmake_minimum_required (VERSION 3.20)
 # Version 3.20 for cmake_path
@@ -114,13 +113,8 @@ option(DWARFS_PRELOAD "Deploy the prebuilt libtfs package from the GitHub releas
 if(DEFINED ENV{DWARFS_PRELOAD})
   set(DWARFS_PRELOAD $ENV{DWARFS_PRELOAD} CACHE BOOL "Deploy the prebuilt libtfs package from the GitHub release" FORCE)
 endif()
-set(WITH_PATCHELF OFF)
-
 if("${OSTYPE_TXT}" MATCHES "^linux-gnu.*")
   set(IS_GNU ON)
-  if(REMOVE_GLIBC_PRIVATE)
-    set(WITH_PATCHELF ON)
-  endif(REMOVE_GLIBC_PRIVATE)
 elseif("${OSTYPE_TXT}" MATCHES "^linux-musl.*")
   set(IS_MUSL ON)
 elseif("${OSTYPE_TXT}" MATCHES "^msys*" OR "${OSTYPE_TXT}" MATCHES "^cygwin*")
@@ -235,8 +229,6 @@ if(__INCBIN_DOWNLOAD)
   message(STATUS "incbin: SHA256 verified (${INCBIN_SHA256})")
 endif()
 
-def_ext_prj_g(PATCHELF "65e14792061c298f1d2bc44becd48a10cbf0bc81")
-
 set(LIBYAML_RUBY_OPTION "")
 set(RUBY_LIBS "")
 if(${RUBY_VER} VERSION_LESS "3.2.0")
@@ -296,7 +288,6 @@ message(STATUS "Target local directory: ${TLD}")
 message(STATUS "Target Gem directory: ${TGD}")
 message(STATUS "FS_MOUNT_POINT: ${FS_MOUNT_POINT}")
 message(STATUS "Building for Win32 Ruby (RB_W32): ${RB_W32}")
-message(STATUS "Removing GLIBC_PRIVATE reference: ${WITH_PATCHELF}")
 
 # ...................................................................
 # Other options
@@ -369,23 +360,6 @@ else(DWARFS_PRELOAD)
     BUILD_BYPRODUCTS ${__LIBTFS}
   )
 endif(DWARFS_PRELOAD)
-
-if(IS_GNU)
-  ExternalProject_Add(${PATCHELF_PRJ}
-    GIT_SHALLOW true
-    PREFIX ${DEPS}
-    GIT_REPOSITORY https://github.com/chitao1234/patchelf.git
-    GIT_TAG ${PATCHELF_WR_TAG}
-    SOURCE_DIR ${PATCHELF_SOURCE_DIR}
-    BINARY_DIR ${PATCHELF_BINARY_DIR}
-    UPDATE_COMMAND ""
-    CONFIGURE_COMMAND ${CMAKE_COMMAND} -E chdir ${PATCHELF_SOURCE_DIR} ./bootstrap.sh
-              COMMAND ${PATCHELF_SOURCE_DIR}/configure
-                  --srcdir=${PATCHELF_SOURCE_DIR}
-                  --prefix=${DEPS}
-    TEST_COMMAND ""
-  )
-endif(IS_GNU)
 
 # ...................................................................
 # Ruby (pre-patched source, tfs-ruby-<version>-src.tar.gz)
@@ -510,9 +484,6 @@ add_custom_target(setup
   ${CMAKE_COMMAND} -E echo "Tebako runtime setup has completed"
   DEPENDS ${DWARFS_WR_PRJ} ${RUBY_PRJ}
 )
-if(IS_GNU)
-  add_dependencies(setup ${PATCHELF_PRJ})
-endif(IS_GNU)
 
 set(CMAKE_CXX_STANDARD      20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
