@@ -45,10 +45,10 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   end
 
   # One manifest entry per runtime PACKAGE (the executable). A sibling
-  # filesystem image (<package>.dwarfs, item 30) is folded into the
+  # filesystem image (<package>.tfs, item 30) is folded into the
   # package's entry as an additive `image` key -- top-level entries stay
   # one-per-package so existing consumers (which match on ruby_version /
-  # platform / filename) are unaffected, and a .dwarfs file never becomes
+  # platform / filename) are unaffected, and a .tfs file never becomes
   # a top-level entry of its own.
   def build_manifest_entries(packages)
     executables, images = packages.partition { |package| !image_file?(package) }
@@ -69,7 +69,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   def categorize(filenames, images:)
     sections = initialize_sections
     filenames.each do |filename|
-      next unless filename.end_with?(".dwarfs") == images
+      next unless filename.end_with?(".tfs") == images
 
       platform = %w[windows macos linux-gnu linux-musl].find { |p| filename.include?(p) }
       sections[platform] << filename if platform
@@ -186,11 +186,11 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   end
 
   def image_file?(package)
-    package.basename.to_s.end_with?(".dwarfs")
+    package.basename.to_s.end_with?(".tfs")
   end
 
   def image_name_for(package)
-    "#{package.basename.to_s.sub(/\.exe\z/, "")}.dwarfs"
+    "#{package.basename.to_s.sub(/\.exe\z/, "")}.tfs"
   end
 
   def parse_package_filename(filename)
@@ -257,7 +257,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     executables, images = packages.partition { |package| !image_file?(package) }
     [
       executables.map { |package| package.basename.to_s.sub(/\.exe\z/, "") },
-      images.map { |package| package.basename.to_s.sub(/\.dwarfs\z/, "") }
+      images.map { |package| package.basename.to_s.sub(/\.tfs\z/, "") }
     ]
   end
 
@@ -272,11 +272,11 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
 
   def report_image_gaps(executables, images)
     (executables - images).sort.each do |name|
-      puts "::warning::Runtime package #{name} has no filesystem image (#{name}.dwarfs); " \
+      puts "::warning::Runtime package #{name} has no filesystem image (#{name}.tfs); " \
            "the package stays consumable but the image-era lean flow cannot use it"
     end
     (images - executables).sort.each do |name|
-      puts "::warning::Filesystem image #{name}.dwarfs has no matching runtime package; " \
+      puts "::warning::Filesystem image #{name}.tfs has no matching runtime package; " \
            "it is uploaded but carries no manifest entry"
     end
   end

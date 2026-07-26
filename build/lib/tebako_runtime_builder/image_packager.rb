@@ -31,7 +31,7 @@ module TebakoRuntimeBuilder
   # Packs the assembled runtime layout tree (the deploy pass's DATA_SRC_DIR,
   # the exact tree mkdwarfs embedded as fs.bin) into the standalone DwarFS
   # image published next to the runtime executable:
-  # tebako-runtime-<tebako>-<ruby>-<platform>.dwarfs (item 30, producer
+  # tebako-runtime-<tebako>-<ruby>-<platform>.tfs (item 30, producer
   # side). The lean flow's driver mounts this image directly instead of
   # extracting a runtime layout.
   #

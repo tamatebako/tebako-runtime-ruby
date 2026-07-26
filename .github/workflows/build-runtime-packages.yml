@@ -223,7 +223,7 @@ jobs:
           ' _ {} \; || true
 
       # The build emits TWO artifacts per leg since item 30: the runtime
-      # executable and its filesystem image (<runtime>.dwarfs, the layout
+      # executable and its filesystem image (<runtime>.tfs, the layout
       # tree in DwarFS form, writer defaults). Fail the leg loudly when
       # either is missing rather than discovering it at release assembly.
       - name: Verify runtime packages
@@ -236,7 +236,7 @@ jobs:
           # (no windows assets shipped yet) -- accept either spelling.
           [ -s "$exe" ] || exe="$exe.exe"
           test -s "$exe" || { echo "::error::missing runtime executable runtime-packages/$runtime[.exe]"; exit 1; }
-          img="runtime-packages/$runtime.dwarfs"
+          img="runtime-packages/$runtime.tfs"
           test -s "$img" || { echo "::error::missing runtime filesystem image $img"; exit 1; }
           ls -l "$exe" "$img"
 

@@ -70,7 +70,7 @@ module TebakoRuntimeBuilder
     # The standalone runtime filesystem image published next to the runtime
     # executable (item 30): the assembled layout tree, DwarFS image form.
     def image_output
-      "#{output.sub(/\.exe\z/, "")}.dwarfs"
+      "#{output.sub(/\.exe\z/, "")}.tfs"
     end
 
     private

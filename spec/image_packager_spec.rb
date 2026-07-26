@@ -39,7 +39,7 @@ RSpec.describe TebakoRuntimeBuilder::ImagePackager do
   end
 
   def image_path
-    File.join(@dir, "out", "tebako-runtime-9.9.9-3.3.7-macos-arm64.dwarfs")
+    File.join(@dir, "out", "tebako-runtime-9.9.9-3.3.7-macos-arm64.tfs")
   end
 
   def fake_tool(dir, name)
@@ -152,19 +152,19 @@ RSpec.describe TebakoRuntimeBuilder::Builder do
                         prefix: File.join(Dir.pwd, ".build"), output: output)
   end
 
-  it "names the image after the output package with the .dwarfs extension" do
+  it "names the image after the output package with the .tfs extension" do
     expect(builder("/tmp/pkg/tebako-runtime-9.9.9-3.3.7-macos-arm64").image_output)
-      .to eq("/tmp/pkg/tebako-runtime-9.9.9-3.3.7-macos-arm64.dwarfs")
+      .to eq("/tmp/pkg/tebako-runtime-9.9.9-3.3.7-macos-arm64.tfs")
   end
 
   it "strips the .exe suffix when naming the image" do
     expect(builder("/tmp/pkg/tebako-runtime-9.9.9-3.3.7-windows-x86_64.exe").image_output)
-      .to eq("/tmp/pkg/tebako-runtime-9.9.9-3.3.7-windows-x86_64.dwarfs")
+      .to eq("/tmp/pkg/tebako-runtime-9.9.9-3.3.7-windows-x86_64.tfs")
   end
 
   it "derives the default image name from the default package name" do
     b = builder(nil)
-    expect(b.image_output).to eq("#{b.default_output.sub(/\.exe\z/, "")}.dwarfs")
-    expect(File.basename(b.image_output)).to match(/\Atebako-runtime-9\.9\.9-3\.3\.7-.+\.dwarfs\z/)
+    expect(b.image_output).to eq("#{b.default_output.sub(/\.exe\z/, "")}.tfs")
+    expect(File.basename(b.image_output)).to match(/\Atebako-runtime-9\.9\.9-3\.3\.7-.+\.tfs\z/)
   end
 end

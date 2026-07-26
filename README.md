@@ -28,7 +28,7 @@ the runtime executable embeds as its memfs image — as a standalone DwarFS
 image next to the executable:
 
 ```
-runtime-packages/tebako-runtime-$(cat VERSION)-3.3.7-<platform>.dwarfs
+runtime-packages/tebako-runtime-$(cat VERSION)-3.3.7-<platform>.tfs
 ```
 
 The image-era lean flow mounts this file directly instead of extracting a
