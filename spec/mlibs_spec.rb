@@ -54,13 +54,47 @@ RSpec.describe TebakoRuntimeBuilder::Mlibs do
       described_class.new(TebakoRuntimeBuilder::Platform.new("x64-mingw-ucrt", "x86_64"), "/deps/lib")
     end
 
-    it "prepends -Wl,-Bstatic only with compression" do
-      expect(mlibs.compute(ruby_ver, with_compression: true)).to start_with("-Wl,-Bstatic -Wl,--push-state")
-      expect(mlibs.compute(ruby_ver, with_compression: false)).to start_with("-Wl,--push-state")
+    it "prepends -Wl,-Bstatic only with compression and group-wraps the dwarfs set" do
+      expect(mlibs.compute(ruby_ver,
+                           with_compression: true)).to start_with("-Wl,-Bstatic -Wl,--start-group -Wl,--push-state")
+      expect(mlibs.compute(ruby_ver, with_compression: false)).to start_with("-Wl,--start-group -Wl,--push-state")
+      expect(mlibs.compute(ruby_ver)).to include("-Wl,--end-group")
     end
 
-    it "carries the windows system libs" do
+    it "carries the windows system libs incl. psapi and bz2" do
       expect(mlibs.compute(ruby_ver)).to include("-lws2_32")
+      expect(mlibs.compute(ruby_ver)).to include("-lpsapi")
+      expect(mlibs.compute(ruby_ver)).to include("-l:libbz2.a")
+    end
+
+    context "with tagged boost archives in the vcpkg triplet" do
+      subject(:mlibs) do
+        described_class.new(TebakoRuntimeBuilder::Platform.new("x64-mingw-ucrt", "x86_64"),
+                            File.join(root, "deps", "lib"))
+      end
+
+      let(:root) { Dir.mktmpdir }
+
+      before do
+        FileUtils.mkdir_p(File.join(root, "deps", "lib"))
+        triplet_lib = File.join(root, "deps", "vcpkg_installed", "x64-mingw-static", "lib")
+        FileUtils.mkdir_p(triplet_lib)
+        FileUtils.touch(File.join(triplet_lib, "libboost_filesystem-gcc16-mt-x64-1_90.a"))
+        FileUtils.touch(File.join(triplet_lib, "libboost_chrono-gcc16-mt-x64-1_90.a"))
+      end
+
+      after do
+        FileUtils.remove_entry(root)
+      end
+
+      it "resolves the boost references to the tagged archives by full path" do
+        triplet_lib = File.join(root, "deps", "vcpkg_installed", "x64-mingw-static", "lib")
+        result = mlibs.compute(ruby_ver)
+        expect(result).to include("#{triplet_lib}/libboost_filesystem-gcc16-mt-x64-1_90.a")
+        expect(result).to include("#{triplet_lib}/libboost_chrono-gcc16-mt-x64-1_90.a")
+        expect(result).not_to include("-l:libboost_filesystem.a")
+        expect(result).not_to include("-l:libboost_chrono.a")
+      end
     end
   end
 

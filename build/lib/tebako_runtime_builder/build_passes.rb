@@ -70,7 +70,7 @@ module TebakoRuntimeBuilder
           mlibs = TebakoRuntimeBuilder::Mlibs.new(platform, deps_lib_dir).compute(rv, with_compression: true)
           substitute_tebako_mlibs!(File.join(ruby_source_dir, "template", "Makefile.in"), mlibs)
         end
-        build_toolchain_stub(platform, deps_lib_dir, mount_point, cc)
+        build_toolchain_stub(platform, deps_lib_dir, mount_point, cc, rv)
       end
 
       def postconfigure(ostype, ruby_source_dir, deps_lib_dir, ruby_ver)
@@ -91,6 +91,7 @@ module TebakoRuntimeBuilder
 
         platform = TebakoRuntimeBuilder::Platform.new
         rbconfig = File.join(ruby_source_dir, "rbconfig.rb")
+        install_out = nil
         Dir.chdir(ruby_source_dir) do
           run_make_with_serial_fallback(["make", "-j#{platform.ncores}"])
           # The pre-patched tool/mkconfig.rb bakes the memfs mount point into
@@ -115,13 +116,31 @@ module TebakoRuntimeBuilder
           # ('no such file or directory: ext/extinit.o'). The gem never saw
           # this -- that patch landed only for its final, stable build.
           TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["make", "-j1"])
-          TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["make", "install", "-j1"])
+          # DESTDIR= override: ruby 4.0's configure.ac seeds DESTDIR=$prefix
+          # when load_relative=yes (forced on msys), and rbinstall's
+          # with_destdir then prepends it to the already-absolute install
+          # dirs, landing the whole tree in a shadow path
+          # (o/s/a/tebako-.../o/s/...). Forcing DESTDIR empty restores the
+          # pass-through; it is a no-op where DESTDIR was already empty
+          # (3.x everywhere, 4.0 POSIX).
+          install_out = TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["make", "install", "-j1", "DESTDIR="])
         end
 
         puts "   ... saving pristine Ruby environment to #{stash_dir}"
         FileUtils.rm_rf(stash_dir, secure: true)
         FileUtils.mkdir_p(stash_dir)
         FileUtils.cp_r "#{data_src_dir}/.", stash_dir
+        bin = File.join(data_src_dir, "bin")
+        installed = Dir.exist?(bin) ? Dir.children(bin).first(8).join(", ") : "(no bin dir)"
+        puts "   ... toolchain installed: #{installed}"
+        unless Dir.exist?(bin)
+          # make install exited 0 yet installed nothing -- dump the evidence
+          puts "   ... #{data_src_dir} top level: #{Dir.children(data_src_dir).join(", ")}"
+          puts "   ... captured 'make install' section headers:"
+          puts install_out.lines.grep(/installing|Installed|skipping|skipped|unknown install|error|cannot/i).first(80)
+          puts "   ... rewritten rbconfig prefix lines:"
+          puts File.readlines(rbconfig).grep(/CONFIG\["prefix"\]|CONFIG\["RUBY_EXEC_PREFIX"\]|DESTDIR =/)
+        end
 
         # The stub driver served the toolchain link; the final relink must
         # resolve -ltebako-fs to the real library in the CMake binary dir.
@@ -141,8 +160,10 @@ module TebakoRuntimeBuilder
       def overlay(pass2_tarball, pass2_sha256, ruby_source_dir, work_dir)
         puts "-- Running overlay script (msys pass-2 tree)"
 
-        verify_tarball!(pass2_tarball, pass2_sha256)
-        root = extract_overlay(pass2_tarball, work_dir)
+        # RUBY_TARBALL_P2 arrives in ExternalProject URL form (file://...)
+        path = pass2_tarball.sub(%r{\Afile://}, "")
+        verify_tarball!(path, pass2_sha256)
+        root = extract_overlay(path, work_dir)
         puts "   ... overlaid #{overlay_differing_files(root, ruby_source_dir)} pass-2 file(s) onto #{ruby_source_dir}"
       end
 
@@ -253,13 +274,17 @@ module TebakoRuntimeBuilder
       # <deps_lib_dir>/libtebako-fs.a (the deps lib dir precedes the CMake
       # binary dir in the ruby link flags, so the stub wins the toolchain
       # link; it is removed by the toolchain pass)
-      def build_toolchain_stub(platform, deps_lib_dir, mount_point, cc) # rubocop:disable Metrics/MethodLength
+      def build_toolchain_stub(platform, deps_lib_dir, mount_point, cc, ruby_ver) # rubocop:disable Metrics/MethodLength
         puts "   ... building the toolchain stub libtebako-fs.a"
         FileUtils.mkdir_p(deps_lib_dir)
         obj = File.join(deps_lib_dir, "tebako-toolchain-stub.o")
         lib = File.join(deps_lib_dir, "libtebako-fs.a")
+        defines = ["-DTEBAKO_STUB_MOUNT_POINT=\"#{mount_point}\""]
+        # ruby >= 3.3 defines rb_w32_pread in win32.c; only the older msys
+        # lines need the stub's fallback
+        defines << "-DRB_W32_PRE_33" if platform.msys? && !ruby_ver.ruby33?
         TebakoRuntimeBuilder::BuildHelpers.run_with_capture(
-          [cc, "-c", TOOLCHAIN_STUB_C, "-DTEBAKO_STUB_MOUNT_POINT=\"#{mount_point}\"", "-o", obj]
+          [cc, "-c", TOOLCHAIN_STUB_C, *defines, "-o", obj]
         )
         TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["ar", "rcs", lib, obj])
         if platform.macos?
@@ -288,12 +313,21 @@ module TebakoRuntimeBuilder
         overlay_src = File.join(work_dir, "overlay-src")
         FileUtils.rm_rf(overlay_src, secure: true)
         FileUtils.mkdir_p(overlay_src)
-        TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["tar", "-xzf", pass2_tarball, "-C", overlay_src])
+        # GNU tar parses 'D:/...' as a remote host on msys; use the /d/...
+        # form there
+        args = ["tar", "-xzf", msys_tar_path(pass2_tarball), "-C", msys_tar_path(overlay_src)]
+        TebakoRuntimeBuilder::BuildHelpers.run_with_capture(args)
         root = Dir.children(overlay_src).map { |child| File.join(overlay_src, child) }
                                         .find { |path| File.directory?(path) }
         raise TebakoRuntimeBuilder::Error.new("overlay tarball carries no source tree", 130) if root.nil?
 
         root
+      end
+
+      def msys_tar_path(path)
+        return path unless TebakoRuntimeBuilder::Platform.new.msys?
+
+        TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["cygpath", "-u", path]).strip
       end
 
       def overlay_differing_files(root, ruby_source_dir)
