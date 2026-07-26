@@ -82,3 +82,25 @@ like the packaged-app path).
 bundle install
 bundle exec rspec
 ```
+
+### Runtime boot smoke (roadmap item 19)
+
+`spec/boot_smoke_spec.rb` (tag `:boot_smoke`) boots a built runtime
+executable and exercises the memfs syscall surface from inside the
+packaged context — stat/lstat/fstat + btime (the ruby-4.0-linux statx
+case), image IO and `$LOAD_PATH` resolution, gem home + bundler, and
+`File#flock` — the statx/fcntl/flock drift class, caught at build time.
+
+Point `TEBAKO_RUNTIME_ROOT` at a runtime root — a directory holding
+exactly one `tebako-runtime-*` executable (a build leg's
+`runtime-packages/`, a tebako-home runtime cache dir) or the executable
+path itself (a bare layout tree or a mounted filesystem image carries no
+interpreter, so it is never a valid root) — and run:
+
+```sh
+TEBAKO_RUNTIME_ROOT=runtime-packages bundle exec rspec --tag boot_smoke
+```
+
+Without the variable the class skips in a plain run and fails loudly when
+targeted explicitly. CI runs the tag against each freshly built runtime
+before the artifact upload (`.github/workflows/build-runtime-packages.yml`).

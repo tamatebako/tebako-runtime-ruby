@@ -38,6 +38,7 @@
 module TebakoRuntimeBuilder
   # Autoloads use absolute paths so the library loads regardless of the
   # caller's $LOAD_PATH (build_pass.rb is invoked bare from CMake)
+  autoload :BootSmoke,      File.expand_path("tebako_runtime_builder/boot_smoke", __dir__)
   autoload :BuildHelpers,   File.expand_path("tebako_runtime_builder/build_helpers", __dir__)
   autoload :BuildPasses,    File.expand_path("tebako_runtime_builder/build_passes", __dir__)
   autoload :Builder,        File.expand_path("tebako_runtime_builder/builder", __dir__)
