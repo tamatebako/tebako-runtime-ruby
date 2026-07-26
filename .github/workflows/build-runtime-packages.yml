@@ -253,9 +253,12 @@ jobs:
     runs-on: ubuntu-latest
     # Never touch the production release from a pull request; otherwise run
     # whenever the run was not cancelled, even if some build matrix legs
-    # failed (upload whatever artifacts exist; missing packages are reported
-    # loudly by scripts/upload_release.rb). Slice dispatches may opt out of
-    # publishing (publish=false) for pure debugging runs.
+    # failed (upload whatever artifacts exist; scripts/upload_release.rb
+    # then verifies the release against the full expected matrix and FAILS
+    # the run when any package, filesystem image, or metadata file is
+    # missing -- a gap never ships as a silently incomplete release).
+    # Slice dispatches may opt out of publishing (publish=false) for pure
+    # debugging runs.
     if: ${{ always() && !cancelled() && github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.publish) }}
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

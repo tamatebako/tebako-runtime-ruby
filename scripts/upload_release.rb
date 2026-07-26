@@ -36,9 +36,9 @@ RUNTIME_REPO = "tamatebako/tebako-runtime-ruby"
 
 # Upload release manager for tebako build workflow
 class ReleaseManager # rubocop:disable Metrics/ClassLength
-  def initialize
+  def initialize(client: nil)
     validate_environment
-    @client = Octokit::Client.new(access_token: ENV.fetch("GITHUB_TOKEN"), auto_paginate: true)
+    @client = client || Octokit::Client.new(access_token: ENV.fetch("GITHUB_TOKEN"), auto_paginate: true)
     @version = ENV.fetch("TEBAKO_VERSION")
     @tag = "v#{@version}"
     @release_title = "Tebako runtime packages #{@tag}"
@@ -205,12 +205,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
 
   def perform_upload(release, package, filename, attempts: 4)
     puts "Uploading #{filename}"
-    @client.upload_asset(
-      release.url,
-      package.to_s,
-      content_type: "application/octet-stream",
-      name: filename
-    )
+    upload_once(release, package, filename)
   rescue Octokit::UnprocessableEntity, Net::WriteTimeout, Net::ReadTimeout,
          Faraday::TimeoutError, Faraday::ConnectionFailed => e
     attempts -= 1
@@ -222,6 +217,12 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     puts "#{e.class} uploading #{filename}; retrying in 5s (#{attempts} attempt(s) left)"
     sleep 5
     retry
+  end
+
+  def upload_once(release, package, filename)
+    @client.upload_asset(release.url, package.to_s,
+                         content_type: "application/octet-stream",
+                         name: filename)
   end
 
   def platform_display_name(platform)
@@ -243,8 +244,9 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     sections, image_sections = upload_and_categorize(release, packages)
     upload_metadata(release, packages)
     release_body = generate_release_notes(sections, image_sections)
-    @client.update_release(release.url, body: release_body)
+    with_transient_retries { @client.update_release(release.url, body: release_body) }
     puts "Successfully updated release notes"
+    verify_completeness(release)
   end
 
   def report_missing_packages(packages)
@@ -267,7 +269,44 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
 
     puts "::warning::Release incomplete: #{missing.size} expected runtime package(s) are missing"
     missing.sort.each { |name| puts "::warning::Missing runtime package: #{name}" }
-    puts "Continuing release update with #{found.size} available package(s)"
+    puts "Continuing with #{found.size} available package(s); the completeness check at " \
+         "the end of the publish fails the run if these are still missing"
+  end
+
+  # The release job runs with always(), so packages from failed matrix legs
+  # simply never land -- the publish must not LOOK complete when it is not.
+  # After all uploads, re-list the release assets (paginated) and compare
+  # against the full expected set: every matrix package (windows names may
+  # carry .exe), every package's filesystem image, and the two metadata
+  # files. Any gap fails the run loudly; without an expected matrix there
+  # is nothing to verify against (warn and pass).
+  def verify_completeness(release)
+    expected = expected_asset_names
+    if expected.empty?
+      puts "::warning::No expected matrix available; release completeness is not verifiable"
+      return
+    end
+
+    missing = missing_assets(release, expected)
+    return if missing.empty?
+
+    puts "::error::Release #{@tag} is incomplete: #{missing.size} expected asset(s) missing"
+    missing.sort.each { |name| puts "::error::Missing asset: #{name}" }
+    raise "Release #{@tag} is incomplete (#{missing.size} missing asset(s))"
+  end
+
+  # Windows executables may or may not carry the .exe suffix (the artifact
+  # naming is still settling), so a package expectation matches both.
+  def missing_assets(release, expected)
+    present = with_transient_retries { release.rels[:assets].get.data.map(&:name) }
+    expected.reject { |name| present.include?(name) || present.include?("#{name}.exe") }
+  end
+
+  def expected_asset_names
+    packages = expected_package_names
+    return [] if packages.empty?
+
+    packages + packages.map { |name| "#{name}.tfs" } + %w[SHA256SUMS.txt manifest.json]
   end
 
   def report_image_gaps(executables, images)
@@ -284,7 +323,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   def remove_existing_asset(release, filename)
     puts "Deleting existing asset #{filename}"
     existing = find_asset(release, filename)
-    @client.delete_release_asset(existing.id) if existing
+    with_transient_retries { @client.delete_release_asset(existing.id) } if existing
   end
 
   # release.assets is an embedded array capped at 30 entries; with 100+
@@ -293,7 +332,20 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   # the URL by hand from the release id produces a malformed path on
   # octokit 7.
   def find_asset(release, filename)
-    release.rels[:assets].get.data.find { |a| a.name == filename }
+    with_transient_retries { release.rels[:assets].get.data.find { |a| a.name == filename } }
+  end
+
+  # GET/DELETE/PUT calls other than the asset upload share the same
+  # transient network failure modes; retry them (they are idempotent).
+  def with_transient_retries(attempts: 4)
+    yield
+  rescue Net::WriteTimeout, Net::ReadTimeout, Faraday::TimeoutError, Faraday::ConnectionFailed => e
+    attempts -= 1
+    raise if attempts <= 0
+
+    puts "#{e.class}; retrying in 5s (#{attempts} attempt(s) left)"
+    sleep 5
+    retry
   end
 
   def run
@@ -320,17 +372,24 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   def upload_package(release, package)
     filename = package.basename.to_s
     puts "Processing #{filename}..."
-
-    if find_asset(release, filename)
-      if ENV["FORCE_REBUILD"] != "true"
-        puts "Skipping upload of existing asset #{filename} (FORCE_REBUILD not set)"
-        return filename
-      end
-      remove_existing_asset(release, filename)
-    end
+    return filename if skip_existing_asset?(release, filename)
 
     perform_upload(release, package, filename)
     filename
+  end
+
+  # An asset with the same name is kept unless FORCE_REBUILD asks for a
+  # re-upload (delete first; GitHub deletion is only eventually consistent,
+  # the upload retry absorbs the resulting 422s).
+  def skip_existing_asset?(release, filename)
+    return false unless find_asset(release, filename)
+
+    if ENV["FORCE_REBUILD"] == "true"
+      remove_existing_asset(release, filename)
+      return false
+    end
+    puts "Skipping upload of existing asset #{filename} (FORCE_REBUILD not set)"
+    true
   end
 
   def validate_environment

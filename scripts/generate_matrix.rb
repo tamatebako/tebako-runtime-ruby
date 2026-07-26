@@ -58,10 +58,14 @@ class MatrixGenerator
     @logger.info(JSON.pretty_generate(env))
     write_output("env-matrix", env)
   rescue StandardError => e
-    @logger.error("Error processing env matrix: #{e.message}")
+    report_matrix_error("env", e, data)
+  end
+
+  def report_matrix_error(stage, error, data)
+    @logger.error("Error processing #{stage} matrix: #{error.message}")
     @logger.error("matrix.json content:")
     @logger.error(JSON.pretty_generate(data))
-    raise
+    raise error
   end
 
   # Optional slice filter for workflow_dispatch iteration/debugging:
@@ -72,11 +76,17 @@ class MatrixGenerator
     return env if filter.empty? || filter == "all"
 
     os, arch = filter.split("/", 2)
-    selected = env.select { |e| e["os"] == os && (arch.nil? || arch.empty? || e["arch"] == arch) }
+    selected = env.select { |entry| env_entry_matches?(entry, os, arch) }
     raise "MATRIX_ENV_FILTER '#{filter}' matched no env entries" if selected.empty?
 
     @logger.info("MATRIX_ENV_FILTER '#{filter}' selected #{selected.size} env entry(ies)")
     selected
+  end
+
+  def env_entry_matches?(entry, os, arch)
+    return false unless entry["os"] == os
+
+    arch.nil? || arch.empty? || entry["arch"] == arch
   end
 
   # MATRIX_RUBY_FILTER: "full"/"tidy" select the named matrix.json set; a
@@ -98,10 +108,7 @@ class MatrixGenerator
     @logger.info("Generated ruby matrix: #{JSON.pretty_generate(ruby_versions)}")
     write_output("ruby-matrix", ruby_versions)
   rescue StandardError => e
-    @logger.error("Error processing ruby matrix: #{e.message}")
-    @logger.error("matrix.json content:")
-    @logger.error(JSON.pretty_generate(data))
-    raise
+    report_matrix_error("ruby", e, data)
   end
 
   def read_matrix_json
