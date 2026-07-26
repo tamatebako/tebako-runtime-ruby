@@ -116,7 +116,14 @@ module TebakoRuntimeBuilder
           # ('no such file or directory: ext/extinit.o'). The gem never saw
           # this -- that patch landed only for its final, stable build.
           TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["make", "-j1"])
-          install_out = TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["make", "install", "-j1"])
+          # DESTDIR= override: ruby 4.0's configure.ac seeds DESTDIR=$prefix
+          # when load_relative=yes (forced on msys), and rbinstall's
+          # with_destdir then prepends it to the already-absolute install
+          # dirs, landing the whole tree in a shadow path
+          # (o/s/a/tebako-.../o/s/...). Forcing DESTDIR empty restores the
+          # pass-through; it is a no-op where DESTDIR was already empty
+          # (3.x everywhere, 4.0 POSIX).
+          install_out = TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["make", "install", "-j1", "DESTDIR="])
         end
 
         puts "   ... saving pristine Ruby environment to #{stash_dir}"
