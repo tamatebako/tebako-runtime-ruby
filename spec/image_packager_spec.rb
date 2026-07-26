@@ -124,6 +124,20 @@ RSpec.describe TebakoRuntimeBuilder::ImagePackager do
       .to raise_error(TebakoRuntimeBuilder::Error) { |error| expect(error.error_code).to eq(131) }
   end
 
+  it "fails loudly when neither tfs nor the deps mkdwarfs is available" do
+    empty = File.join(@dir, "empty-path")
+    FileUtils.mkdir_p(empty)
+    packager = described_class.new(platform, deps_bin_dir)
+
+    with_env("PATH" => empty, "TEBAKO_TFS" => nil) do
+      expect { packager.package(layout_dir, image_path) }
+        .to raise_error(TebakoRuntimeBuilder::Error) do |error|
+          expect(error.error_code).to eq(131)
+          expect(error.message).to include("no image tool available")
+        end
+    end
+  end
+
   it "fails loudly when the layout tree is missing" do
     packager = described_class.new(platform, deps_bin_dir)
 

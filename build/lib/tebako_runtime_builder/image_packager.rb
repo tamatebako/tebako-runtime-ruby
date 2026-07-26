@@ -60,7 +60,7 @@ module TebakoRuntimeBuilder
       check_layout!(layout_dir)
       FileUtils.mkdir_p(File.dirname(image_path))
       FileUtils.rm_f(image_path)
-      (tfs = tfs_path) ? pack_with_tfs(tfs, layout_dir, image_path) : pack_with_mkdwarfs(layout_dir, image_path)
+      pack(layout_dir, image_path)
       image_path
     rescue TebakoRuntimeBuilder::Error => e
       raise e if e.error_code == 131
@@ -69,6 +69,19 @@ module TebakoRuntimeBuilder
     end
 
     private
+
+    def pack(layout_dir, image_path)
+      if (tfs = tfs_path)
+        pack_with_tfs(tfs, layout_dir, image_path)
+      elsif (mkdwarfs = mkdwarfs_path)
+        pack_with_mkdwarfs(mkdwarfs, layout_dir, image_path)
+      else
+        raise TebakoRuntimeBuilder::Error.new(
+          "no image tool available: tfs not found (set --tfs or TEBAKO_TFS) and no deps mkdwarfs at " \
+          "#{File.join(@deps_bin_dir, "mkdwarfs#{@platform.exe_suffix}")}", 131
+        )
+      end
+    end
 
     def check_layout!(layout_dir)
       return if File.directory?(layout_dir)
@@ -86,11 +99,11 @@ module TebakoRuntimeBuilder
       )
     end
 
-    def pack_with_mkdwarfs(layout_dir, image_path)
+    def pack_with_mkdwarfs(mkdwarfs, layout_dir, image_path)
       puts "-- Packing the runtime layout as #{image_path} (deps mkdwarfs; tfs not found -- " \
            "set --tfs or TEBAKO_TFS to use the documented tool)"
       TebakoRuntimeBuilder::BuildHelpers.run_with_capture_v(
-        [mkdwarfs_path, "-i", layout_dir, "-o", image_path, "--no-progress", "--force"].compact
+        [mkdwarfs, "-i", layout_dir, "-o", image_path, "--no-progress", "--force"]
       )
     end
 
