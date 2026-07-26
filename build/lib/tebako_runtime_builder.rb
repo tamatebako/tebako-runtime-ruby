@@ -43,6 +43,7 @@ module TebakoRuntimeBuilder
   autoload :Builder,        File.expand_path("tebako_runtime_builder/builder", __dir__)
   autoload :Error,          File.expand_path("tebako_runtime_builder/error", __dir__)
   autoload :ImageBuilder,   File.expand_path("tebako_runtime_builder/image_builder", __dir__)
+  autoload :ImagePackager,  File.expand_path("tebako_runtime_builder/image_packager", __dir__)
   autoload :Mlibs,          File.expand_path("tebako_runtime_builder/mlibs", __dir__)
   autoload :Platform,       File.expand_path("tebako_runtime_builder/platform", __dir__)
   autoload :RubyVersion,    File.expand_path("tebako_runtime_builder/ruby_version", __dir__)

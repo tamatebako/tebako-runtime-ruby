@@ -33,8 +33,9 @@ module TebakoRuntimeBuilder
   # tamatebako/ruby release SHA256SUMS), run the CMake project in build/,
   # then relink and strip the runtime binary to the output path.
   class Builder
-    def initialize(repo_root:, ruby_version:, tebako_version:, prefix:, output:, # rubocop:disable Metrics/ParameterLists
-                   patchelf: false, jobs: nil, release: SourceFetcher::DEFAULT_RELEASE, mirror: nil)
+    def initialize(repo_root:, ruby_version:, tebako_version:, prefix:, output:, # rubocop:disable Metrics/ParameterLists,Metrics/MethodLength
+                   patchelf: false, jobs: nil, release: SourceFetcher::DEFAULT_RELEASE, mirror: nil,
+                   image: true, tfs: nil)
       @repo_root = repo_root
       @ruby_version = ruby_version
       @tebako_version = tebako_version
@@ -44,6 +45,8 @@ module TebakoRuntimeBuilder
       @jobs = jobs
       @release = release
       @mirror = mirror
+      @image = image
+      @tfs = tfs
       @platform = TebakoRuntimeBuilder::Platform.new
     end
 
@@ -55,12 +58,19 @@ module TebakoRuntimeBuilder
       cmake_configure(assets)
       cmake_build
       finalize
+      pack_image if @image
       @output
     end
 
     def default_output
       File.join(Dir.pwd, "runtime-packages",
                 "tebako-runtime-#{@tebako_version}-#{@ruby_version}-#{@platform.host_id}#{@platform.exe_suffix}")
+    end
+
+    # The standalone runtime filesystem image published next to the runtime
+    # executable (item 30): the assembled layout tree, DwarFS image form.
+    def image_output
+      "#{output.sub(/\.exe\z/, "")}.tfs"
     end
 
     private
@@ -126,6 +136,15 @@ module TebakoRuntimeBuilder
       patchelf = @patchelf && @platform.linux_gnu? ? File.join(deps, "bin", "patchelf") : nil
       TebakoRuntimeBuilder::BuildPasses.finalize(@platform.ostype, ruby_source_dir, output, @ruby_version,
                                                  File.join(deps, "lib"), patchelf)
+    end
+
+    # The layout tree the deploy pass assembled (the CMake project's
+    # DATA_SRC_DIR) is packed as the standalone image AFTER the executable
+    # is finalized: the tree is the exact content the embedded fs.bin was
+    # written from, and the deploy pass leaves it in place.
+    def pack_image
+      TebakoRuntimeBuilder::ImagePackager.new(@platform, File.join(deps, "bin"), tfs: @tfs)
+                                         .package(File.join(output_folder, "s"), image_output)
     end
   end
 end

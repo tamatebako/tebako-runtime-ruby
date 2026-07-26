@@ -34,6 +34,7 @@
 #   tools/build_runtime --ruby 3.3.7 [--output PATH] [--prefix DIR]
 #                       [--tebako-version X.Y.Z] [--src-release TAG]
 #                       [--src-mirror URL] [--patchelf] [--jobs N]
+#                       [--no-image] [--tfs PATH]
 
 require "optparse"
 
@@ -50,8 +51,20 @@ options = {
   src_release: TebakoRuntimeBuilder::SourceFetcher::DEFAULT_RELEASE,
   src_mirror: nil,
   patchelf: false,
-  jobs: nil
+  jobs: nil,
+  image: true,
+  tfs: nil
 }
+
+# The item-30 image options (kept out of the parser block for readability)
+def image_options(opts, options)
+  opts.on("--[no-]image", "Also pack the runtime layout as <output>.tfs next to the executable " \
+                          "(default: on)") { |v| options[:image] = v }
+  opts.on("--tfs PATH", "tfs binary (tebako-rs tfs-cli) for the image step " \
+                        "(default: TEBAKO_TFS, then tfs on PATH, then the deps mkdwarfs)") do |v|
+    options[:tfs] = v
+  end
+end
 
 parser = OptionParser.new do |opts|
   opts.banner = "Usage: tools/build_runtime [options]"
@@ -74,6 +87,7 @@ parser = OptionParser.new do |opts|
   end
   opts.on("-P", "--patchelf", "Remove the GLIBC_PRIVATE reference (linux-gnu only)") { options[:patchelf] = true }
   opts.on("-j", "--jobs N", Integer, "Build parallelism (default: detected core count)") { |v| options[:jobs] = v }
+  image_options(opts, options)
   opts.on("-h", "--help", "Print this help") do
     puts opts
     exit 0
@@ -98,7 +112,9 @@ begin
     patchelf: options[:patchelf],
     jobs: options[:jobs],
     release: options[:src_release],
-    mirror: options[:src_mirror]
+    mirror: options[:src_mirror],
+    image: options[:image],
+    tfs: options[:tfs]
   )
   builder.run
 rescue TebakoRuntimeBuilder::Error => e
