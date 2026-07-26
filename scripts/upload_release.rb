@@ -205,12 +205,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
 
   def perform_upload(release, package, filename, attempts: 4)
     puts "Uploading #{filename}"
-    @client.upload_asset(
-      release.url,
-      package.to_s,
-      content_type: "application/octet-stream",
-      name: filename
-    )
+    upload_once(release, package, filename)
   rescue Octokit::UnprocessableEntity, Net::WriteTimeout, Net::ReadTimeout,
          Faraday::TimeoutError, Faraday::ConnectionFailed => e
     attempts -= 1
@@ -222,6 +217,12 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     puts "#{e.class} uploading #{filename}; retrying in 5s (#{attempts} attempt(s) left)"
     sleep 5
     retry
+  end
+
+  def upload_once(release, package, filename)
+    @client.upload_asset(release.url, package.to_s,
+                         content_type: "application/octet-stream",
+                         name: filename)
   end
 
   def platform_display_name(platform)
@@ -320,17 +321,24 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   def upload_package(release, package)
     filename = package.basename.to_s
     puts "Processing #{filename}..."
-
-    if find_asset(release, filename)
-      if ENV["FORCE_REBUILD"] != "true"
-        puts "Skipping upload of existing asset #{filename} (FORCE_REBUILD not set)"
-        return filename
-      end
-      remove_existing_asset(release, filename)
-    end
+    return filename if skip_existing_asset?(release, filename)
 
     perform_upload(release, package, filename)
     filename
+  end
+
+  # An asset with the same name is kept unless FORCE_REBUILD asks for a
+  # re-upload (delete first; GitHub deletion is only eventually consistent,
+  # the upload retry absorbs the resulting 422s).
+  def skip_existing_asset?(release, filename)
+    return false unless find_asset(release, filename)
+
+    if ENV["FORCE_REBUILD"] == "true"
+      remove_existing_asset(release, filename)
+      return false
+    end
+    puts "Skipping upload of existing asset #{filename} (FORCE_REBUILD not set)"
+    true
   end
 
   def validate_environment
