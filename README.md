@@ -51,9 +51,12 @@ uploaded to the release; `manifest.json` folds the image into the package's
 entry as an additive `image` key (`filename`/`sha256`/`size_bytes`), and
 `SHA256SUMS.txt` carries both lines.
 
-Image layout (same as the embedded memfs tree): `/bin/ruby` (the runtime
-driver executable), `/lib/ruby/<api>` (stdlib), `/lib/ruby/gems/<api>`
-(incl. the tebako-runtime gem), `/local/stub.rb` (the entry point).
+Image layout (same as the embedded memfs tree): `/lib/ruby/<api>` (stdlib),
+`/lib/ruby/gems/<api>` (gem home, incl. the tebako-runtime gem),
+`/local/stub.rb` (the runtime's compiled-in entry point), `/bin` (empty —
+the ruby executable and the bin shims are stripped from the layout; the
+interpreter is the outer driver executable that mounts the image, exactly
+like the packaged-app path).
 
 ## Layout
 
