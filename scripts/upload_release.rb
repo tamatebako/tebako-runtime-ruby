@@ -44,13 +44,33 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     @release_title = "Tebako runtime packages #{@tag}"
   end
 
+  # One manifest entry per runtime PACKAGE (the executable). A sibling
+  # filesystem image (<package>.dwarfs, item 30) is folded into the
+  # package's entry as an additive `image` key -- top-level entries stay
+  # one-per-package so existing consumers (which match on ruby_version /
+  # platform / filename) are unaffected, and a .dwarfs file never becomes
+  # a top-level entry of its own.
   def build_manifest_entries(packages)
-    packages.sort_by { |package| package.basename.to_s }.map { |package| manifest_entry(package) }
+    executables, images = packages.partition { |package| !image_file?(package) }
+    executables.sort_by { |package| package.basename.to_s }.map do |package|
+      image = images.find { |candidate| candidate.basename.to_s == image_name_for(package) }
+      manifest_entry(package, image)
+    end
   end
 
   def categorize_packages(filenames)
+    categorize(filenames, images: false)
+  end
+
+  def categorize_images(filenames)
+    categorize(filenames, images: true)
+  end
+
+  def categorize(filenames, images:)
     sections = initialize_sections
     filenames.each do |filename|
+      next unless filename.end_with?(".dwarfs") == images
+
       platform = %w[windows macos linux-gnu linux-musl].find { |p| filename.include?(p) }
       sections[platform] << filename if platform
     end
@@ -84,7 +104,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     path
   end
 
-  def generate_release_notes(sections)
+  def generate_release_notes(sections, image_sections = nil)
     body = <<~BODY
       ## Tebako runtime packages
 
@@ -93,26 +113,40 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
 
     BODY
 
-    sections.each do |platform, files|
-      body += generate_section(platform, files)
-    end
+    body += sections_markup(sections)
+    body += sections_markup(image_sections, kind: "filesystem images") if image_sections
     body += "\nChecksums: see the `SHA256SUMS.txt` asset.\n"
     body += "Machine-readable package index: see the `manifest.json` asset.\n"
     body
   end
 
-  def generate_section(platform, files)
+  def sections_markup(sections, kind: "executables")
+    sections.map { |platform, files| generate_section(platform, files, kind: kind) }.join
+  end
+
+  def generate_section(platform, files, kind: "executables")
     return "" if files.empty?
 
-    section = "\n### #{platform_display_name(platform)} executables\n"
+    section = "\n### #{platform_display_name(platform)} #{kind}\n"
     files.each { |file| section += "- #{file}\n" }
     section
   end
 
+  # Both the executable and its filesystem image are checksummed; each image
+  # line directly follows its package's line.
   def generate_sha256sums(entries)
     path = Pathname.new("SHA256SUMS.txt")
-    path.write("#{entries.map { |entry| "#{entry[:sha256]}  #{entry[:filename]}" }.join("\n")}\n")
+    path.write("#{sha256sum_lines(entries).join("\n")}\n")
     path
+  end
+
+  def sha256sum_lines(entries)
+    entries.flat_map do |entry|
+      lines = ["#{entry[:sha256]}  #{entry[:filename]}"]
+      image = entry[:image]
+      lines << "#{image[:sha256]}  #{image[:filename]}" if image
+      lines
+    end
   end
 
   def get_or_create_release # rubocop:disable Naming/AccessorMethodName
@@ -129,17 +163,34 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     { "windows" => [], "macos" => [], "linux-gnu" => [], "linux-musl" => [] }
   end
 
-  def manifest_entry(package)
-    filename = package.basename.to_s
-    ruby_version, platform = parse_package_filename(filename)
+  def manifest_entry(package, image = nil)
+    ruby_version, platform = parse_package_filename(package.basename.to_s)
     {
       tebako_version: @version,
       ruby_version: ruby_version,
       platform: platform,
-      filename: filename,
+      filename: package.basename.to_s,
       sha256: Digest::SHA256.file(package).hexdigest,
       size_bytes: package.size
+    }.tap { |entry| entry[:image] = image_entry(image) if image }
+  end
+
+  # The additive image metadata: name, sha256, size (consumers ignoring the
+  # `image` key keep working; item 30's compat rule).
+  def image_entry(image)
+    {
+      filename: image.basename.to_s,
+      sha256: Digest::SHA256.file(image).hexdigest,
+      size_bytes: image.size
     }
+  end
+
+  def image_file?(package)
+    package.basename.to_s.end_with?(".dwarfs")
+  end
+
+  def image_name_for(package)
+    "#{package.basename.to_s.sub(/\.exe\z/, "")}.dwarfs"
   end
 
   def parse_package_filename(filename)
@@ -189,21 +240,45 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
 
     packages = validate_packages_directory
     report_missing_packages(packages)
-    sections = upload_and_categorize(release, packages)
+    sections, image_sections = upload_and_categorize(release, packages)
     upload_metadata(release, packages)
-    release_body = generate_release_notes(sections)
+    release_body = generate_release_notes(sections, image_sections)
     @client.update_release(release.url, body: release_body)
     puts "Successfully updated release notes"
   end
 
   def report_missing_packages(packages)
-    found = packages.map { |package| package.basename.to_s.sub(/\.exe\z/, "") }
+    executables, images = package_names(packages)
+    report_missing_executables(executables)
+    report_image_gaps(executables, images)
+  end
+
+  def package_names(packages)
+    executables, images = packages.partition { |package| !image_file?(package) }
+    [
+      executables.map { |package| package.basename.to_s.sub(/\.exe\z/, "") },
+      images.map { |package| package.basename.to_s.sub(/\.dwarfs\z/, "") }
+    ]
+  end
+
+  def report_missing_executables(found)
     missing = expected_package_names - found
     return if missing.empty?
 
     puts "::warning::Release incomplete: #{missing.size} expected runtime package(s) are missing"
     missing.sort.each { |name| puts "::warning::Missing runtime package: #{name}" }
     puts "Continuing release update with #{found.size} available package(s)"
+  end
+
+  def report_image_gaps(executables, images)
+    (executables - images).sort.each do |name|
+      puts "::warning::Runtime package #{name} has no filesystem image (#{name}.dwarfs); " \
+           "the package stays consumable but the image-era lean flow cannot use it"
+    end
+    (images - executables).sort.each do |name|
+      puts "::warning::Filesystem image #{name}.dwarfs has no matching runtime package; " \
+           "it is uploaded but carries no manifest entry"
+    end
   end
 
   def remove_existing_asset(release, filename)
@@ -231,7 +306,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
 
   def upload_and_categorize(release, packages)
     uploaded_files = packages.map { |package| upload_package(release, package) }
-    categorize_packages(uploaded_files)
+    [categorize_packages(uploaded_files), categorize_images(uploaded_files)]
   end
 
   def upload_metadata(release, packages)
@@ -246,7 +321,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     filename = package.basename.to_s
     puts "Processing #{filename}..."
 
-    if existing_asset = find_asset(release, filename)
+    if find_asset(release, filename)
       if ENV["FORCE_REBUILD"] != "true"
         puts "Skipping upload of existing asset #{filename} (FORCE_REBUILD not set)"
         return filename

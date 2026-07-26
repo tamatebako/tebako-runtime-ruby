@@ -222,6 +222,24 @@ jobs:
             echo "== $1: LIBS/MAINLIBS definitions:"; grep -n "^LIBS\|^MAINLIBS\|^EXTLIBS" "$1" || true
           ' _ {} \; || true
 
+      # The build emits TWO artifacts per leg since item 30: the runtime
+      # executable and its filesystem image (<runtime>.dwarfs, the layout
+      # tree in DwarFS form, writer defaults). Fail the leg loudly when
+      # either is missing rather than discovering it at release assembly.
+      - name: Verify runtime packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby }}-${{ matrix.env.os }}-${{ matrix.env.arch }}"
+          exe="runtime-packages/$runtime"
+          # The windows artifact name (.exe suffix or not) is still settling
+          # (no windows assets shipped yet) -- accept either spelling.
+          [ -s "$exe" ] || exe="$exe.exe"
+          test -s "$exe" || { echo "::error::missing runtime executable runtime-packages/$runtime[.exe]"; exit 1; }
+          img="runtime-packages/$runtime.dwarfs"
+          test -s "$img" || { echo "::error::missing runtime filesystem image $img"; exit 1; }
+          ls -l "$exe" "$img"
+
       - name: Upload runtime package
         uses: actions/upload-artifact@v4
         with:
