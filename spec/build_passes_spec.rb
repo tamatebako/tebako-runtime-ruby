@@ -105,6 +105,43 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
     end
   end
 
+  describe ".toolchain" do
+    let(:data_src_dir) { File.join(root, "o", "s") }
+    let(:stash_dir) { File.join(root, "deps", "stash") }
+
+    before do
+      # The rbconfig the pass rewrites (memfs prefix, as the pre-patched
+      # mkconfig bakes it); make invocations are stubbed out
+      File.write(File.join(ruby_src, "rbconfig.rb"),
+                 %(  CONFIG["prefix"] = (TOPDIR || DESTDIR + "/__tebako_memfs__")\n) +
+                   %(  CONFIG["RUBY_EXEC_PREFIX"] = "/__tebako_memfs__"\n))
+      allow(TebakoRuntimeBuilder::BuildHelpers).to receive(:run_with_capture).and_return("")
+    end
+
+    it "cleans a reused packaging prefix before the install" do
+      stale = File.join(data_src_dir, "lib", "ruby", "3.3.0", "stale-from-another-ruby.rb")
+      FileUtils.mkdir_p(File.dirname(stale))
+      File.write(stale, "stale")
+
+      described_class.toolchain(ruby_src, data_src_dir, stash_dir, deps_lib_dir)
+
+      expect(File.exist?(stale)).to be(false)
+      expect(File.exist?(File.join(stash_dir, "lib", "ruby", "3.3.0", "stale-from-another-ruby.rb"))).to be(false)
+      expect(TebakoRuntimeBuilder::BuildHelpers).to have_received(:run_with_capture)
+        .with(["make", "install", "-j1", "DESTDIR="])
+    end
+
+    it "stashes exactly what the install left in the prefix" do
+      FileUtils.mkdir_p(data_src_dir)
+
+      described_class.toolchain(ruby_src, data_src_dir, stash_dir, deps_lib_dir)
+
+      rewritten = File.read(File.join(ruby_src, "rbconfig.rb"))
+      expect(rewritten).to include("DESTDIR + \"#{data_src_dir}\"")
+      expect(File.directory?(stash_dir)).to be(true)
+    end
+  end
+
   describe ".overlay" do
     let(:pass2_dir) { File.join(root, "pass2-tree", "tfs-ruby-3.3.7-src") }
     let(:work_dir) { File.join(root, "work") }

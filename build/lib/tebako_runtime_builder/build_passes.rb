@@ -92,6 +92,13 @@ module TebakoRuntimeBuilder
         platform = TebakoRuntimeBuilder::Platform.new
         rbconfig = File.join(ruby_source_dir, "rbconfig.rb")
         install_out = nil
+        # make install populates the packaging prefix; it does not clean it
+        # first. A reused prefix (local rebuilds sharing --prefix across
+        # rubies, a cache-restored deps tree on CI) would leak the previous
+        # content into the image -- a full 3.3.0 stdlib tree once ended up
+        # inside the 4.0.6 runtime image this way.
+        FileUtils.rm_rf(data_src_dir, secure: true)
+        FileUtils.mkdir_p(data_src_dir)
         Dir.chdir(ruby_source_dir) do
           run_make_with_serial_fallback(["make", "-j#{platform.ncores}"])
           # The pre-patched tool/mkconfig.rb bakes the memfs mount point into
