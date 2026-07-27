@@ -11,6 +11,6 @@ namespace tebako {
   const  char * fs_entry_point = "/local/stub.rb";
   const  char * package_cwd 	 = nullptr;
   char   original_cwd[PATH_MAX];
-
-  INCBIN(fs, "@DATA_BIN_FILE@");
 }
+
+@TEBAKO_FS_IMAGE_DEF@

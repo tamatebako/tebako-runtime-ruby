@@ -80,12 +80,14 @@ begin
     #       ARGV[7] -- DEPS_BIN_DIR
     #       ARGV[8] -- RUBY_SOURCE_DIR (msys implib)
     #       ARGV[9] -- RUNTIME_NAME (msys implib)
-    unless ARGV.length == 10
+    #       ARGV[10] -- EMBED ("1": also write the incbin fs.bin image;
+    #                  "0": image era, the standalone .tfs is the only image)
+    unless ARGV.length == 11
       raise TebakoRuntimeBuilder::Error,
-            "build_pass deploy command expects 10 arguments, #{ARGV.length} has been provided."
+            "build_pass deploy command expects 11 arguments, #{ARGV.length} has been provided."
     end
     TebakoRuntimeBuilder::BuildPasses.deploy(ARGV[1], ARGV[2], ARGV[3], ARGV[4], ARGV[5], ARGV[6], ARGV[7],
-                                             ARGV[8], ARGV[9])
+                                             ARGV[8], ARGV[9], embed: ARGV[10] == "1")
   when "overlay"
     #       ARGV[1] -- PASS2_TARBALL
     #       ARGV[2] -- PASS2_SHA256

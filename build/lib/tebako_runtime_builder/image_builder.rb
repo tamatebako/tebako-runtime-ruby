@@ -40,8 +40,15 @@ module TebakoRuntimeBuilder
   # (DeployHelper#configure: '@needs_bundler = true unless ruby31?',
   # #update_rubygems: 'return if ruby31?') make the rubygems update and the
   # bundler install no-ops, so they are not carried here.
+  #
+  # The mkdwarfs step (fs.bin, the image incbin embeds) runs only for the
+  # v1 embedded shape (embed: true). Image-era builds (the default, item
+  # 30b) skip it: the executable carries zero-size incbin symbols and the
+  # standalone <runtime>.tfs the ImagePackager writes from the same layout
+  # tree is the runtime's only filesystem image.
   class ImageBuilder # rubocop:disable Metrics/ClassLength
-    def initialize(platform, ruby_ver, stash_dir, data_src_dir, data_pre_dir, data_bin_file, deps_bin_dir) # rubocop:disable Metrics/ParameterLists
+    def initialize(platform, ruby_ver, stash_dir, data_src_dir, data_pre_dir, data_bin_file, deps_bin_dir, # rubocop:disable Metrics/ParameterLists,Metrics/MethodLength
+                   embed: true)
       @platform = platform
       @ruby_ver = ruby_ver
       @stash_dir = stash_dir
@@ -49,6 +56,7 @@ module TebakoRuntimeBuilder
       @data_pre_dir = data_pre_dir
       @data_bin_file = data_bin_file
       @deps_bin_dir = deps_bin_dir
+      @embed = embed
 
       @tbd = File.join(@data_src_dir, "bin")
       @tgd = File.join(@data_src_dir, "lib", "ruby", "gems", @ruby_ver.api_version)
@@ -58,7 +66,7 @@ module TebakoRuntimeBuilder
     def build(stub_dir)
       init
       deploy(stub_dir)
-      mkdwarfs
+      mkdwarfs if @embed
     end
 
     private

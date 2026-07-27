@@ -24,16 +24,34 @@ produces `runtime-packages/tebako-runtime-$(cat VERSION)-3.3.7-<platform>`
 ## Runtime filesystem image (item 30)
 
 Every build also packs the assembled runtime layout tree — the exact tree
-the runtime executable embeds as its memfs image — as a standalone DwarFS
-image next to the executable:
+the v1 runtime executable embedded as its memfs image — as a standalone
+DwarFS image next to the executable:
 
 ```
 runtime-packages/tebako-runtime-$(cat VERSION)-3.3.7-<platform>.tfs
 ```
 
-The image-era lean flow mounts this file directly instead of extracting a
-runtime layout (the runtime executable stays published and consumable as
-before — backward compat). The image is written with the writer defaults
+**Image era (item 30b, the default):** the executable ships WITHOUT the
+embedded incbin image — the standalone `.tfs` is the runtime's only
+filesystem image, and the entry driver mounts the file
+`TEBAKO_RUNTIME_IMAGE` names (an image-era tebako bootstrap sets it after
+resolving the sha256-verified `.tfs` into the shared cache; the v1 handoff
+is unchanged). Standalone use — including `--tebako-extract` — therefore
+takes the variable explicitly:
+
+```sh
+TEBAKO_RUNTIME_IMAGE=$PWD/runtime-packages/tebako-runtime-$(cat VERSION)-3.3.7-<platform>.tfs \
+  runtime-packages/tebako-runtime-$(cat VERSION)-3.3.7-<platform> --tebako-extract layout
+```
+
+Without the variable (and no embedded image) the driver fails startup with
+a message naming the expected handoff; v1 runtimes — the published 0.15.9
+executables, or anything built `--embed-image` — ignore the variable and
+mount the embedded image exactly as before (graceful degradation, no
+republish needed). The variable wins wherever it is set, so an embedded
+build also mounts the named image.
+
+The image is written with the writer defaults
 (mkdwarfs compression level 7) by our own factory toolchain:
 
 1. `tfs mkimage --format dwarfs` (the tebako-rs tfs-cli binary) when one
@@ -46,7 +64,11 @@ before — backward compat). The image is written with the writer defaults
    binds the writer API in-process).
 
 Both are build-time factory tools; neither becomes a runtime dependency of
-the shipped packages. `--no-image` skips the step. Both artifacts are
+the shipped packages. `--no-image` skips the step (only meaningful with
+`--embed-image`, the v1 shape — an image-era executable without the `.tfs`
+cannot boot); `--embed-image` embeds the image into the executable instead
+(v1 backward-compat shape: the variable is honored when set, the embedded
+image otherwise). Both artifacts are
 uploaded to the release; `manifest.json` folds the image into the package's
 entry as an additive `image` key (`filename`/`sha256`/`size_bytes`), and
 `SHA256SUMS.txt` carries both lines.
@@ -88,8 +110,10 @@ bundle exec rspec
 `spec/boot_smoke_spec.rb` (tag `:boot_smoke`) boots a built runtime
 executable and exercises the memfs syscall surface from inside the
 packaged context — stat/lstat/fstat + btime (the ruby-4.0-linux statx
-case), image IO and `$LOAD_PATH` resolution, gem home + bundler, and
-`File#flock` — the statx/fcntl/flock drift class, caught at build time.
+case), image IO and `$LOAD_PATH` resolution, gem home + bundler (incl.
+bundler's process lock degrading to no-lock on the read-only gem home),
+and `File#flock` — the statx/fcntl/flock drift class, caught at build
+time.
 
 Point `TEBAKO_RUNTIME_ROOT` at a runtime root — a directory holding
 exactly one `tebako-runtime-*` executable (a build leg's

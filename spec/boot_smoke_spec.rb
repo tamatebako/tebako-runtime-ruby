@@ -165,6 +165,14 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
         expect(run.detail("require_bundler")).to match(/\A\d+\.\d+\.\d+\z/)
       end
 
+      it "tolerates bundler's process lock on the read-only memfs" do
+        # The boot gap's second half: ProcessLock targets the read-only
+        # gem home; supported bundlers degrade to no-lock, the drifted
+        # builds escaped with an unrescued EBADF.
+        expect(run).to be_booted, boot_failure(run)
+        expect(run.state("process_lock")).to eq("ok")
+      end
+
       it "loads default gems" do
         expect(run).to be_booted, boot_failure(run)
         expect(run.state("default_gems_load")).to eq("ok")

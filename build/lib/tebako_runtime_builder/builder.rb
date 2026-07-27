@@ -32,10 +32,10 @@ module TebakoRuntimeBuilder
   # fetch the pre-patched ruby source (SHA256-verified against the
   # tamatebako/ruby release SHA256SUMS), run the CMake project in build/,
   # then relink and strip the runtime binary to the output path.
-  class Builder
+  class Builder # rubocop:disable Metrics/ClassLength
     def initialize(repo_root:, ruby_version:, tebako_version:, prefix:, output:, # rubocop:disable Metrics/ParameterLists,Metrics/MethodLength
                    patchelf: false, jobs: nil, release: SourceFetcher::DEFAULT_RELEASE, mirror: nil,
-                   image: true, tfs: nil)
+                   image: true, embed_image: false, tfs: nil)
       @repo_root = repo_root
       @ruby_version = ruby_version
       @tebako_version = tebako_version
@@ -46,11 +46,13 @@ module TebakoRuntimeBuilder
       @release = release
       @mirror = mirror
       @image = image
+      @embed_image = embed_image
       @tfs = tfs
       @platform = TebakoRuntimeBuilder::Platform.new
     end
 
     def run
+      check_image_shape!
       assets = fetcher.fetch_assets(@ruby_version, @platform)
       puts "-- Building tebako runtime for ruby #{@ruby_version} " \
            "(tebako #{@tebako_version}, #{@platform.host_id}, " \
@@ -74,6 +76,17 @@ module TebakoRuntimeBuilder
     end
 
     private
+
+    # A runtime with neither the embedded image (v1 shape) nor the
+    # standalone .tfs (image era) cannot boot at all -- refuse to build it
+    def check_image_shape!
+      return if @image || @embed_image
+
+      raise TebakoRuntimeBuilder::Error.new(
+        "--no-image without --embed-image produces a runtime that carries no filesystem image " \
+        "in any form (it would fail every boot naming TEBAKO_RUNTIME_IMAGE)", 105
+      )
+    end
 
     def fetcher
       @fetcher ||= TebakoRuntimeBuilder::SourceFetcher.new(release: @release, mirror: @mirror,
@@ -116,6 +129,7 @@ module TebakoRuntimeBuilder
         args += ["-DRUBY_TARBALL_P2:STRING=file://#{tarball_p2}", "-DRUBY_HASH_P2:STRING=#{sha256_p2}"]
       end
       args << "-DREMOVE_GLIBC_PRIVATE=ON" if @patchelf && @platform.linux_gnu?
+      args << "-DTEBAKO_EMBED_IMAGE:BOOL=ON" if @embed_image
       args += ["-G", @platform.m_files, "-B", output_folder, "-S", File.join(@repo_root, "build")]
 
       FileUtils.mkdir_p(output_folder)

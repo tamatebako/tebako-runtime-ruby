@@ -43,7 +43,11 @@
 #    toolchain ruby link and run as a plain interpreter during
 #    'make install'; it is removed after the toolchain build and the
 #    final relink (tools/build_runtime, after this project builds)
-#    picks up the real libtebako-fs.a with the embedded filesystem
+#    picks up the real libtebako-fs.a
+#  - image era (default, item 30b): the executable carries no embedded
+#    filesystem image (zero-size incbin symbols); the standalone
+#    <runtime>.tfs, mounted via TEBAKO_RUNTIME_IMAGE, is the runtime's
+#    filesystem. -DTEBAKO_EMBED_IMAGE=ON restores the v1 embedded shape.
 #
 # Expected on the cmake command line:
 #   -DTEBAKO_VERSION:STRING=x.y.z   (runtime contract version)
@@ -111,6 +115,12 @@ set(IS_DARWIN OFF)
 set(RB_W32 OFF)
 set(RUBY_WITHOUT_EXT "dbm,win32,win32ole,-test-/*")
 option(DWARFS_PRELOAD "Deploy the prebuilt libtfs package from the GitHub release (OFF builds libtfs from source with the vcpkg toolchain)" ON)
+# Image era (item 30b): the runtime executable ships WITHOUT the embedded
+# incbin filesystem image; the standalone <runtime>.tfs next to it (mounted
+# via TEBAKO_RUNTIME_IMAGE -- see src/tebako-main.cpp) is the runtime's
+# filesystem. ON restores the v1 shape (the image embeds and the variable
+# is ignored unless set) for consumers that resolve the executable alone.
+option(TEBAKO_EMBED_IMAGE "Embed the runtime filesystem image into the executable (v1 shape)" OFF)
 if(DEFINED ENV{DWARFS_PRELOAD})
   set(DWARFS_PRELOAD $ENV{DWARFS_PRELOAD} CACHE BOOL "Deploy the prebuilt libtfs package from the GitHub release" FORCE)
 endif()
@@ -297,6 +307,7 @@ message(STATUS "Target Gem directory: ${TGD}")
 message(STATUS "FS_MOUNT_POINT: ${FS_MOUNT_POINT}")
 message(STATUS "Building for Win32 Ruby (RB_W32): ${RB_W32}")
 message(STATUS "Removing GLIBC_PRIVATE reference: ${WITH_PATCHELF}")
+message(STATUS "Embedding the filesystem image (v1 shape): ${TEBAKO_EMBED_IMAGE}")
 
 # ...................................................................
 # Other options
@@ -317,6 +328,22 @@ if ("-${RUNTIME_NAME}" STREQUAL "-")
 endif()
 
 configure_file(${CMAKE_SOURCE_DIR}/resources/tebako-version.h.in ${GEN_DIR}/tebako-version.h @ONLY)
+
+# The filesystem translation unit: v1 builds embed ${DATA_BIN_FILE} via
+# incbin (the deploy pass writes it with mkdwarfs); image-era builds carry
+# the zero-size symbols instead (gfsSize == 0 -- the driver then mounts the
+# image TEBAKO_RUNTIME_IMAGE names; src/tebako-main.cpp). The zero symbols
+# mirror INCBIN(fs, ...) so the driver links unchanged either way.
+if(TEBAKO_EMBED_IMAGE)
+  set(TEBAKO_FS_IMAGE_DEF "INCBIN(fs, \"${DATA_BIN_FILE}\");")
+else(TEBAKO_EMBED_IMAGE)
+  # extern-and-initializer: definitions with EXTERNAL linkage (a plain
+  # namespace-scope const is internal in C++ and the driver would not link)
+  set(TEBAKO_FS_IMAGE_DEF "/* Image era: no embedded image (item 30b) */\n\
+extern const INCBIN_ALIGN unsigned char gfsData[] = {0};\n\
+extern const unsigned char* const gfsEnd = gfsData;\n\
+extern const unsigned int gfsSize = 0;")
+endif(TEBAKO_EMBED_IMAGE)
 configure_file(${CMAKE_SOURCE_DIR}/resources/tebako-fs.cpp.in ${GEN_DIR}/tebako-fs.cpp @ONLY)
 configure_file(${CMAKE_SOURCE_DIR}/resources/stub.rb.in ${GEN_DIR}/local/stub.rb @ONLY)
 
@@ -522,10 +549,15 @@ set(CMAKE_CXX_EXTENSIONS   OFF)
 # Packaged filesystem
 
 add_custom_target(packaged_filesystem
-  COMMAND ${RUBY_INTERP} ${CMAKE_SOURCE_DIR}/tools/build_pass.rb deploy ${RUBY_VER} ${RUBY_STASH_DIR} ${DATA_SRC_DIR} ${DATA_PRE_DIR} ${DATA_BIN_FILE} ${GEN_DIR}/local ${DEPS_BIN_DIR} ${RUBY_SOURCE_DIR} ${RUNTIME_NAME}
+  COMMAND ${RUBY_INTERP} ${CMAKE_SOURCE_DIR}/tools/build_pass.rb deploy ${RUBY_VER} ${RUBY_STASH_DIR} ${DATA_SRC_DIR} ${DATA_PRE_DIR} ${DATA_BIN_FILE} ${GEN_DIR}/local ${DEPS_BIN_DIR} ${RUBY_SOURCE_DIR} ${RUNTIME_NAME} $<BOOL:${TEBAKO_EMBED_IMAGE}>
   DEPENDS setup
-  BYPRODUCTS ${DATA_BIN_FILE}
 )
+# The deploy pass writes ${DATA_BIN_FILE} (mkdwarfs) only for the embedded
+# (v1) shape; image-era builds skip it and the incbin TU carries zero-size
+# symbols, so there is no embedded-image dependency to track.
+if(TEBAKO_EMBED_IMAGE)
+  set_property(TARGET packaged_filesystem APPEND PROPERTY BYPRODUCTS ${DATA_BIN_FILE})
+endif(TEBAKO_EMBED_IMAGE)
 
 set(CMAKE_CXX_FLAGS "${RUBY_C_FLAGS} -I${GEN_DIR}")
 
@@ -541,7 +573,11 @@ add_library(tebako-fs STATIC
 # .incbin directive -- a dependency the build system cannot see. Without
 # OBJECT_DEPENDS an incremental rebuild (same build tree, regenerated
 # fs.bin) would relink the runtime against the STALE embedded image.
-set_source_files_properties(${GEN_DIR}/tebako-fs.cpp PROPERTIES OBJECT_DEPENDS ${DATA_BIN_FILE})
+# Image-era builds carry no embedded image: the generated TU holds the
+# zero-size symbols and fs.bin is never written.
+if(TEBAKO_EMBED_IMAGE)
+  set_source_files_properties(${GEN_DIR}/tebako-fs.cpp PROPERTIES OBJECT_DEPENDS ${DATA_BIN_FILE})
+endif(TEBAKO_EMBED_IMAGE)
 
 if(${RUBY_VER} VERSION_LESS "3.3.0" AND ("${OSTYPE_TXT}" MATCHES "^msys*" OR "${OSTYPE_TXT}" MATCHES "^cygwin*"))
   target_compile_definitions(tebako-fs PUBLIC RB_W32_PRE_33)

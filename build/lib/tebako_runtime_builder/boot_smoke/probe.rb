@@ -81,6 +81,7 @@ module BootSmokeProbe
       require "bundler"
       Bundler::VERSION
     end
+    report("process_lock") { process_lock_check }
     report("default_gems_load") do
       require "csv"
       defined?(CSV::VERSION) ? CSV::VERSION : "loaded"
@@ -156,6 +157,21 @@ module BootSmokeProbe
     raise "gem home #{home} is not a directory" unless File.directory?(home)
 
     home
+  end
+
+  # Bundler's ProcessLock targets the bundle path -- Gem.dir, inside the
+  # read-only memfs. Every supported bundler degrades to "no lock" there
+  # (2.5/2.6 rescue EROFS & co., 4.x wraps the failure as PermissionError);
+  # what must never escape is the drift-class errno (the unshimmed
+  # statx/fcopyfile EBADF the image-era boot gap died with -- it matched
+  # none of the rescues and aborted the boot).
+  def self.process_lock_check
+    require "bundler"
+    unless defined?(Bundler::ProcessLock)
+      raise NotImplementedError, "bundler #{Bundler::VERSION} carries no ProcessLock"
+    end
+
+    Bundler::ProcessLock.lock(Gem.dir) { "no-lock-on-memfs" }
   end
 
   # The memfs is read-only; the writable path is a host temporary file, so

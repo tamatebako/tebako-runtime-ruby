@@ -34,7 +34,7 @@
 #   tools/build_runtime --ruby 3.3.7 [--output PATH] [--prefix DIR]
 #                       [--tebako-version X.Y.Z] [--src-release TAG]
 #                       [--src-mirror URL] [--patchelf] [--jobs N]
-#                       [--no-image] [--tfs PATH]
+#                       [--no-image] [--embed-image] [--tfs PATH]
 
 require "optparse"
 
@@ -53,13 +53,17 @@ options = {
   patchelf: false,
   jobs: nil,
   image: true,
+  embed_image: false,
   tfs: nil
 }
 
 # The item-30 image options (kept out of the parser block for readability)
 def image_options(opts, options)
   opts.on("--[no-]image", "Also pack the runtime layout as <output>.tfs next to the executable " \
-                          "(default: on)") { |v| options[:image] = v }
+                          "(default: on; the image era's only filesystem image)") { |v| options[:image] = v }
+  opts.on("--[no-]embed-image", "Embed the filesystem image into the executable (v1 shape; " \
+                                "default: off -- the image-era executable mounts " \
+                                "TEBAKO_RUNTIME_IMAGE instead)") { |v| options[:embed_image] = v }
   opts.on("--tfs PATH", "tfs binary (tebako-rs tfs-cli) for the image step " \
                         "(default: TEBAKO_TFS, then tfs on PATH, then the deps mkdwarfs)") do |v|
     options[:tfs] = v
@@ -114,6 +118,7 @@ begin
     release: options[:src_release],
     mirror: options[:src_mirror],
     image: options[:image],
+    embed_image: options[:embed_image],
     tfs: options[:tfs]
   )
   builder.run

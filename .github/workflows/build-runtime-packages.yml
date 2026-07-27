@@ -245,7 +245,9 @@ jobs:
       # boots the executable and exercises the memfs syscall surface
       # (stat/btime, image IO, gem home/bundler, flock) so the
       # statx/fcntl/flock drift class is caught at build time rather than
-      # by tebako-rs users. A red boot-smoke skips the upload below, and
+      # by tebako-rs users. The boot mirrors the image-era bootstrap:
+      # TEBAKO_RUNTIME_IMAGE points at the leg's own .tfs (item 30b). A red
+      # boot-smoke skips the upload below, and
       # the release job's completeness gate then fails the run loudly --
       # a drifted runtime never ships. Container legs run the class on the
       # host: the gnu/musl executables run on the ubuntu host kernel
