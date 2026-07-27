@@ -1,0 +1,93 @@
+name: bump-source-pin
+
+# Receives the dispatch fired by tamatebako/ruby's runtime-pin-bump
+# workflow after a successful release-src publish, and opens a pull
+# request bumping the DEFAULT_RELEASE pin in
+# build/lib/tebako_runtime_builder/source_fetcher.rb to the published tag.
+# The PR runs the normal build-runtime-packages matrix; nothing
+# auto-merges -- a human reviews and merges.
+#
+# Idempotent: a repeated dispatch for the same tag no-ops when the pin is
+# already at that tag or the bump branch already exists. The branch is
+# pushed once, plainly -- never force-pushed.
+#
+# The PAT (TEBAKO_CI_PAT_TOKEN, the same secret the other tamatebako repos
+# use for cross-repo work) is used for the push and PR creation so the
+# pull_request event actually triggers CI; a PR created with the default
+# GITHUB_TOKEN would not. GITHUB_TOKEN is the fallback.
+
+on:
+  repository_dispatch:
+    types: ["tfs-ruby-src-release"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "tamatebako/ruby source release tag (e.g. v0.2.9)"
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    name: bump DEFAULT_RELEASE to ${{ github.event.client_payload.tag || inputs.tag }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          token: ${{ secrets.TEBAKO_CI_PAT_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: bump the pin
+        id: bump
+        env:
+          TAG: ${{ github.event.client_payload.tag || inputs.tag }}
+        run: |
+          set -euo pipefail
+          file="build/lib/tebako_runtime_builder/source_fetcher.rb"
+          case "$TAG" in
+            v[0-9]*) ;;
+            *) echo "::error::unexpected tag '$TAG'"; exit 1 ;;
+          esac
+          current=$(grep -oE 'DEFAULT_RELEASE = "[^"]+"' "$file" | cut -d'"' -f2)
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          if [ "$current" = "$TAG" ]; then
+            echo "DEFAULT_RELEASE already at $TAG -- nothing to do"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          branch="bot/source-pin-$TAG"
+          if git ls-remote --exit-code --heads origin "$branch" > /dev/null 2>&1; then
+            echo "branch $branch already exists -- nothing to do"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          sed -i "s/DEFAULT_RELEASE = \"$current\"/DEFAULT_RELEASE = \"$TAG\"/" "$file"
+          grep -n 'DEFAULT_RELEASE = ' "$file"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: push branch and open pull request
+        if: steps.bump.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.TEBAKO_CI_PAT_TOKEN || secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.client_payload.tag || inputs.tag }}
+          CURRENT: ${{ steps.bump.outputs.current }}
+          BRANCH: ${{ steps.bump.outputs.branch }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add build/lib/tebako_runtime_builder/source_fetcher.rb
+          git commit -m "chore: pin tamatebako/ruby src $TAG (was $CURRENT)"
+          git push origin "$BRANCH"
+          gh pr create --base main --head "$BRANCH" \
+            --title "Pin tamatebako/ruby src $TAG" \
+            --body "Automated pin bump: tamatebako/ruby published source release **$TAG** (release-src completed successfully and dispatched this bump).
+
+          - \`DEFAULT_RELEASE\` in \`build/lib/tebako_runtime_builder/source_fetcher.rb\`: \`$CURRENT\` -> \`$TAG\`
+          - Source release: https://github.com/tamatebako/ruby/releases/tag/$TAG
+
+          CI runs the full runtime matrix on this pull request. Nothing auto-merges -- a human reviews and merges."
