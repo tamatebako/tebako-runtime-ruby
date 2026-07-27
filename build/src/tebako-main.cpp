@@ -40,6 +40,10 @@
  *    read_self_manifest()
  *  - the launcher ABI v1 handoff (--tebako-image/--tebako-entry/
  *    --tebako-launcher-abi) a tebako-bootstrap execs lean packages with
+ *  - TEBAKO_RUNTIME_IMAGE: in the classic/incbin startup path the named
+ *    runtime filesystem image (.tfs) wins over the embedded incbin image
+ *    (item 30b); image-era builds ship without the embedded image and
+ *    rely on it, v1 runtimes ignore it
  *  - the classic options --tebako-run and --tebako-extract
  *  - the entry dispatch: after mounting, the interpreter is handed
  *    [<argv0>, <mount point><entry point>, <application args...>] and runs
@@ -899,8 +903,34 @@ extern "C" int tebako_main(int* argc, char*** argv)
           }
         }
         else {
-          /* Classic incbin bundle: mount the embedded image from memory */
-          if (tebako_fs_init(&gfsData[0], gfsSize, mount_point.c_str()) != 0) {
+          /* Classic incbin bundle startup: mount the embedded image from
+             memory -- or, when TEBAKO_RUNTIME_IMAGE is set, the runtime's
+             filesystem image it names (item 30b). The variable carries the
+             absolute path of the sha256-verified .tfs artifact the
+             bootstrap resolved into the shared cache; image-era builds ship
+             gfsSize == 0 and rely on it, v1 runtimes ignore it and mount
+             the embedded image exactly as before. */
+          const char* runtime_image = getenv("TEBAKO_RUNTIME_IMAGE");
+          if (runtime_image != nullptr && runtime_image[0] != '\0') {
+            if (tebako_fs_init_from_file(runtime_image, mount_point.c_str()) != 0) {
+              printf("Tebako: failed to mount the runtime filesystem image from '%s': %s\n", runtime_image,
+                     tebako_strerror(tebako_get_errno()));
+              startup_failed = true;
+            }
+            else {
+              mounted = true;
+            }
+          }
+          else if (gfsSize == 0) {
+            /* Image-era build without the variable: nothing embeds the
+               runtime's files anymore, so name the handoff the bootstrap
+               was supposed to perform instead of a bare libtfs error. */
+            printf("Tebako: this runtime carries no embedded filesystem image and TEBAKO_RUNTIME_IMAGE\n"
+                   "  is not set -- resolve the runtime through an image-era tebako bootstrap, or set\n"
+                   "  TEBAKO_RUNTIME_IMAGE to the runtime's .tfs filesystem image.\n");
+            startup_failed = true;
+          }
+          else if (tebako_fs_init(&gfsData[0], gfsSize, mount_point.c_str()) != 0) {
             printf("Tebako: failed to mount the embedded filesystem image: %s\n",
                    tebako_strerror(tebako_get_errno()));
             startup_failed = true;
