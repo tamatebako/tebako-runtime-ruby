@@ -240,6 +240,45 @@ jobs:
           test -s "$img" || { echo "::error::missing runtime filesystem image $img"; exit 1; }
           ls -l "$exe" "$img"
 
+      # Roadmap item 19: boot-smoke the freshly built runtime BEFORE the
+      # artifacts leave the leg. spec/boot_smoke_spec.rb (tag :boot_smoke)
+      # boots the executable and exercises the memfs syscall surface
+      # (stat/btime, image IO, gem home/bundler, flock) so the
+      # statx/fcntl/flock drift class is caught at build time rather than
+      # by tebako-rs users. A red boot-smoke skips the upload below, and
+      # the release job's completeness gate then fails the run loudly --
+      # a drifted runtime never ships. Container legs run the class on the
+      # host: the gnu/musl executables run on the ubuntu host kernel
+      # directly. The bundler env stays inside these steps so the runtime
+      # build above never sees a bundle exec RUBYOPT.
+      - name: Setup Ruby for boot-smoke (container legs)
+        if: matrix.env.container != null
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: 3.3
+          bundler-cache: true
+
+      - name: Boot-smoke the fresh runtime
+        if: matrix.env.os != 'windows'
+        shell: bash
+        env:
+          TEBAKO_RUNTIME_ROOT: runtime-packages
+        run: |
+          set -euo pipefail
+          bundle install --jobs 4 --retry 3
+          bundle exec rspec --tag boot_smoke --format documentation
+
+      - name: Boot-smoke the fresh runtime (Windows)
+        if: matrix.env.os == 'windows'
+        shell: msys2 {0}
+        env:
+          TEBAKO_RUNTIME_ROOT: runtime-packages
+        run: |
+          set -euo pipefail
+          gem install bundler --no-document
+          bundle install --jobs 4 --retry 3
+          bundle exec rspec --tag boot_smoke --format documentation
+
       - name: Upload runtime package
         uses: actions/upload-artifact@v4
         with:

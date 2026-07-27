@@ -1,0 +1,177 @@
+# frozen_string_literal: true
+
+# Copyright (c) 2026 [Ribose Inc](https://www.ribose.com).
+# All rights reserved.
+# This file is a part of the Tebako project.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions
+# are met:
+# 1. Redistributions of source code must retain the above copyright
+#    notice, this list of conditions and the following disclaimer.
+# 2. Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+# ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
+# TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+# PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS
+# BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
+# THE POSSIBILITY OF SUCH DAMAGE.
+
+# In-runtime boot-smoke probe (roadmap item 19). This file is NOT part of
+# the build library's constant graph: TebakoRuntimeBuilder::BootSmoke
+# preloads it into the runtime under test via RUBYOPT (-r), so every check
+# runs inside the packaged memfs context before the compiled-in entry stub
+# dispatches. It is deliberately a top-level module, standalone (image
+# stdlib/default gems only), and exits the interpreter when done.
+#
+# The probe only SENSES: each check prints exactly one
+#   BOOT-SMOKE <check> <ok|fail|unsupported> <detail>
+# line on stdout; the host-side BootSmoke::Run model and the spec class
+# judge. A check raises on a violated invariant rather than reporting a
+# false-looking ok, so "fail" always names the drifted syscall.
+module BootSmokeProbe
+  MOUNT_POINT = ENV.fetch("TEBAKO_BOOT_MOUNT_POINT", "/__tebako_memfs__").freeze
+  STUB = File.join(MOUNT_POINT, "local", "stub.rb").freeze
+
+  def self.report(name)
+    detail = yield
+    puts "BOOT-SMOKE #{name} ok #{detail}"
+  rescue NotImplementedError => e
+    # Platform does not expose the facility at all (e.g. btime on the
+    # linux statx path -- the memfs carries no birthtime by design)
+    puts "BOOT-SMOKE #{name} unsupported #{e.message}"
+  rescue Exception => e # rubocop:disable Lint/RescueException
+    # Deliberate: a check must never kill the probe before it reports
+    puts "BOOT-SMOKE #{name} fail #{e.class}: #{e.message}"
+  end
+
+  def self.boot
+    report("ruby_version") { RUBY_VERSION }
+  end
+
+  def self.stat
+    report("stat") { stat_check }
+    report("lstat") { lstat_check }
+    report("fstat") { fstat_check }
+    report("birthtime") { birthtime_check }
+    report("exist") { exist_check }
+    report("readable") { readable_check }
+    report("dir_iteration") { dir_iteration_check }
+  end
+
+  def self.io
+    report("read_image_file") { File.open(STUB) { |io| io.readline.strip } }
+    report("load_path_default_gem") do
+      require "fileutils"
+      defined?(FileUtils::VERSION) ? FileUtils::VERSION : "loaded"
+    end
+  end
+
+  def self.bundler
+    report("gem_home") { gem_home_check }
+    report("require_bundler") do
+      require "bundler"
+      Bundler::VERSION
+    end
+    report("default_gems_load") do
+      require "csv"
+      defined?(CSV::VERSION) ? CSV::VERSION : "loaded"
+    end
+  end
+
+  def self.locks
+    report("flock_writable") { flock_check }
+  end
+
+  def self.run
+    case ENV.fetch("TEBAKO_BOOT_PROBE", "")
+    when "boot" then boot
+    when "stat" then stat
+    when "io" then io
+    when "bundler" then bundler
+    when "locks" then locks
+    else exit 2
+    end
+    exit 0
+  end
+
+  def self.stat_check
+    stat = File.stat(STUB)
+    raise "#{STUB} is not a file" unless stat.file? && stat.size.positive?
+
+    "size=#{stat.size}"
+  end
+
+  def self.lstat_check
+    "size=#{File.lstat(STUB).size}"
+  end
+
+  def self.fstat_check
+    File.open(STUB) { |io| "size=#{io.stat.size}" }
+  end
+
+  def self.birthtime_check
+    File.stat(STUB).birthtime.to_s
+  end
+
+  def self.exist_check
+    raise "File.exist? false for #{STUB}" unless File.exist?(STUB)
+
+    missing = File.join(MOUNT_POINT, "local", "no-such-file.rb")
+    raise "File.exist? true for missing #{missing}" if File.exist?(missing)
+
+    "true"
+  end
+
+  def self.readable_check
+    raise "File.readable? false for #{STUB}" unless File.readable?(STUB)
+
+    "true"
+  end
+
+  def self.dir_iteration_check
+    children = Dir.children(MOUNT_POINT)
+    unless children.include?("lib") && children.include?("local")
+      raise "mount root misses lib/local: #{children.sort.join(",")}"
+    end
+
+    children.sort.join(",")
+  end
+
+  # Gem.home was removed in rubygems 3.5; Gem.dir is the successor. Both
+  # must resolve to the image gem home (the image-era Gem.home gap had it
+  # unset/host-pointed and broke bundler inside packaged apps).
+  def self.gem_home_check
+    require "rubygems"
+    home = defined?(Gem.home) ? Gem.home : Gem.dir
+    raise "gem home is not defined" if home.nil? || home.empty?
+    raise "gem home #{home} is not a directory" unless File.directory?(home)
+
+    home
+  end
+
+  # The memfs is read-only; the writable path is a host temporary file, so
+  # POSIX fcntl semantics pass through to the host fd. On msys the shimmed
+  # no-op lands with item 18 (the host spec pends until then).
+  def self.flock_check
+    require "tmpdir"
+    Dir.mktmpdir do |dir|
+      File.open(File.join(dir, "boot-smoke.lock"), "w") do |io|
+        raise "flock(LOCK_EX) failed" unless io.flock(File::LOCK_EX)
+        raise "flock(LOCK_UN) failed" unless io.flock(File::LOCK_UN)
+      end
+    end
+    "ex/un"
+  end
+end
+
+$stdout.sync = true
+BootSmokeProbe.run
