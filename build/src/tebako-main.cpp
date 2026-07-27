@@ -43,7 +43,7 @@
  *  - TEBAKO_RUNTIME_IMAGE: in the classic/incbin startup path the named
  *    runtime filesystem image (.tfs) wins over the embedded incbin image
  *    (item 30b); image-era builds ship without the embedded image and
- *    rely on it, v1 runtimes ignore it
+ *    rely on it, embedded builds mount from memory when it is absent
  *  - the classic options --tebako-run and --tebako-extract
  *  - the entry dispatch: after mounting, the interpreter is handed
  *    [<argv0>, <mount point><entry point>, <application args...>] and runs
