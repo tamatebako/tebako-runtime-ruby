@@ -41,7 +41,8 @@ module TebakoRuntimeBuilder
   #                    config.status (the deferred patch of the canonical set)
   #   toolchain     -- make + make install, stash the pristine ruby
   #                    environment, drop the stub libtebako-fs.a
-  #   deploy        -- assemble the runtime filesystem image (fs.bin)
+  #   deploy        -- assemble the runtime layout tree (and, for the v1
+  #                    embedded shape, the fs.bin image incbin embeds)
   #   finalize      -- relink the ruby program against the real
   #                    libtebako-fs.a and strip it to the output package
   module BuildPasses
@@ -175,11 +176,11 @@ module TebakoRuntimeBuilder
       end
 
       def deploy(ruby_ver, stash_dir, data_src_dir, data_pre_dir, data_bin_file, stub_dir, deps_bin_dir, # rubocop:disable Metrics/ParameterLists
-                 ruby_source_dir = nil, runtime_name = nil)
+                 ruby_source_dir = nil, runtime_name = nil, embed: true)
         rv = TebakoRuntimeBuilder::RubyVersion.new(ruby_ver)
         platform = TebakoRuntimeBuilder::Platform.new
         TebakoRuntimeBuilder::ImageBuilder.new(platform, rv, stash_dir, data_src_dir, data_pre_dir,
-                                               data_bin_file, deps_bin_dir).build(stub_dir)
+                                               data_bin_file, deps_bin_dir, embed: embed).build(stub_dir)
         create_implib(ruby_source_dir, data_src_dir, runtime_name, rv) if platform.msys?
       end
 

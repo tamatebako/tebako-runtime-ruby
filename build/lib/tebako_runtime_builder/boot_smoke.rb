@@ -135,6 +135,13 @@ module TebakoRuntimeBuilder
     # child also boots from an empty scratch cwd: bundler's rubygems plugin
     # otherwise auto-detects the host checkout's Gemfile from the cwd and
     # materializes the host bundle inside the runtime.
+    #
+    # When the sibling <executable>.tfs exists the handoff mirrors the
+    # image-era bootstrap exactly: TEBAKO_RUNTIME_IMAGE names it and the
+    # driver mounts it (an image-era executable ships no embedded image and
+    # would not boot otherwise; an item-30b embedded executable proves the
+    # variable wins over its incbin image). A runtime root without the
+    # image boots the v1 embedded way, byte-identical to before.
     def boot(scenario)
       Dir.mktmpdir("tebako-boot-smoke") do |cwd|
         return Timeout.timeout(BOOT_TIMEOUT) { Open3.capture3(boot_env(scenario), executable, chdir: cwd) }
@@ -147,6 +154,8 @@ module TebakoRuntimeBuilder
 
     def boot_env(scenario)
       env = ENV_SCRUBBED.to_h { |key| [key, nil] }
+      image = "#{executable}.tfs"
+      env["TEBAKO_RUNTIME_IMAGE"] = image if File.file?(image)
       env.merge("RUBYOPT" => "-r#{PROBE_PATH}",
                 "TEBAKO_BOOT_PROBE" => scenario,
                 "TEBAKO_BOOT_MOUNT_POINT" => mount_point)
