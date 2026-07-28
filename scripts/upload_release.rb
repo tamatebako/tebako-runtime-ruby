@@ -31,8 +31,15 @@ require "octokit"
 require "digest"
 require "json"
 require "pathname"
+require "yaml"
 
 RUNTIME_REPO = "tamatebako/tebako-runtime-ruby"
+
+# The bootstrap <-> runtime contract version (roadmap 45) emitted into every
+# manifest entry. contract.yml at the repo root is the release pipeline's
+# single source of truth; the compiled-in TEBAKO_CONTRACT_VERSION in the
+# runtime driver is CI-locked to agree with it (scripts/check_contract_version.rb).
+CONTRACT_YML = Pathname.new(File.expand_path("../contract.yml", __dir__)).freeze
 
 # Upload release manager for tebako build workflow
 class ReleaseManager # rubocop:disable Metrics/ClassLength
@@ -42,6 +49,17 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     @version = ENV.fetch("TEBAKO_VERSION")
     @tag = "v#{@version}"
     @release_title = "Tebako runtime packages #{@tag}"
+    @contract_version = load_contract_version
+  end
+
+  # Fail closed: a release whose manifest cannot name the runtime contract
+  # version never ships (the bootstrap negotiates on this field).
+  def load_contract_version
+    data = YAML.load_file(CONTRACT_YML)
+    version = data.is_a?(Hash) ? data["contract_version"] : nil
+    return version if version.is_a?(Integer) && version.positive?
+
+    raise "#{CONTRACT_YML} does not define a positive integer contract_version (roadmap 45)"
   end
 
   # One manifest entry per runtime PACKAGE (the executable). A sibling
@@ -49,7 +67,8 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   # package's entry as an additive `image` key -- top-level entries stay
   # one-per-package so existing consumers (which match on ruby_version /
   # platform / filename) are unaffected, and a .tfs file never becomes
-  # a top-level entry of its own.
+  # a top-level entry of its own. The additive `contract_version` key
+  # (roadmap 45) follows the same compat rule.
   def build_manifest_entries(packages)
     executables, images = packages.partition { |package| !image_file?(package) }
     executables.sort_by { |package| package.basename.to_s }.map do |package|
@@ -167,6 +186,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     ruby_version, platform = parse_package_filename(package.basename.to_s)
     {
       tebako_version: @version,
+      contract_version: @contract_version,
       ruby_version: ruby_version,
       platform: platform,
       filename: package.basename.to_s,

@@ -5,6 +5,7 @@ source "https://rubygems.org"
 gem "base64", "~> 0.2.0"
 gem "faraday-retry", "~> 2.2"
 gem "json", "~> 2.6"
+gem "json_schemer", "~> 2.4"
 gem "octokit", "~> 7.1"
 gem "thor", "~> 1.3"
 

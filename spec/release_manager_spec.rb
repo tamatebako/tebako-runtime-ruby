@@ -4,6 +4,7 @@ require "spec_helper"
 require "digest"
 require "json"
 require "pathname"
+require "yaml"
 
 require_relative "../scripts/upload_release"
 
@@ -161,11 +162,25 @@ RSpec.describe ReleaseManager do
 
     entry = manager.build_manifest_entries([exe, img]).first
 
-    expect(entry.keys).to contain_exactly(:tebako_version, :ruby_version, :platform,
+    expect(entry.keys).to contain_exactly(:tebako_version, :contract_version, :ruby_version, :platform,
                                           :filename, :sha256, :size_bytes, :image)
     expect(entry[:tebako_version]).to eq(SPEC_VERSION)
     expect(entry[:sha256]).to eq(Digest::SHA256.file(exe).hexdigest)
     expect(entry[:size_bytes]).to eq(exe.size)
+  end
+
+  # Roadmap 45: every published package entry names the bootstrap <->
+  # runtime contract it was built for; the value comes from contract.yml,
+  # the release pipeline's single source of truth (never hardcode it here --
+  # the next contract bump edits contract.yml and the driver define only).
+  it "emits the repo contract version into every manifest entry" do
+    expected = YAML.load_file(File.join(REPO_ROOT, "contract.yml")).fetch("contract_version")
+    exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
+    other = package("tebako-runtime-#{SPEC_VERSION}-3.1.6-linux-gnu-x86_64")
+
+    entries = manager.build_manifest_entries([exe, other])
+
+    expect(entries.map { |entry| entry[:contract_version] }).to eq([expected, expected])
   end
 
   it "checksummes both the package and its image, image line following its package" do

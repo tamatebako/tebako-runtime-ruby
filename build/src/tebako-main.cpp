@@ -116,6 +116,22 @@
 #define TEBAKO_LAUNCHER_ENTRY_ARG "--tebako-entry"
 #define TEBAKO_LAUNCHER_VERSION_ARG "--tebako-launcher-abi"
 
+/*
+ * Bootstrap <-> runtime contract version (roadmap 45): the env vars passed
+ * down, the argv layout, and the filesystem-image handoff this runtime
+ * speaks. Contract 1 pins the current semantics exactly. The release
+ * pipeline's single source of truth is contract.yml at the repo root --
+ * manifest.json emits the field from it -- and this compiled-in constant is
+ * the runtime's own knowledge of the contract; the two are CI-locked in
+ * agreement by scripts/check_contract_version.rb. The driver exports the
+ * value as the TEBAKO_CONTRACT_VERSION environment variable before the
+ * entry dispatch (below). Bump rules: any change to env/argv/handoff
+ * semantics = +1 in both places, same commit.
+ */
+#define TEBAKO_CONTRACT_VERSION 1
+#define TEBAKO_STRINGIZE_DETAIL(x) #x
+#define TEBAKO_STRINGIZE(x) TEBAKO_STRINGIZE_DETAIL(x)
+
 static int running_miniruby = 0;
 /* Owns the dispatch argv handed to the interpreter; process-lifetime like
    the incbin section itself (ruby reads argv until process exit). */
@@ -757,6 +773,18 @@ extern "C" int tebako_main(int* argc, char*** argv)
     running_miniruby = -1;
   }
   else {
+    /*
+     * Roadmap 45: export this runtime's contract version before anything
+     * else runs. The runtime is authoritative for the contract it speaks,
+     * so an inherited value is always overwritten. The miniruby pass-through
+     * above is a build-time tool and exports nothing.
+     */
+#ifdef _WIN32
+    _putenv_s("TEBAKO_CONTRACT_VERSION", TEBAKO_STRINGIZE(TEBAKO_CONTRACT_VERSION));
+#else
+    setenv("TEBAKO_CONTRACT_VERSION", TEBAKO_STRINGIZE(TEBAKO_CONTRACT_VERSION), 1);
+#endif
+
     std::string mount_point = tebako::fs_mount_point;
     std::string entry_point = tebako::fs_entry_point;
     std::optional<std::string> cwd;

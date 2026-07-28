@@ -80,12 +80,44 @@ the ruby executable and the bin shims are stripped from the layout; the
 interpreter is the outer driver executable that mounts the image, exactly
 like the packaged-app path).
 
+## Bootstrap ↔ runtime contract version (roadmap 45)
+
+The bootstrap (released from tamatebako/tebako) and the runtime images
+published here version independently, so the protocol between them — the
+env vars passed down, the argv layout, the filesystem-image handoff — is
+versioned as an integer **contract**. Contract 1 pins today's semantics
+exactly; current behavior IS the contract.
+
+Two representations, locked in agreement by CI
+(`scripts/check_contract_version.rb`, run in the prepare job before the
+matrix builds, and by `spec/contract_spec.rb`):
+
+- `contract.yml` (schema: `schema/contract.schema.yml`) — the release
+  pipeline's single source of truth. `scripts/upload_release.rb` emits it
+  as an additive `contract_version` key in every `manifest.json` package
+  entry (consumers ignoring the key keep working, same rule as `image`).
+- `TEBAKO_CONTRACT_VERSION` in `build/src/tebako-main.cpp` — the constant
+  compiled into the runtime itself. The driver exports it as the
+  `TEBAKO_CONTRACT_VERSION` environment variable before the entry dispatch,
+  so the packaged context (and any driver-stage tooling) can read the
+  contract the runtime speaks.
+
+**Bump rules:** any change to env/argv/handoff semantics bumps the integer
+by exactly +1 in BOTH places, same commit — the agreement check fails the
+build otherwise. The bootstrap side (negotiation, `min_contract..max_contract`
+range, `ContractMismatch` named error) lives in the tebako-rs workspace; the
+version → semantics changelog table is spec 06's.
+
 ## Layout
 
-- `VERSION` — the runtime contract version: package names and the release
-  tag follow it (`v$(cat VERSION)`), and the gem's RuntimeManager resolves
-  packages by exactly this version. Bump it in lockstep with the tebako gem
-  version the produced runtimes serve.
+- `VERSION` — the package version: package names and the release tag follow
+  it (`v$(cat VERSION)`), and the gem's RuntimeManager resolves packages by
+  exactly this version. Bump it in lockstep with the tebako gem version the
+  produced runtimes serve. (Not the roadmap-45 contract version — that one
+  lives in `contract.yml`.)
+- `contract.yml` + `schema/` — the bootstrap ↔ runtime contract version
+  (roadmap 45) and its JSON schema; `scripts/check_contract_version.rb`
+  locks it against the compiled-in constant (see the contract section above).
 - `build/` — the self-contained CMake build project (vendored from the
   tebako gem's runtime press driver, adapted to the pre-patched source):
   `CMakeLists.txt`, `cmake/`, `cmake-scripts/`, `src/tebako-main.cpp`,
