@@ -1,0 +1,11 @@
+# JSON Schema (draft 2020-12) for contract.yml -- the bootstrap <-> runtime
+# contract version manifest (roadmap 45).
+$schema: "https://json-schema.org/draft/2020-12/schema"
+title: tebako-runtime-ruby bootstrap <-> runtime contract
+type: object
+required: [contract_version]
+additionalProperties: false
+properties:
+  contract_version:
+    type: integer
+    minimum: 1

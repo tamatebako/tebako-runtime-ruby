@@ -1,0 +1,16 @@
+# Bootstrap <-> runtime contract version (roadmap 45): the versioned
+# protocol between the tebako bootstrap (released from tamatebako/tebako)
+# and the runtime images published from this repo -- the env vars passed
+# down, the argv layout, and the filesystem-image handoff. Contract 1 pins
+# today's semantics exactly; the current semantics ARE the contract.
+#
+# Bump rules: any change to env/argv/handoff semantics bumps the integer
+# by exactly +1, here and in the compiled-in TEBAKO_CONTRACT_VERSION in
+# build/src/tebako-main.cpp (the two are CI-locked in agreement by
+# scripts/check_contract_version.rb). The release pipeline reads this file
+# (scripts/upload_release.rb emits it into every manifest.json entry) and
+# the driver exports it as the TEBAKO_CONTRACT_VERSION env var.
+#
+# Schema: schema/contract.schema.yml (validated by the same check).
+---
+contract_version: 1

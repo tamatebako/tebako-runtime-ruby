@@ -102,6 +102,14 @@ jobs:
           echo "Building runtimes for Tebako version $version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
+      # Roadmap 45: fail before the matrix builds anything if contract.yml
+      # (the release pipeline's source of truth) and the compiled-in
+      # TEBAKO_CONTRACT_VERSION in the runtime driver disagree -- a contract
+      # bump edits both in the same commit.
+      - name: Check contract version agreement
+        run: |
+          ./scripts/check_contract_version.rb
+
       - name: Generate build matrix
         id: set-matrix
         env:
