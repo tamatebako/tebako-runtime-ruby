@@ -50,7 +50,18 @@ module BootSmokeProbe
     puts "BOOT-SMOKE #{name} unsupported #{e.message}"
   rescue Exception => e # rubocop:disable Lint/RescueException
     # Deliberate: a check must never kill the probe before it reports
-    puts "BOOT-SMOKE #{name} fail #{e.class}: #{e.message}"
+    puts "BOOT-SMOKE #{name} fail #{e.class}: #{e.message} || #{context_line}"
+  end
+
+  # One-line in-runtime diagnostic context appended to a failed check's
+  # detail (the host side surfaces it via Run#detail): which rubygems
+  # actually loaded, what is already activated/loaded, and where
+  # requires look.
+  def self.context_line
+    gems = defined?(Gem) && Gem.respond_to?(:version) ? Gem.version : "undef"
+    specs = defined?(Gem) && Gem.respond_to?(:loaded_specs) ? Gem.loaded_specs.keys.sort.join(",") : "n/a"
+    feats = $LOADED_FEATURES.grep(/rubygems|bundler|tmpdir|csv|tebako/).join(",")
+    "ctx{gem_version=#{gems} loaded_specs=#{specs} feats=#{feats} load_path=#{$LOAD_PATH.join(";")}}"
   end
 
   def self.boot
