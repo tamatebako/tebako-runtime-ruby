@@ -50,7 +50,18 @@ module BootSmokeProbe
     puts "BOOT-SMOKE #{name} unsupported #{e.message}"
   rescue Exception => e # rubocop:disable Lint/RescueException
     # Deliberate: a check must never kill the probe before it reports
-    puts "BOOT-SMOKE #{name} fail #{e.class}: #{e.message}"
+    puts "BOOT-SMOKE #{name} fail #{e.class}: #{e.message} || #{context_line}"
+  end
+
+  # One-line in-runtime diagnostic context appended to a failed check's
+  # detail (the host side surfaces it via Run#detail): which rubygems
+  # actually loaded, what is already activated/loaded, and where
+  # requires look.
+  def self.context_line
+    gems = defined?(Gem) && Gem.respond_to?(:version) ? Gem.version : "undef"
+    specs = defined?(Gem) && Gem.respond_to?(:loaded_specs) ? Gem.loaded_specs.keys.sort.join(",") : "n/a"
+    feats = $LOADED_FEATURES.grep(/rubygems|bundler|tmpdir|csv|tebako/).join(",")
+    "ctx{gem_version=#{gems} loaded_specs=#{specs} feats=#{feats} load_path=#{$LOAD_PATH.join(";")}}"
   end
 
   def self.boot
@@ -69,6 +80,7 @@ module BootSmokeProbe
 
   def self.io
     report("read_image_file") { File.open(STUB) { |io| io.readline.strip } }
+    report("read_stdlib_files") { read_stdlib_check }
     report("load_path_default_gem") do
       require "fileutils"
       defined?(FileUtils::VERSION) ? FileUtils::VERSION : "loaded"
@@ -111,6 +123,32 @@ module BootSmokeProbe
     end
 
     "size=#{stat.size}"
+  end
+
+  # Byte-level read of representative stdlib files in the image: File.size
+  # (the stat surface) must equal the bytes a read actually returns. The
+  # 4.0.x msys runtime loaded lib/ruby/4.0.0/{rubygems,bundler,tmpdir}.rb
+  # as EMPTY files (the requires returned, nothing was defined) while
+  # other files read fine -- the require path alone cannot tell the two
+  # apart, so the check reads the files outright.
+  STDLIB_READ_FILES = %w[rubygems.rb bundler.rb tmpdir.rb fileutils.rb].freeze
+
+  def self.read_stdlib_check
+    api = "#{RUBY_VERSION.split(".")[0, 2].join(".")}.0"
+    results = STDLIB_READ_FILES.to_h { |name| [name, stdlib_file_read_size(api, name)] }
+    bad = results.reject { |_name, (size, read)| size.positive? && size == read }
+    raise "image stdlib reads return wrong content: #{stdlib_read_detail(results)}" unless bad.empty?
+
+    stdlib_read_detail(results)
+  end
+
+  def self.stdlib_read_detail(results)
+    results.map { |name, (size, read, head)| "#{name}:size=#{size},read=#{read},head=#{head}" }.join(" ")
+  end
+
+  def self.stdlib_file_read_size(api, name)
+    path = File.join(MOUNT_POINT, "lib", "ruby", api, name)
+    [File.size(path), File.binread(path).bytesize, File.binread(path, 16).unpack1("H*")]
   end
 
   def self.lstat_check
