@@ -83,6 +83,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tebako-version: ${{ steps.get-version.outputs.version }}
+      source-pin: ${{ steps.get-source-pin.outputs.pin }}
       env-matrix: ${{ steps.set-matrix.outputs.env-matrix }}
       ruby-matrix: ${{ steps.set-matrix.outputs.ruby-matrix }}
     steps:
@@ -101,6 +102,17 @@ jobs:
           version=$(cat VERSION)
           echo "Building runtimes for Tebako version $version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # The tamatebako/ruby source release pin the runtimes build from. It
+      # keys the build job's .build cache: a prefix restored under the same
+      # key was built from the pinned source, so a pin move must change the
+      # key (see the Cache step below for what a stale restore does).
+      - name: Get tamatebako/ruby source pin
+        id: get-source-pin
+        run: |
+          pin=$(grep -oE 'DEFAULT_RELEASE = "[^"]+"' build/lib/tebako_runtime_builder/source_fetcher.rb | cut -d'"' -f2)
+          echo "Building runtimes from tamatebako/ruby source release $pin"
+          echo "pin=$pin" >> "$GITHUB_OUTPUT"
 
       # Roadmap 45: fail before the matrix builds anything if contract.yml
       # (the release pipeline's source of truth) and the compiled-in
@@ -141,16 +153,23 @@ jobs:
 
       # Per-(platform, ruby) cache of the whole build prefix (.build), which
       # holds both the ruby-independent deps and the ruby-specific build
-      # trees. Host-native jobs only: container jobs build inside the CI
-      # container image whose toolchain is baked into the image itself, so
-      # there is no host-side path to cache (the container image is the
-      # cache).
+      # trees. The key carries the tamatebako/ruby source release pin: a
+      # prefix built from the PREVIOUS pin is stale by definition, so the
+      # ExternalProject download step re-runs and re-extracts the new source
+      # over the restored ruby tree -- a remove+rename that does not survive
+      # Windows file locking ('file RENAME failed ... Access is denied'),
+      # and a full rebuild the cache buys nothing for anyway. Caches are
+      # immutable per key, so a stale entry could never repair itself; keyed
+      # on the pin, a pin move is a clean cache miss instead. Host-native
+      # jobs only: container jobs build inside the CI container image whose
+      # toolchain is baked into the image itself, so there is no host-side
+      # path to cache (the container image is the cache).
       - name: Cache build prefix
         if: matrix.env.container == null
         uses: actions/cache@v4
         with:
           path: .build
-          key: tebako-runtime-${{ matrix.env.os }}-${{ matrix.env.arch }}-${{ matrix.ruby }}-${{ needs.prepare.outputs.tebako-version }}-v${{ env.CACHE_VER }}
+          key: tebako-runtime-${{ matrix.env.os }}-${{ matrix.env.arch }}-${{ matrix.ruby }}-${{ needs.prepare.outputs.tebako-version }}-${{ needs.prepare.outputs.source-pin }}-v${{ env.CACHE_VER }}
 
       - name: Build runtime using ci container
         if: matrix.env.container != null
