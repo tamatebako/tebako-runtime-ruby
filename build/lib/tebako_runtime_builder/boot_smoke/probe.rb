@@ -106,7 +106,9 @@ module BootSmokeProbe
 
   def self.stat_check
     stat = File.stat(STUB)
-    raise "#{STUB} is not a file" unless stat.file? && stat.size.positive?
+    unless stat.file? && stat.size.positive?
+      raise "#{STUB} is not a file (file?=#{stat.file?} size=#{stat.size} mode=#{stat.mode.to_s(8)})"
+    end
 
     "size=#{stat.size}"
   end
@@ -175,8 +177,8 @@ module BootSmokeProbe
   end
 
   # The memfs is read-only; the writable path is a host temporary file, so
-  # POSIX fcntl semantics pass through to the host fd. On msys the shimmed
-  # no-op lands with item 18 (the host spec pends until then).
+  # POSIX fcntl semantics pass through to the host fd (the memfs no-op shim
+  # of item 18 covers memfs fds, never this host one).
   def self.flock_check
     require "tmpdir"
     Dir.mktmpdir do |dir|
