@@ -157,11 +157,11 @@ module BootSmokeProbe
   # outright (head bytes expose zero/garbage content the size check
   # cannot), eval the source (the parser path), then require it (the
   # load machinery).
-  def self.read_define_check # rubocop:disable Security/Eval
+  def self.read_define_check
     api = "#{RUBY_VERSION.split(".")[0, 2].join(".")}.0"
     path = File.join(MOUNT_POINT, "lib", "ruby", api, "bundler.rb")
     src = File.binread(path)
-    eval(src, TOPLEVEL_BINDING, path)
+    eval(src, TOPLEVEL_BINDING, path) # rubocop:disable Security/Eval
     evald = defined?(Bundler) ? "defined" : "undef"
     Object.send(:remove_const, :Bundler) if defined?(Bundler)
     require path
