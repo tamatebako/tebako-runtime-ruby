@@ -36,7 +36,10 @@ module TebakoRuntimeBuilder
   #
   #   prepare       -- substitute @TEBAKO_MLIBS@ in template/Makefile.in with
   #                    the platform static library list and build the stub
-  #                    libtebako-fs.a for the toolchain link
+  #                    libtebako-fs.a for the toolchain link; on msys also
+  #                    guard the dir.c glob_opendir capacity hint and read
+  #                    libtfs' struct stat fills through their wire layout
+  #                    (the hot-patches below)
   #   postconfigure -- substitute S["MAINLIBS"] in the generated
   #                    config.status (the deferred patch of the canonical set)
   #   toolchain     -- make + make install, stash the pristine ruby
@@ -45,7 +48,7 @@ module TebakoRuntimeBuilder
   #                    embedded shape, the fs.bin image incbin embeds)
   #   finalize      -- relink the ruby program against the real
   #                    libtebako-fs.a and strip it to the output package
-  module BuildPasses
+  module BuildPasses # rubocop:disable Metrics/ModuleLength
     TEBAKO_MLIBS_PLACEHOLDER = "@TEBAKO_MLIBS@"
 
     # config.status MAINLIBS defaults per platform (gem PatchBuildsystem);
@@ -55,10 +58,120 @@ module TebakoRuntimeBuilder
     MSYS_MAINLIBS_LINE =
       "-lshell32 -lws2_32 -liphlpapi -limagehlp -lshlwapi -lbcrypt -lcrypt32 -ladvapi32 -luser32"
 
+    # msys dir.c hot-patch (glob_opendir capacity hint) ----------------------
+    #
+    # ruby's dir.c on _WIN32 reads the win32 DIR emulation's internals
+    # directly in glob_opendir():
+    #     if ((capacity = dirp->nfiles) > 0) {
+    # -- a pre-allocation hint for the sorted-glob entries array. The
+    # pre-patched msys dir.c routes opendir/readdir into the memfs via the
+    # libtfs c_api, whose tebako_fs_opendir() handle is a registry token
+    # (a small integer cast to void*), NOT a win32 DIR; the nfiles read
+    # dereferences it and segfaults the runtime at startup the first time
+    # rubygems glob-scans the memfs (Dir[] -> Primitive.dir_s_glob ->
+    # glob_opendir; every msys leg of the boot smoke). The guard skips the
+    # hint for memfs handles; the sorted path then grows the entries array
+    # by realloc, exactly like the POSIX build, which has no hint at all.
+    # tebako_fs_dir_is_embedded() is declared by the shim block the msys
+    # patch injects earlier into the same translation unit.
+    # Removal: once tamatebako/ruby's dir_c_memfs_msys.patch carries the
+    # guard in the released source tree the anchor below no longer matches
+    # and the substitution raises -- drop it together with the pin bump.
+    MSYS_GLOB_OPENDIR_ANCHOR = "if ((capacity = dirp->nfiles) > 0) {"
+    MSYS_GLOB_OPENDIR_GUARDED =
+      "if (!tebako_fs_dir_is_embedded((tebako_dir_t) dirp) /* tebako patch */ " \
+      "&& (capacity = dirp->nfiles) > 0) {"
+
+    # msys struct stat wire-layout hot-patch (libtfs c_api ABI) --------------
+    #
+    # ruby's configure runs AC_SYS_LARGEFILE: on mingw it defines
+    # _FILE_OFFSET_BITS=64, which widens this translation unit's struct stat
+    # st_size to 64 bits (and shifts every st_*time field behind it). The
+    # prebuilt libtfs is compiled WITHOUT the define and fills the DEFAULT
+    # ucrt layout (32-bit st_size -- and only st_mtime set, so st_atime is
+    # the memset zero the widened read of st_size lands on). The shim
+    # conversion the pre-patched source injects identically into dir.c,
+    # file.c and io.c (tfs_stat_to_stati128) therefore read a size of 0 for
+    # every memfs entry: File::Stat#size on a memfs path broke while
+    # file?/exist?/directory? kept working (st_mode sits before the
+    # divergence, and tebako_fs_stat itself succeeds). The replacement below
+    # reads the fill through the wire layout libtfs wrote.
+    # Removal: once tamatebako/ruby carries the wire-layout conversion in
+    # the released source, the anchor no longer matches and the substitution
+    # raises -- drop it together with the pin bump. The durable fix is an
+    # explicit, toolchain-flag-proof stat ABI in the libtfs c_api.
+    MSYS_STAT_CONVERSION_ANCHOR = <<~C.chomp
+      static void
+      tfs_stat_to_stati128(const struct stat *i, struct stati128 *o)
+      {
+          o->st_dev = i->st_dev;
+          o->st_ino = i->st_ino;
+          o->st_inohigh = 0;
+          o->st_mode = i->st_mode;
+          o->st_nlink = i->st_nlink;
+          o->st_uid = i->st_uid;
+          o->st_gid = i->st_gid;
+          o->st_rdev = i->st_rdev;
+          o->st_size = i->st_size;
+          o->st_atime = i->st_atime;
+          o->st_atimensec = 0;
+          o->st_mtime = i->st_mtime;
+          o->st_mtimensec = 0;
+          o->st_ctime = i->st_ctime;
+          o->st_ctimensec = 0;
+      }
+    C
+
+    MSYS_STAT_CONVERSION_REPLACEMENT = <<~C.chomp
+      /* The libtfs c_api fills the DEFAULT ucrt struct stat (32-bit st_size);
+         this translation unit has _FILE_OFFSET_BITS=64 from ruby's
+         AC_SYS_LARGEFILE, whose struct stat widens st_size to 64 bits and
+         shifts st_*time -- reading i->st_size picked up libtfs' never-filled
+         st_atime and File::Stat#size on a memfs path came back 0. Read the
+         fill through the wire layout libtfs wrote. */
+      struct tfs_wire_stat {
+          unsigned int st_dev;
+          unsigned short st_ino;
+          unsigned short st_mode;
+          short st_nlink;
+          short st_uid;
+          short st_gid;
+          unsigned int st_rdev;
+          long st_size;
+          long long st_atime;
+          long long st_mtime;
+          long long st_ctime;
+      };
+
+      static void
+      tfs_stat_to_stati128(const struct stat *i, struct stati128 *o)
+      {
+          const struct tfs_wire_stat *w = (const struct tfs_wire_stat *) i;
+          o->st_dev = w->st_dev;
+          o->st_ino = w->st_ino;
+          o->st_inohigh = 0;
+          o->st_mode = w->st_mode;
+          o->st_nlink = w->st_nlink;
+          o->st_uid = w->st_uid;
+          o->st_gid = w->st_gid;
+          o->st_rdev = w->st_rdev;
+          o->st_size = w->st_size;
+          o->st_atime = w->st_atime;
+          o->st_atimensec = 0;
+          o->st_mtime = w->st_mtime;
+          o->st_mtimensec = 0;
+          o->st_ctime = w->st_ctime;
+          o->st_ctimensec = 0;
+      }
+    C
+
+    MSYS_STAT_CONVERSION_MARKER = "struct tfs_wire_stat"
+    MSYS_STAT_CONVERSION_FILES = %w[dir.c file.c io.c].freeze
+
     TOOLCHAIN_STUB_C = File.expand_path("../../resources/toolchain_stub.c", __dir__).freeze
 
     class << self # rubocop:disable Metrics/ClassLength
-      def prepare(ostype, ruby_source_dir, deps_lib_dir, ruby_ver, mount_point, cc = "cc") # rubocop:disable Metrics/ParameterLists
+      def prepare(ostype, ruby_source_dir, deps_lib_dir, ruby_ver, mount_point, cc = "cc") # rubocop:disable Metrics/ParameterLists,Metrics/MethodLength
         puts "-- Running prepare script"
 
         platform = TebakoRuntimeBuilder::Platform.new(ostype)
@@ -70,6 +183,14 @@ module TebakoRuntimeBuilder
         unless platform.msys?
           mlibs = TebakoRuntimeBuilder::Mlibs.new(platform, deps_lib_dir).compute(rv, with_compression: true)
           substitute_tebako_mlibs!(File.join(ruby_source_dir, "template", "Makefile.in"), mlibs)
+        end
+        # msys only: guard the one direct win32-DIR access the io routing of
+        # the pre-patched dir.c does not cover, and read libtfs' struct stat
+        # fills through the wire layout they were written in (the constants
+        # above)
+        if platform.msys?
+          hotfix_msys_glob_opendir!(File.join(ruby_source_dir, "dir.c"))
+          hotfix_msys_stat_wire_layout!(ruby_source_dir)
         end
         build_toolchain_stub(platform, deps_lib_dir, mount_point, cc, rv)
       end
@@ -243,6 +364,63 @@ module TebakoRuntimeBuilder
 
         puts "   ... substituting #{TEBAKO_MLIBS_PLACEHOLDER} in #{makefile_in}"
         File.write(makefile_in, File.read(orig).gsub(TEBAKO_MLIBS_PLACEHOLDER, mlibs))
+      end
+
+      # Guard the dir.c glob_opendir() capacity hint against libtfs dir
+      # handles (MSYS_GLOB_OPENDIR_ANCHOR / MSYS_GLOB_OPENDIR_GUARDED above).
+      # Idempotent like substitute_tebako_mlibs!: the msys pass-2 overlay
+      # re-runs prepare over an already-guarded tree. Fails loudly when the
+      # tree matches neither the guard nor exactly one anchor -- that is the
+      # signal the released pre-patched source changed (the fix landed in
+      # tamatebako/ruby, or the upstream line moved) and this hot-patch must
+      # be revisited.
+      def hotfix_msys_glob_opendir!(dir_c) # rubocop:disable Metrics/MethodLength
+        unless File.exist?(dir_c)
+          raise TebakoRuntimeBuilder::Error.new("Could not patch #{dir_c} because it does not exist.", 107)
+        end
+
+        contents = File.read(dir_c)
+        return if contents.include?(MSYS_GLOB_OPENDIR_GUARDED)
+
+        anchor_count = contents.scan(MSYS_GLOB_OPENDIR_ANCHOR).length
+        unless anchor_count == 1
+          raise TebakoRuntimeBuilder::Error.new(
+            "#{dir_c}: expected exactly one glob_opendir capacity-hint anchor, found #{anchor_count} -- " \
+            "the pre-patched dir.c changed; revisit the msys glob_opendir hot-patch", 130
+          )
+        end
+
+        puts "   ... guarding dir.c glob_opendir capacity hint against libtfs dir handles (msys)"
+        File.write(dir_c, contents.sub(MSYS_GLOB_OPENDIR_ANCHOR, MSYS_GLOB_OPENDIR_GUARDED))
+      end
+
+      # Read libtfs' struct stat fills through the wire layout they were
+      # written in (MSYS_STAT_CONVERSION_* above). One anchored substitution
+      # per patched translation unit; idempotent like
+      # substitute_tebako_mlibs! (the msys pass-2 overlay re-runs prepare),
+      # loud when the anchor drifts (the pre-patched source changed -- the
+      # fix landed in tamatebako/ruby, or the conversion moved).
+      def hotfix_msys_stat_wire_layout!(ruby_source_dir) # rubocop:disable Metrics/MethodLength
+        MSYS_STAT_CONVERSION_FILES.each do |name|
+          path = File.join(ruby_source_dir, name)
+          unless File.exist?(path)
+            raise TebakoRuntimeBuilder::Error.new("Could not patch #{path} because it does not exist.", 107)
+          end
+
+          contents = File.read(path)
+          next if contents.include?(MSYS_STAT_CONVERSION_MARKER)
+
+          anchor_count = contents.scan(MSYS_STAT_CONVERSION_ANCHOR).length
+          unless anchor_count == 1
+            raise TebakoRuntimeBuilder::Error.new(
+              "#{path}: expected exactly one struct stat conversion anchor, found #{anchor_count} -- " \
+              "the pre-patched #{name} changed; revisit the msys stat wire-layout hot-patch", 130
+            )
+          end
+
+          puts "   ... reading libtfs struct stat fills through their wire layout in #{name} (msys)"
+          File.write(path, contents.sub(MSYS_STAT_CONVERSION_ANCHOR, MSYS_STAT_CONVERSION_REPLACEMENT))
+        end
       end
 
       def substitute_config_status!(config_status, platform, mlibs) # rubocop:disable Metrics/MethodLength
