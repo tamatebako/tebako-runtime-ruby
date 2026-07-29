@@ -62,11 +62,50 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
 
     it "skips the template substitution on msys (MAINLIBS comes via config.status there)" do
       File.write(File.join(ruby_src, "template", "Makefile.in"), "MAINLIBS = @MAINLIBS@\n")
+      File.write(File.join(ruby_src, "dir.c"), "        if ((capacity = dirp->nfiles) > 0) {\n")
       expect do
         described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tebako_memfs__", "cc")
       end.not_to raise_error
       expect(File.read(File.join(ruby_src, "template", "Makefile.in"))).to eq("MAINLIBS = @MAINLIBS@\n")
       expect(File.file?(File.join(deps_lib_dir, "libtebako-fs.a"))).to be(true)
+    end
+  end
+
+  describe ".prepare msys dir.c glob_opendir guard" do
+    let(:dir_c) { File.join(ruby_src, "dir.c") }
+    let(:anchor) { "        if ((capacity = dirp->nfiles) > 0) {" }
+
+    before do
+      File.write(dir_c, "#ifdef _WIN32\n#{anchor}\n#endif\n")
+    end
+
+    it "guards the nfiles capacity hint against libtfs dir handles" do
+      described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tebako_memfs__", "cc")
+
+      contents = File.read(dir_c)
+      expect(contents).to include("!tebako_fs_dir_is_embedded((tebako_dir_t) dirp) /* tebako patch */ && " \
+                                  "(capacity = dirp->nfiles) > 0")
+      expect(contents).not_to include("\n#{anchor}\n")
+    end
+
+    it "is idempotent across the msys pass-2 overlay prepare re-run" do
+      described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tebako_memfs__", "cc")
+      expect do
+        described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tebako_memfs__", "cc")
+      end.not_to raise_error
+      expect(File.read(dir_c).scan("dirp->nfiles").length).to eq(1)
+    end
+
+    it "fails loudly when the anchor is absent (the pre-patched tree changed)" do
+      File.write(dir_c, "#ifdef _WIN32\n        if ((capacity = 16) > 0) {\n#endif\n")
+      expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tebako_memfs__", "cc") }
+        .to raise_error(TebakoRuntimeBuilder::Error, /capacity-hint anchor/)
+    end
+
+    it "fails when dir.c does not exist" do
+      FileUtils.rm(dir_c)
+      expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tebako_memfs__", "cc") }
+        .to raise_error(TebakoRuntimeBuilder::Error, /does not exist/)
     end
   end
 

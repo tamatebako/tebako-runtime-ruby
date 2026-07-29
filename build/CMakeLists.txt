@@ -489,7 +489,9 @@ message(STATUS "libyaml Ruby option='${LIBYAML_RUBY_OPTION}'")
 # The build-pass tooling (build/tools/build_pass.rb over build/lib) runs the
 # consumer-side steps the pre-patched source tree expects:
 #   prepare       -- substitute @TEBAKO_MLIBS@ in template/Makefile.in and
-#                    build the stub libtebako-fs.a for the toolchain link
+#                    build the stub libtebako-fs.a for the toolchain link;
+#                    on msys also guard the dir.c glob_opendir capacity hint
+#                    against the libtfs dir handles (hotfix_msys_glob_opendir!)
 #   postconfigure -- substitute S["MAINLIBS"] in the generated config.status
 #   toolchain     -- make + make install, stash the pristine environment
 #   overlay       -- (msys only) lay the pass-2 source tree onto the built

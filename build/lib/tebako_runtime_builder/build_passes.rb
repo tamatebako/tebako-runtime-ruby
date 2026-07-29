@@ -36,7 +36,8 @@ module TebakoRuntimeBuilder
   #
   #   prepare       -- substitute @TEBAKO_MLIBS@ in template/Makefile.in with
   #                    the platform static library list and build the stub
-  #                    libtebako-fs.a for the toolchain link
+  #                    libtebako-fs.a for the toolchain link; on msys also
+  #                    guard the dir.c glob_opendir capacity hint (below)
   #   postconfigure -- substitute S["MAINLIBS"] in the generated
   #                    config.status (the deferred patch of the canonical set)
   #   toolchain     -- make + make install, stash the pristine ruby
@@ -55,6 +56,30 @@ module TebakoRuntimeBuilder
     MSYS_MAINLIBS_LINE =
       "-lshell32 -lws2_32 -liphlpapi -limagehlp -lshlwapi -lbcrypt -lcrypt32 -ladvapi32 -luser32"
 
+    # msys dir.c hot-patch (glob_opendir capacity hint) ----------------------
+    #
+    # ruby's dir.c on _WIN32 reads the win32 DIR emulation's internals
+    # directly in glob_opendir():
+    #     if ((capacity = dirp->nfiles) > 0) {
+    # -- a pre-allocation hint for the sorted-glob entries array. The
+    # pre-patched msys dir.c routes opendir/readdir into the memfs via the
+    # libtfs c_api, whose tebako_fs_opendir() handle is a registry token
+    # (a small integer cast to void*), NOT a win32 DIR; the nfiles read
+    # dereferences it and segfaults the runtime at startup the first time
+    # rubygems glob-scans the memfs (Dir[] -> Primitive.dir_s_glob ->
+    # glob_opendir; every msys leg of the boot smoke). The guard skips the
+    # hint for memfs handles; the sorted path then grows the entries array
+    # by realloc, exactly like the POSIX build, which has no hint at all.
+    # tebako_fs_dir_is_embedded() is declared by the shim block the msys
+    # patch injects earlier into the same translation unit.
+    # Removal: once tamatebako/ruby's dir_c_memfs_msys.patch carries the
+    # guard in the released source tree the anchor below no longer matches
+    # and the substitution raises -- drop it together with the pin bump.
+    MSYS_GLOB_OPENDIR_ANCHOR = "if ((capacity = dirp->nfiles) > 0) {"
+    MSYS_GLOB_OPENDIR_GUARDED =
+      "if (!tebako_fs_dir_is_embedded((tebako_dir_t) dirp) /* tebako patch */ " \
+      "&& (capacity = dirp->nfiles) > 0) {"
+
     TOOLCHAIN_STUB_C = File.expand_path("../../resources/toolchain_stub.c", __dir__).freeze
 
     class << self # rubocop:disable Metrics/ClassLength
@@ -71,6 +96,9 @@ module TebakoRuntimeBuilder
           mlibs = TebakoRuntimeBuilder::Mlibs.new(platform, deps_lib_dir).compute(rv, with_compression: true)
           substitute_tebako_mlibs!(File.join(ruby_source_dir, "template", "Makefile.in"), mlibs)
         end
+        # msys only: guard the one direct win32-DIR access the io routing of
+        # the pre-patched dir.c does not cover (the constants above)
+        hotfix_msys_glob_opendir!(File.join(ruby_source_dir, "dir.c")) if platform.msys?
         build_toolchain_stub(platform, deps_lib_dir, mount_point, cc, rv)
       end
 
@@ -243,6 +271,34 @@ module TebakoRuntimeBuilder
 
         puts "   ... substituting #{TEBAKO_MLIBS_PLACEHOLDER} in #{makefile_in}"
         File.write(makefile_in, File.read(orig).gsub(TEBAKO_MLIBS_PLACEHOLDER, mlibs))
+      end
+
+      # Guard the dir.c glob_opendir() capacity hint against libtfs dir
+      # handles (MSYS_GLOB_OPENDIR_ANCHOR / MSYS_GLOB_OPENDIR_GUARDED above).
+      # Idempotent like substitute_tebako_mlibs!: the msys pass-2 overlay
+      # re-runs prepare over an already-guarded tree. Fails loudly when the
+      # tree matches neither the guard nor exactly one anchor -- that is the
+      # signal the released pre-patched source changed (the fix landed in
+      # tamatebako/ruby, or the upstream line moved) and this hot-patch must
+      # be revisited.
+      def hotfix_msys_glob_opendir!(dir_c) # rubocop:disable Metrics/MethodLength
+        unless File.exist?(dir_c)
+          raise TebakoRuntimeBuilder::Error.new("Could not patch #{dir_c} because it does not exist.", 107)
+        end
+
+        contents = File.read(dir_c)
+        return if contents.include?(MSYS_GLOB_OPENDIR_GUARDED)
+
+        anchor_count = contents.scan(MSYS_GLOB_OPENDIR_ANCHOR).length
+        unless anchor_count == 1
+          raise TebakoRuntimeBuilder::Error.new(
+            "#{dir_c}: expected exactly one glob_opendir capacity-hint anchor, found #{anchor_count} -- " \
+            "the pre-patched dir.c changed; revisit the msys glob_opendir hot-patch", 130
+          )
+        end
+
+        puts "   ... guarding dir.c glob_opendir capacity hint against libtfs dir handles (msys)"
+        File.write(dir_c, contents.sub(MSYS_GLOB_OPENDIR_ANCHOR, MSYS_GLOB_OPENDIR_GUARDED))
       end
 
       def substitute_config_status!(config_status, platform, mlibs) # rubocop:disable Metrics/MethodLength
