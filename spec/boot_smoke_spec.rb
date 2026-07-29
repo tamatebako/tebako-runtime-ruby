@@ -156,13 +156,14 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
         # Regression for the image-era Gem.home gap: Gem.home (rubygems
         # < 3.5) resp. its successor Gem.dir must resolve into the image.
         expect(run).to be_booted, boot_failure(run)
-        expect(run.state("gem_home")).to eq("ok")
+        expect(run.state("gem_home")).to eq("ok"), "probe gem_home detail: #{run.detail("gem_home")}"
         expect(run.detail("gem_home")).to start_with(smoke.mount_point)
       end
 
       it "requires bundler" do
         expect(run).to be_booted, boot_failure(run)
-        expect(run.state("require_bundler")).to eq("ok")
+        expect(run.state("require_bundler")).to eq("ok"),
+                                                "probe require_bundler detail: #{run.detail("require_bundler")}"
         expect(run.detail("require_bundler")).to match(/\A\d+\.\d+\.\d+\z/)
       end
 
@@ -171,12 +172,13 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
         # gem home; supported bundlers degrade to no-lock, the drifted
         # builds escaped with an unrescued EBADF.
         expect(run).to be_booted, boot_failure(run)
-        expect(run.state("process_lock")).to eq("ok")
+        expect(run.state("process_lock")).to eq("ok"), "probe process_lock detail: #{run.detail("process_lock")}"
       end
 
       it "loads default gems" do
         expect(run).to be_booted, boot_failure(run)
-        expect(run.state("default_gems_load")).to eq("ok")
+        expect(run.state("default_gems_load")).to eq("ok"),
+                                                  "probe default_gems_load detail: #{run.detail("default_gems_load")}"
       end
     end
 
@@ -190,7 +192,8 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
         # never touches. (Introduced pending on msys before any msys leg
         # could boot; the first bootable msys runtime proved it stale.)
         expect(run).to be_booted, boot_failure(run)
-        expect(run.state("flock_writable")).to eq("ok")
+        expect(run.state("flock_writable")).to eq("ok"),
+                                               "probe flock_writable detail: #{run.detail("flock_writable")}"
       end
     end
   end
