@@ -262,25 +262,14 @@ jobs:
       # directly. The bundler env stays inside these steps so the runtime
       # build above never sees a bundle exec RUBYOPT.
       - name: Setup Ruby for boot-smoke (container legs)
-        if: matrix.env.container != null
+        if: matrix.env.container != null && matrix.env.os != 'linux-musl'
         uses: ruby/setup-ruby@v1
         with:
           ruby-version: 3.3
           bundler-cache: true
 
-      # The musl runtime binary is dynamic-musl by design (PT_INTERP
-      # /lib/ld-musl-<arch>.so.1 — present on every musl target system,
-      # alpine included). The boot-smoke execs it on the UBUNTU host,
-      # which has no musl loader by default: install one or the exec
-      # fails ENOENT naming the binary (the classic loader-missing
-      # signature). `musl` provides /lib/ld-musl-x86_64.so.1; on the arm
-      # runner it provides the aarch64 loader.
-      - name: Install the musl loader for the musl boot-smoke
-        if: matrix.env.os == 'linux-musl'
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl
-
       - name: Boot-smoke the fresh runtime
-        if: matrix.env.os != 'windows'
+        if: matrix.env.os != 'windows' && matrix.env.os != 'linux-musl'
         shell: bash
         env:
           TEBAKO_RUNTIME_ROOT: runtime-packages
@@ -288,6 +277,32 @@ jobs:
           set -euo pipefail
           bundle install --jobs 4 --retry 3
           bundle exec rspec --tag boot_smoke --format documentation
+
+      # The musl runtime is dynamic-musl BY DESIGN (PT_INTERP
+      # /lib/ld-musl-<arch>.so.1; the released v0.15.9 binaries are the
+      # same shape) — and it links against the musl of the alpine CI
+      # container it was built in. Execing it on the ubuntu host fails
+      # twice over: no loader at all (ENOENT naming the binary), and even
+      # with ubuntu's `musl` package installed, "Error relocating:
+      # qsort_r/crypt_r: symbol not found" — ubuntu 22.04's musl 1.2.2
+      # predates symbols the alpine-built binary needs. The truthful
+      # environment is a real musl userland of the same generation, so
+      # the musl legs smoke inside an alpine container. (The musl symbol
+      # floor for DISTRIBUTION — musl >= 1.2.3 / alpine >= 3.17 — is a
+      # separate, documented decision; TODO.v2-1/11.)
+      - name: Boot-smoke the fresh runtime (musl legs, in alpine)
+        if: matrix.env.os == 'linux-musl'
+        env:
+          TEBAKO_RUNTIME_ROOT: runtime-packages
+        run: |
+          set -euo pipefail
+          docker run --rm -v ${{ github.workspace }}:/mnt/w -w /mnt/w \
+            -e TEBAKO_RUNTIME_ROOT \
+            alpine:3.21 sh -c '
+              set -e
+              apk add --no-cache ruby ruby-dev build-base ruby-bundler >/dev/null
+              bundle install --jobs 4 --retry 3
+              bundle exec rspec --tag boot_smoke --format documentation'
 
       - name: Boot-smoke the fresh runtime (Windows)
         if: matrix.env.os == 'windows'
