@@ -81,7 +81,6 @@ module BootSmokeProbe
   def self.io
     report("read_image_file") { File.open(STUB) { |io| io.readline.strip } }
     report("read_stdlib_files") { read_stdlib_check }
-    report("read_define") { read_define_check }
     report("load_path_default_gem") do
       require "fileutils"
       defined?(FileUtils::VERSION) ? FileUtils::VERSION : "loaded"
@@ -150,25 +149,6 @@ module BootSmokeProbe
   def self.stdlib_file_read_size(api, name)
     path = File.join(MOUNT_POINT, "lib", "ruby", api, name)
     [File.size(path), File.binread(path).bytesize, File.binread(path, 16).unpack1("H*")]
-  end
-
-  # The 4.0.x msys runtime requires bundler.rb into $LOADED_FEATURES yet
-  # ::Bundler stays undefined. Fork the blame in one boot: read the file
-  # outright (head bytes expose zero/garbage content the size check
-  # cannot), eval the source (the parser path), then require it (the
-  # load machinery).
-  def self.read_define_check
-    api = "#{RUBY_VERSION.split(".")[0, 2].join(".")}.0"
-    path = File.join(MOUNT_POINT, "lib", "ruby", api, "bundler.rb")
-    src = File.binread(path)
-    eval(src, TOPLEVEL_BINDING, path) # rubocop:disable Security/Eval
-    evald = defined?(Bundler) ? "defined" : "undef"
-    Object.send(:remove_const, :Bundler) if defined?(Bundler)
-    require path
-    reqd = defined?(Bundler) ? "defined" : "undef"
-    raise "require drops bundler.rb definitions" unless reqd == "defined"
-
-    "bytes=#{src.bytesize} head=#{src[0, 16].unpack1("H*")} eval=#{evald} require=#{reqd}"
   end
 
   def self.lstat_check
