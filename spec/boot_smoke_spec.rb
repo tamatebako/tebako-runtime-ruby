@@ -148,6 +148,11 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
                                                   "probe read_stdlib_files detail: #{run.detail("read_stdlib_files")}"
       end
 
+      it "defines constants from read+eval+require of an image stdlib file" do
+        expect(run).to be_booted, boot_failure(run)
+        expect(run.state("read_define")).to eq("ok"), "probe read_define detail: #{run.detail("read_define")}"
+      end
+
       it "resolves a default gem through $LOAD_PATH" do
         expect(run).to be_booted, boot_failure(run)
         expect(run.state("load_path_default_gem")).to eq("ok")
