@@ -46,7 +46,23 @@ module TebakoRuntimeBuilder
   # 30b) skip it: the executable carries zero-size incbin symbols and the
   # standalone <runtime>.tfs the ImagePackager writes from the same layout
   # tree is the runtime's only filesystem image.
+  #
+  # For the ruby 3.4 line the layout tree's bundled bundler is repaired on
+  # the way in: see backport_bundler_erofs_degradation.
   class ImageBuilder # rubocop:disable Metrics/ClassLength
+    # Anchor for the bundler EROFS backport below: the SystemCallError
+    # catch-all of SharedHelpers.filesystem_access, indented exactly as in
+    # the bundled file (unique there).
+    BUNDLER_RESCUE_ANCHOR = "    rescue SystemCallError => e\n"
+
+    # The backported branch. Upstream (bundler >= 2.6.6) raises
+    # ReadOnlyFileSystemError < PermissionError here; the backport raises
+    # the PermissionError the bundled bundler already defines -- the class
+    # ProcessLock rescues.
+    BUNDLER_EROFS_BRANCH =
+      "    rescue Errno::EROFS\n      " \
+      "raise PermissionError.new(path, action) # tebako backport (bundler < 2.6.6)\n"
+
     def initialize(platform, ruby_ver, stash_dir, data_src_dir, data_pre_dir, data_bin_file, deps_bin_dir, # rubocop:disable Metrics/ParameterLists,Metrics/MethodLength
                    embed: true)
       @platform = platform
@@ -65,6 +81,7 @@ module TebakoRuntimeBuilder
 
     def build(stub_dir)
       init
+      backport_bundler_erofs_degradation
       deploy(stub_dir)
       mkdwarfs if @embed
     end
@@ -78,6 +95,44 @@ module TebakoRuntimeBuilder
       puts "   ... creating packaging environment at #{@data_src_dir}"
       recreate([@data_src_dir, @data_pre_dir, File.dirname(@data_bin_file)])
       FileUtils.cp_r "#{@stash_dir}/.", @data_src_dir
+    end
+
+    # bundler 2.6.0-2.6.5 (the 2.6.2 ruby 3.4.0-3.4.2 bundles) moved
+    # ProcessLock under SharedHelpers.filesystem_access and narrowed its
+    # rescue to PermissionError, but that filesystem_access shape carries no
+    # Errno::EROFS branch: the read-only memfs answers the lockfile create
+    # with EROFS (the io.c tfs_open contract), which lands in the
+    # SystemCallError catch-all and escapes ProcessLock as
+    # GenericSystemCallError. bundler <= 2.5 rescued EROFS in ProcessLock
+    # itself; bundler >= 2.6.6 / 4.x maps it to ReadOnlyFileSystemError <
+    # PermissionError (the upstream fix this backports, reduced to the
+    # PermissionError the bundled bundler already carries). With the
+    # mapping, ProcessLock degrades to no-lock on the memfs like every
+    # supported line. Content-gated both ways: a layout tree whose bundler
+    # already tolerates EROFS (or predates the 2.6 shape and its anchor)
+    # passes through untouched, and the gate restricts the repair to the
+    # affected ruby line.
+    def backport_bundler_erofs_degradation
+      return unless @ruby_ver.ruby34only?
+
+      bundler_helpers_candidates.each do |helpers|
+        next unless File.file?(helpers)
+
+        content = File.read(helpers)
+        next if content.include?("rescue Errno::EROFS") || !content.include?(BUNDLER_RESCUE_ANCHOR)
+
+        puts "   ... backporting the EROFS process-lock degradation into #{helpers.sub("#{@data_src_dir}/", "")}"
+        File.write(helpers, content.sub(BUNDLER_RESCUE_ANCHOR, BUNDLER_EROFS_BRANCH + BUNDLER_RESCUE_ANCHOR))
+      end
+    end
+
+    # Candidate locations: the default-gem install lands bundler's lib files
+    # in the stdlib dir (lib/ruby/<api>/bundler/, the gems/ dir keeps only
+    # exe/); the gems/ glob covers layouts that hold the full gem there.
+    def bundler_helpers_candidates
+      candidates = [File.join(@data_src_dir, "lib", "ruby", @ruby_ver.api_version, "bundler", "shared_helpers.rb")]
+      candidates += Dir.glob(File.join(@tgd, "gems", "bundler-*/lib/bundler/shared_helpers.rb"))
+      candidates.uniq.sort
     end
 
     def deploy(stub_dir)

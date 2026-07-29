@@ -22,6 +22,14 @@ RSpec.describe TebakoRuntimeBuilder::RubyVersion do
     expect(rv.ruby33only?).to be(true)
     expect(rv.ruby3x7?).to be(true)
     expect(rv.ruby34?).to be(false)
+    expect(rv.ruby34only?).to be(false)
+  end
+
+  it "treats 3.4.x as ruby34only" do
+    rv34 = described_class.new("3.4.2")
+    expect(rv34.ruby34?).to be(true)
+    expect(rv34.ruby34only?).to be(true)
+    expect(rv34.ruby33only?).to be(false)
   end
 
   it "treats 3.2.x as ruby32only" do
@@ -35,6 +43,7 @@ RSpec.describe TebakoRuntimeBuilder::RubyVersion do
   it "treats 4.x lines as ruby34 without string-indexing fallout" do
     rv40 = described_class.new("4.0.6")
     expect(rv40.ruby34?).to be(true)
+    expect(rv40.ruby34only?).to be(false)
     expect(rv40.ruby3x7?).to be(true)
     expect(rv40.ruby33only?).to be(false)
     expect(rv40.api_version).to eq("4.0.0")

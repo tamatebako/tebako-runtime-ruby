@@ -161,10 +161,13 @@ module BootSmokeProbe
 
   # Bundler's ProcessLock targets the bundle path -- Gem.dir, inside the
   # read-only memfs. Every supported bundler degrades to "no lock" there
-  # (2.5/2.6 rescue EROFS & co., 4.x wraps the failure as PermissionError);
-  # what must never escape is the drift-class errno (the unshimmed
-  # statx/fcopyfile EBADF the image-era boot gap died with -- it matched
-  # none of the rescues and aborted the boot).
+  # (<= 2.5 rescues EROFS & co. directly, 4.x wraps the failure as
+  # PermissionError; 2.6.0-2.6.5 lost the EROFS degradation upstream, so
+  # the factory backports it into 3.4-line images -- see
+  # ImageBuilder#backport_bundler_erofs_degradation); what must never
+  # escape is the drift-class errno (the unshimmed statx/fcopyfile EBADF
+  # the image-era boot gap died with -- it matched none of the rescues and
+  # aborted the boot).
   def self.process_lock_check
     require "bundler"
     unless defined?(Bundler::ProcessLock)

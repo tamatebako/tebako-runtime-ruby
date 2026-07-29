@@ -71,6 +71,10 @@ module TebakoRuntimeBuilder
       @ruby33only ||= major_minor == [3, 3]
     end
 
+    def ruby34only?
+      @ruby34only ||= major_minor == [3, 4]
+    end
+
     def ruby3x7?
       @ruby3x7 ||= ruby34? ||
                    (ruby33only? && patch_version >= 7) ||
