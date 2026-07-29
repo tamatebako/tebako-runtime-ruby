@@ -491,7 +491,8 @@ message(STATUS "libyaml Ruby option='${LIBYAML_RUBY_OPTION}'")
 #   prepare       -- substitute @TEBAKO_MLIBS@ in template/Makefile.in and
 #                    build the stub libtebako-fs.a for the toolchain link;
 #                    on msys also guard the dir.c glob_opendir capacity hint
-#                    against the libtfs dir handles (hotfix_msys_glob_opendir!)
+#                    against the libtfs dir handles and read libtfs' struct
+#                    stat fills through their wire layout (the hot-patches)
 #   postconfigure -- substitute S["MAINLIBS"] in the generated config.status
 #   toolchain     -- make + make install, stash the pristine environment
 #   overlay       -- (msys only) lay the pass-2 source tree onto the built

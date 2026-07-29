@@ -18,6 +18,17 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
     FileUtils.remove_entry(root)
   end
 
+  # An msys ruby source tree fixture carrying the anchors the prepare
+  # hot-patches act on (dir.c: the glob hint and the stat conversion;
+  # file.c/io.c: the stat conversion)
+  def write_msys_source_fixtures(dir)
+    conversion = TebakoRuntimeBuilder::BuildPasses::MSYS_STAT_CONVERSION_ANCHOR
+    glob = TebakoRuntimeBuilder::BuildPasses::MSYS_GLOB_OPENDIR_ANCHOR
+    File.write(File.join(dir, "dir.c"), "#{glob}\n#{conversion}\n")
+    File.write(File.join(dir, "file.c"), "#{conversion}\n")
+    File.write(File.join(dir, "io.c"), "#{conversion}\n")
+  end
+
   describe ".prepare" do
     before do
       File.write(File.join(ruby_src, "template", "Makefile.in"),
@@ -62,7 +73,7 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
 
     it "skips the template substitution on msys (MAINLIBS comes via config.status there)" do
       File.write(File.join(ruby_src, "template", "Makefile.in"), "MAINLIBS = @MAINLIBS@\n")
-      File.write(File.join(ruby_src, "dir.c"), "        if ((capacity = dirp->nfiles) > 0) {\n")
+      write_msys_source_fixtures(ruby_src)
       expect do
         described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tebako_memfs__", "cc")
       end.not_to raise_error
@@ -76,7 +87,7 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
     let(:anchor) { "        if ((capacity = dirp->nfiles) > 0) {" }
 
     before do
-      File.write(dir_c, "#ifdef _WIN32\n#{anchor}\n#endif\n")
+      write_msys_source_fixtures(ruby_src)
     end
 
     it "guards the nfiles capacity hint against libtfs dir handles" do
@@ -85,7 +96,7 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
       contents = File.read(dir_c)
       expect(contents).to include("!tebako_fs_dir_is_embedded((tebako_dir_t) dirp) /* tebako patch */ && " \
                                   "(capacity = dirp->nfiles) > 0")
-      expect(contents).not_to include("\n#{anchor}\n")
+      expect(contents.scan("dirp->nfiles").length).to eq(1)
     end
 
     it "is idempotent across the msys pass-2 overlay prepare re-run" do
@@ -104,6 +115,43 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
 
     it "fails when dir.c does not exist" do
       FileUtils.rm(dir_c)
+      expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tebako_memfs__", "cc") }
+        .to raise_error(TebakoRuntimeBuilder::Error, /does not exist/)
+    end
+  end
+
+  describe ".prepare msys struct stat wire layout" do
+    before do
+      write_msys_source_fixtures(ruby_src)
+    end
+
+    it "reads libtfs struct stat fills through the wire layout in dir.c, file.c and io.c" do
+      described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tebako_memfs__", "cc")
+
+      %w[dir.c file.c io.c].each do |name|
+        contents = File.read(File.join(ruby_src, name))
+        expect(contents).to include("struct tfs_wire_stat")
+        expect(contents).to include("const struct tfs_wire_stat *w = (const struct tfs_wire_stat *) i;")
+        expect(contents).not_to include("o->st_size = i->st_size;")
+      end
+    end
+
+    it "is idempotent across the msys pass-2 overlay prepare re-run" do
+      described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tebako_memfs__", "cc")
+      expect do
+        described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tebako_memfs__", "cc")
+      end.not_to raise_error
+      expect(File.read(File.join(ruby_src, "io.c")).scan("struct tfs_wire_stat {").length).to eq(1)
+    end
+
+    it "fails loudly when a conversion anchor is absent (the pre-patched tree changed)" do
+      File.write(File.join(ruby_src, "io.c"), "static void\nunrelated(void);\n")
+      expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tebako_memfs__", "cc") }
+        .to raise_error(TebakoRuntimeBuilder::Error, /struct stat conversion anchor/)
+    end
+
+    it "fails when a patched translation unit does not exist" do
+      FileUtils.rm(File.join(ruby_src, "file.c"))
       expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tebako_memfs__", "cc") }
         .to raise_error(TebakoRuntimeBuilder::Error, /does not exist/)
     end
