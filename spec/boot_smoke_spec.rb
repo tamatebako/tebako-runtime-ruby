@@ -93,13 +93,14 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
 
       it "stats and lstats a memfs path" do
         expect(run).to be_booted, boot_failure(run)
-        expect(run.state("stat")).to eq("ok")
-        expect(run.state("lstat")).to eq("ok")
+        expect(run.state("stat")).to eq("ok"), "probe stat detail: #{run.detail("stat")}"
+        expect(run.state("lstat")).to eq("ok"), "probe lstat detail: #{run.detail("lstat")}"
       end
 
       it "fstats an open memfs file" do
         expect(run).to be_booted, boot_failure(run)
-        expect(run.state("fstat")).to eq("ok")
+        expect(run.state("fstat")).to eq("ok"), "probe fstat detail: #{run.detail("fstat")}"
+        expect(run.detail("fstat")).to match(/size=[1-9]\d*\z/)
       end
 
       it "exercises the birthtime/btime path" do
@@ -183,9 +184,11 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
       let(:run) { smoke.run("locks") }
 
       it "flocks a writable path (fcntl/POSIX semantics)" do
-        # On msys the flock shim lands as a no-op with item 18; pend until
-        # then (a pass here flips the pending and frees the marker).
-        pending "msys flock lands as a shim no-op with item 18" if smoke.platform.msys?
+        # The probe's writable path is a HOST temp file, so flock passes
+        # through to the host CRT flock unchanged on every platform -- the
+        # memfs no-op shim (item 18) covers memfs fds, which this check
+        # never touches. (Introduced pending on msys before any msys leg
+        # could boot; the first bootable msys runtime proved it stale.)
         expect(run).to be_booted, boot_failure(run)
         expect(run.state("flock_writable")).to eq("ok")
       end
