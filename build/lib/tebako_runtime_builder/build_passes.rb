@@ -268,8 +268,53 @@ module TebakoRuntimeBuilder
 
     TOOLCHAIN_STUB_C = File.expand_path("../../resources/toolchain_stub.c", __dir__).freeze
 
+    # msys rb_w32_fd_is_text shim (libtfs token fds) --------------------------
+    #
+    # A length-capped read of a memfs file (File.binread(path, n), IO#read(n))
+    # takes ruby's CRLF set_binary_mode_with_seek_cur path on mingw, which
+    # calls rb_w32_fd_is_text(fd) -- _osfile(fd) & FTEXT, an index into the
+    # CRT fd table. libtfs memfs fds carry TEBAKO_FD_FLAG (0x40000000), so
+    # the index lands far out of bounds and the runtime segfaults. Full
+    # reads never take that path (read_all), which is why only the capped
+    # form crashes. The pre-patched io.c shim block dispatches
+    # read/pread/lseek/close/fstat/fcntl through tebako_fd_is_embedded but
+    # left rb_w32_fd_is_text to the CRT; the substitution adds the missing
+    # dispatch (the memfs fd has no CRT entry: report binary, the truthful
+    # mode for image content).
+    # Removal: once tamatebako/ruby's io_c_shims_msys patch carries the
+    # dispatch in the released source the anchor below no longer matches
+    # and the substitution raises -- drop it together with the pin bump.
+    MSYS_FD_IS_TEXT_ANCHOR = <<~C.chomp
+      #define rb_w32_close(...) tfs_close(__VA_ARGS__)
+      #define rb_w32_fstati128(...) tfs_fstati128(__VA_ARGS__)
+      #define fcntl(...) tfs_fcntl(__VA_ARGS__)
+    C
+
+    MSYS_FD_IS_TEXT_REPLACEMENT = <<~C.chomp
+      /* rb_w32_fd_is_text reads the CRT fd table (_osfile) indexed by a real CRT
+         fd; a libtfs token (fd | TEBAKO_FD_FLAG) indexes it far out of bounds
+         and segfaults -- the CRLF set_binary_mode_with_seek_cur path of a
+         length-capped read (File.binread(path, n)) hits it. The memfs fd has
+         no CRT entry: report binary, the truthful mode for image content. */
+      static int
+      tfs_fd_is_text(int fd)
+      {
+          if (tebako_fd_is_embedded(fd)) {
+              return 0;
+          }
+          return rb_w32_fd_is_text(fd);
+      }
+
+      #define rb_w32_close(...) tfs_close(__VA_ARGS__)
+      #define rb_w32_fstati128(...) tfs_fstati128(__VA_ARGS__)
+      #define rb_w32_fd_is_text(...) tfs_fd_is_text(__VA_ARGS__)
+      #define fcntl(...) tfs_fcntl(__VA_ARGS__)
+    C
+
+    MSYS_FD_IS_TEXT_MARKER = "tfs_fd_is_text"
+
     class << self # rubocop:disable Metrics/ClassLength
-      def prepare(ostype, ruby_source_dir, deps_lib_dir, ruby_ver, mount_point, cc = "cc") # rubocop:disable Metrics/ParameterLists,Metrics/MethodLength
+      def prepare(ostype, ruby_source_dir, deps_lib_dir, ruby_ver, mount_point, cc = "cc") # rubocop:disable Metrics/ParameterLists
         puts "-- Running prepare script"
 
         platform = TebakoRuntimeBuilder::Platform.new(ostype)
@@ -283,15 +328,12 @@ module TebakoRuntimeBuilder
           substitute_tebako_mlibs!(File.join(ruby_source_dir, "template", "Makefile.in"), mlibs)
         end
         # msys only: guard the one direct win32-DIR access the io routing of
-        # the pre-patched dir.c does not cover, and read libtfs' struct stat
-        # fills through the wire layout they were written in (the constants
-        # above: dir.c/file.c/io.c for the io layer, prism_compile.c for the
-        # ruby 3.4+ parser)
-        if platform.msys?
-          hotfix_msys_glob_opendir!(File.join(ruby_source_dir, "dir.c"))
-          hotfix_msys_stat_wire_layout!(ruby_source_dir)
-          hotfix_msys_prism_stat_wire_layout!(File.join(ruby_source_dir, "prism_compile.c"))
-        end
+        # the pre-patched dir.c does not cover, read libtfs' struct stat
+        # fills through the wire layout they were written in, and dispatch
+        # rb_w32_fd_is_text for libtfs token fds (the constants above:
+        # dir.c/file.c/io.c for the io layer, prism_compile.c for the ruby
+        # 3.4+ parser, io.c for the CRLF fd-is-text probe)
+        hotfix_msys!(ruby_source_dir) if platform.msys?
         build_toolchain_stub(platform, deps_lib_dir, mount_point, cc, rv)
       end
 
@@ -466,6 +508,17 @@ module TebakoRuntimeBuilder
         File.write(makefile_in, File.read(orig).gsub(TEBAKO_MLIBS_PLACEHOLDER, mlibs))
       end
 
+      # The msys hot-patch set the prepare pass applies (the constants
+      # above): the dir.c glob_opendir guard, the struct stat wire-layout
+      # reads in dir.c/file.c/io.c and prism_compile.c, and the io.c
+      # rb_w32_fd_is_text dispatch.
+      def hotfix_msys!(ruby_source_dir)
+        hotfix_msys_glob_opendir!(File.join(ruby_source_dir, "dir.c"))
+        hotfix_msys_stat_wire_layout!(ruby_source_dir)
+        hotfix_msys_prism_stat_wire_layout!(File.join(ruby_source_dir, "prism_compile.c"))
+        hotfix_msys_fd_is_text!(File.join(ruby_source_dir, "io.c"))
+      end
+
       # Guard the dir.c glob_opendir() capacity hint against libtfs dir
       # handles (MSYS_GLOB_OPENDIR_ANCHOR / MSYS_GLOB_OPENDIR_GUARDED above).
       # Idempotent like substitute_tebako_mlibs!: the msys pass-2 overlay
@@ -548,6 +601,34 @@ module TebakoRuntimeBuilder
 
         puts "   ... reading libtfs struct stat fills through their wire layout in prism_compile.c (msys)"
         File.write(prism_compile_c, contents.sub(MSYS_PRISM_STAT_ANCHOR, MSYS_PRISM_STAT_REPLACEMENT))
+      end
+
+      # Dispatch rb_w32_fd_is_text for libtfs token fds through
+      # tebako_fd_is_embedded (MSYS_FD_IS_TEXT_* above). Same shape as the
+      # other msys hot-patches: idempotent on re-run (the msys pass-2
+      # overlay re-runs prepare), loud when the anchor drifts (the
+      # pre-patched source changed -- the fix landed in tamatebako/ruby, or
+      # the macro block moved). Every msys scenario tree carries the io.c
+      # shim block the anchor lives in.
+      def hotfix_msys_fd_is_text!(io_c) # rubocop:disable Metrics/MethodLength
+        unless File.exist?(io_c)
+          raise TebakoRuntimeBuilder::Error.new("Could not patch #{io_c} because it does not exist.", 107)
+        end
+
+        contents = File.read(io_c)
+        return if contents.include?(MSYS_FD_IS_TEXT_MARKER)
+        return unless contents.include?("tfs_close")
+
+        anchor_count = contents.scan(MSYS_FD_IS_TEXT_ANCHOR).length
+        unless anchor_count == 1
+          raise TebakoRuntimeBuilder::Error.new(
+            "#{io_c}: expected exactly one fd dispatch macro anchor, found #{anchor_count} -- " \
+            "the pre-patched io.c changed; revisit the msys rb_w32_fd_is_text hot-patch", 130
+          )
+        end
+
+        puts "   ... dispatching rb_w32_fd_is_text through tebako_fd_is_embedded in io.c (msys)"
+        File.write(io_c, contents.sub(MSYS_FD_IS_TEXT_ANCHOR, MSYS_FD_IS_TEXT_REPLACEMENT))
       end
 
       def substitute_config_status!(config_status, platform, mlibs) # rubocop:disable Metrics/MethodLength
