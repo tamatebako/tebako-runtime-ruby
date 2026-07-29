@@ -168,6 +168,104 @@ module TebakoRuntimeBuilder
     MSYS_STAT_CONVERSION_MARKER = "struct tfs_wire_stat"
     MSYS_STAT_CONVERSION_FILES = %w[dir.c file.c io.c].freeze
 
+    # msys prism memfs-read stat wire-layout hot-patch (libtfs c_api ABI) ---
+    #
+    # ruby 3.4+ parses every required file with prism (load.c
+    # load_iseq_eval -> pm_load_parse_file -> pm_load_file), and the
+    # pre-patched msys prism_compile.c reads the memfs source through
+    # tfs_string_file_init, which sizes the file with
+    #     struct stat sb; tebako_fs_fstat(fd, &sb); size = sb.st_size;
+    # -- the same wire-layout drift the MSYS_STAT_CONVERSION hot-patch
+    # above covers for dir.c/file.c/io.c: this translation unit carries
+    # _FILE_OFFSET_BITS=64 (ruby's AC_SYS_LARGEFILE), whose struct stat
+    # widens st_size to 64 bits and shifts st_*time behind it, while the
+    # prebuilt libtfs fills the default ucrt layout (32-bit st_size, only
+    # st_mtime set). The widened read of st_size lands on the never-filled
+    # st_atime, so tfs_string_file_init returns an EMPTY string with
+    # PM_STRING_INIT_SUCCESS and prism parses nothing: every require of a
+    # memfs file "succeeds" defining nothing (the windows 3.4+/4.0.x
+    # runtimes boot with no rubygems -- bundler/tmpdir requires return
+    # without defining, default/bundled gems never resolve; ruby <= 3.3
+    # parses with parse.y over the io.c layer this already covers).
+    # The replacement reads the fill through the wire layout libtfs wrote
+    # (st_mode sits before the divergence and keeps its meaning).
+    # Removal: once tamatebako/ruby's prism_compile_memfs patch carries
+    # the wire-layout read in the released source the anchor below no
+    # longer matches and the substitution raises -- drop it together with
+    # the pin bump.
+    MSYS_PRISM_STAT_ANCHOR = <<~C.chomp
+      /* Read a source file from the read-only memfs, composed on the modern c_api
+         read surface (mirrors the legacy tebako_string_file_init) */
+      static pm_string_init_result_t
+      tfs_string_file_init(pm_string_t *string, const char *filepath)
+      {
+          int fd;
+          struct stat sb;
+          size_t size;
+          uint8_t *source;
+          ssize_t bytes_read;
+
+          fd = tebako_fs_open(filepath, O_RDONLY);
+          if (fd == -1) {
+              return PM_STRING_INIT_ERROR_GENERIC;
+          }
+          if (tebako_fs_fstat(fd, &sb) == -1) {
+              tebako_fs_close(fd);
+              return PM_STRING_INIT_ERROR_GENERIC;
+          }
+          if (S_ISDIR(sb.st_mode)) {
+              tebako_fs_close(fd);
+              return PM_STRING_INIT_ERROR_DIRECTORY;
+          }
+          size = (size_t) sb.st_size;
+    C
+
+    MSYS_PRISM_STAT_REPLACEMENT = <<~C.chomp
+      /* Read a source file from the read-only memfs, composed on the modern c_api
+         read surface (mirrors the legacy tebako_string_file_init) */
+      static pm_string_init_result_t
+      tfs_string_file_init(pm_string_t *string, const char *filepath)
+      {
+          int fd;
+          size_t size;
+          uint8_t *source;
+          ssize_t bytes_read;
+          /* The libtfs c_api fills the DEFAULT ucrt struct stat (32-bit st_size);
+             this translation unit has _FILE_OFFSET_BITS=64 from ruby's
+             AC_SYS_LARGEFILE, whose struct stat widens st_size to 64 bits and
+             shifts st_*time -- reading sb.st_size picked up libtfs' never-filled
+             st_atime and every memfs source file parsed as EMPTY (the require
+             returned, nothing was defined). Read the fill through the wire
+             layout libtfs wrote. */
+          struct tfs_wire_stat {
+              unsigned int st_dev;
+              unsigned short st_ino;
+              unsigned short st_mode;
+              short st_nlink;
+              short st_uid;
+              short st_gid;
+              unsigned int st_rdev;
+              long st_size;
+              long long st_atime;
+              long long st_mtime;
+              long long st_ctime;
+          } sb;
+
+          fd = tebako_fs_open(filepath, O_RDONLY);
+          if (fd == -1) {
+              return PM_STRING_INIT_ERROR_GENERIC;
+          }
+          if (tebako_fs_fstat(fd, (struct stat *) &sb) == -1) {
+              tebako_fs_close(fd);
+              return PM_STRING_INIT_ERROR_GENERIC;
+          }
+          if (S_ISDIR(sb.st_mode)) {
+              tebako_fs_close(fd);
+              return PM_STRING_INIT_ERROR_DIRECTORY;
+          }
+          size = (size_t) sb.st_size;
+    C
+
     TOOLCHAIN_STUB_C = File.expand_path("../../resources/toolchain_stub.c", __dir__).freeze
 
     class << self # rubocop:disable Metrics/ClassLength
@@ -187,10 +285,12 @@ module TebakoRuntimeBuilder
         # msys only: guard the one direct win32-DIR access the io routing of
         # the pre-patched dir.c does not cover, and read libtfs' struct stat
         # fills through the wire layout they were written in (the constants
-        # above)
+        # above: dir.c/file.c/io.c for the io layer, prism_compile.c for the
+        # ruby 3.4+ parser)
         if platform.msys?
           hotfix_msys_glob_opendir!(File.join(ruby_source_dir, "dir.c"))
           hotfix_msys_stat_wire_layout!(ruby_source_dir)
+          hotfix_msys_prism_stat_wire_layout!(File.join(ruby_source_dir, "prism_compile.c"))
         end
         build_toolchain_stub(platform, deps_lib_dir, mount_point, cc, rv)
       end
@@ -421,6 +521,33 @@ module TebakoRuntimeBuilder
           puts "   ... reading libtfs struct stat fills through their wire layout in #{name} (msys)"
           File.write(path, contents.sub(MSYS_STAT_CONVERSION_ANCHOR, MSYS_STAT_CONVERSION_REPLACEMENT))
         end
+      end
+
+      # Read the memfs source size in prism's tfs_string_file_init through
+      # the wire layout libtfs wrote (MSYS_PRISM_STAT_* above). Same shape
+      # as hotfix_msys_stat_wire_layout!: idempotent on re-run (the msys
+      # pass-2 overlay re-runs prepare), loud when the anchor drifts (the
+      # pre-patched source changed -- the fix landed in tamatebako/ruby, or
+      # the function moved). ruby < 3.4 has no prism parser patch (its
+      # requires parse over the io.c layer the stat hot-patch covers), so
+      # an unpatched prism_compile.c is a silent pass.
+      def hotfix_msys_prism_stat_wire_layout!(prism_compile_c) # rubocop:disable Metrics/MethodLength
+        return unless File.exist?(prism_compile_c)
+
+        contents = File.read(prism_compile_c)
+        return if contents.include?(MSYS_STAT_CONVERSION_MARKER)
+        return unless contents.include?("tfs_string_file_init")
+
+        anchor_count = contents.scan(MSYS_PRISM_STAT_ANCHOR).length
+        unless anchor_count == 1
+          raise TebakoRuntimeBuilder::Error.new(
+            "#{prism_compile_c}: expected exactly one tfs_string_file_init anchor, found #{anchor_count} -- " \
+            "the pre-patched prism_compile.c changed; revisit the msys prism stat wire-layout hot-patch", 130
+          )
+        end
+
+        puts "   ... reading libtfs struct stat fills through their wire layout in prism_compile.c (msys)"
+        File.write(prism_compile_c, contents.sub(MSYS_PRISM_STAT_ANCHOR, MSYS_PRISM_STAT_REPLACEMENT))
       end
 
       def substitute_config_status!(config_status, platform, mlibs) # rubocop:disable Metrics/MethodLength

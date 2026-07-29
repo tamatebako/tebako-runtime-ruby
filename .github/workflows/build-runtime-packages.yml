@@ -325,10 +325,6 @@ jobs:
 
       - name: Boot-smoke the fresh runtime (Windows)
         if: matrix.env.os == 'windows'
-        # TEMP(diagnostics): while the 4.0.x bundler/locks probe drift is
-        # under investigation a red smoke must not block the .build cache
-        # save (failed jobs never save) -- revert before merging.
-        continue-on-error: true
         shell: msys2 {0}
         env:
           TEBAKO_RUNTIME_ROOT: runtime-packages
