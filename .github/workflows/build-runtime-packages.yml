@@ -117,8 +117,21 @@ jobs:
       # Roadmap 45: fail before the matrix builds anything if contract.yml
       # (the release pipeline's source of truth) and the compiled-in
       # TEBAKO_CONTRACT_VERSION in the runtime driver disagree -- a contract
-      # bump edits both in the same commit.
+      # bump edits both in the same commit. Contract 2's driver is
+      # crates/tebako-driver in the tebako product repo (the v1
+      # tebako-main.cpp is retired); the check reads it via
+      # TEBAKO_DRIVER_SRC. Pin to a release tag once the driver ships in
+      # one -- main carries contract 2 today.
+      - name: Checkout the tebako product repo (the v2 driver source)
+        uses: actions/checkout@v4
+        with:
+          repository: tamatebako/tebako
+          path: tebako-product
+          ref: main
+
       - name: Check contract version agreement
+        env:
+          TEBAKO_DRIVER_SRC: tebako-product/crates/tebako-driver/src/lib.rs
         run: |
           ./scripts/check_contract_version.rb
 
