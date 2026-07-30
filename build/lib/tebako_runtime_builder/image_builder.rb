@@ -143,7 +143,29 @@ module TebakoRuntimeBuilder
         install_gem("tebako-runtime")
         deploy_stub(stub_dir)
       end
+      deploy_preload
       TebakoRuntimeBuilder::Stripper.strip(@platform, @data_src_dir)
+    end
+
+    # The v2 preload shim rides the env image at /lib/tebako/ (the ruby
+    # spawn hook materializes it into spawned children — spec 07 §8). It
+    # ships inside the link unit (tools/stage_link_unit); its absence
+    # only means an older link unit — the exec path degrades to
+    # VFS-less children with a note, never a hard failure.
+    def deploy_preload
+      libdir = ENV.fetch("TEBAKO_RUST_LIBDIR", nil)
+      return if libdir.nil?
+
+      name = @platform.macos? ? "libtfs_preload.dylib" : "libtfs_preload.so"
+      src = File.join(libdir, name)
+      unless File.file?(src)
+        puts "   ... no #{name} in TEBAKO_RUST_LIBDIR (#{libdir}) — spawned children of memfs binaries get no VFS (an older link unit)"
+        return
+      end
+      dest = File.join(@data_src_dir, "lib", "tebako")
+      FileUtils.mkdir_p(dest)
+      FileUtils.cp(src, File.join(dest, name))
+      puts "   ... preload shim: #{File.join(dest, name)}"
     end
 
     # The deploy gem commands run the toolchain ruby from the recreated
