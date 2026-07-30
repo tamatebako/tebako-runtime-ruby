@@ -225,10 +225,14 @@ jobs:
           ruby-version: 3.3
           bundler-cache: false
 
+      # The Brewfile is the pin: --no-upgrade stops brew from upgrading
+      # already-installed formulas mid-matrix (two legs of the same build
+      # resolving different versions when brew moves under us). A formula
+      # bump is an edit to ./Brewfile in a PR, never a surprise.
       - name: Install brew packages
         if: matrix.env.os == 'macos'
         run: |
-          brew bundle -f
+          brew bundle --no-upgrade -f
           echo "$(brew --prefix bison)/bin" >> $GITHUB_PATH
 
       - name: Build runtime

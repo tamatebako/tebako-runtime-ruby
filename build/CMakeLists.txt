@@ -216,6 +216,15 @@ def_ext_prj_g(DWARFS_WR "v0.13.0")
 # Sets LIBTFS_* variables summarized below.
 include(${CMAKE_SOURCE_DIR}/cmake/tebako-libtfs.cmake)
 
+# The v2 link (image era): tebako-rs is the shipping TFS implementation
+# and owns the canonical c_api.h (the link unit carries it at include/).
+# Deploy it over the libtfs package's older copy — the provisioning above
+# re-copies its header every configure, so this must come after.
+if(TEBAKO_RUST_DRIVER AND DEFINED ENV{TEBAKO_RUST_LIBDIR} AND EXISTS "$ENV{TEBAKO_RUST_LIBDIR}/include")
+  file(COPY "$ENV{TEBAKO_RUST_LIBDIR}/include/" DESTINATION "${LIBTFS_INCLUDE_DIR}")
+  message(STATUS "c_api.h: canonical tebako-rs header deployed over the libtfs copy")
+endif()
+
 # incbin (graphitemaster/incbin): single-header asset embedding used by
 # include/tebako/tebako-fs.h and the generated tebako-fs.cpp. It was deployed
 # into ${DEPS_INCLUDE_DIR} by the libdwarfs-wr package; libtfs does not carry
