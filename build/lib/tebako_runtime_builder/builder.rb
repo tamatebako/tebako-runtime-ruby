@@ -113,6 +113,15 @@ module TebakoRuntimeBuilder
       @jobs || @platform.ncores
     end
 
+    # The v2 link switch (image era): set TEBAKO_RUST_LIBDIR to the
+    # directory holding the staged link unit (libtebako_driver.a +
+    # libtfs.a + closure/*.a, scoped by tebako-arscope) and the build
+    # links the scoped Rust staticlibs instead of the C++ tebako-main
+    # driver and C++ libtfs.
+    def rust_driver?
+      ENV.fetch("TEBAKO_RUST_LIBDIR", nil) && !ENV["TEBAKO_RUST_LIBDIR"].empty?
+    end
+
     def cmake_configure(assets) # rubocop:disable Metrics/AbcSize,Metrics/MethodLength
       (tarball, sha256) = assets[0]
       args = ["cmake",
@@ -130,6 +139,9 @@ module TebakoRuntimeBuilder
       end
       args << "-DREMOVE_GLIBC_PRIVATE=ON" if @patchelf && @platform.linux_gnu?
       args << "-DTEBAKO_EMBED_IMAGE:BOOL=ON" if @embed_image
+      # The v2 link (image era): the Rust tebako-driver + scoped tfs
+      # replace the C++ tebako-main driver and the C++ libtfs.
+      args << "-DTEBAKO_RUST_DRIVER:BOOL=ON" if rust_driver?
       args += ["-G", @platform.m_files, "-B", output_folder, "-S", File.join(@repo_root, "build")]
 
       FileUtils.mkdir_p(output_folder)

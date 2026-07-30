@@ -28,25 +28,20 @@
 require "fileutils"
 
 module TebakoRuntimeBuilder
-  # Packs the assembled runtime layout tree (the deploy pass's DATA_SRC_DIR,
-  # the exact tree mkdwarfs embedded as fs.bin) into the standalone DwarFS
-  # image published next to the runtime executable:
-  # tebako-runtime-<tebako>-<ruby>-<platform>.tfs (item 30, producer
-  # side). The lean flow's driver mounts this image directly instead of
-  # extracting a runtime layout.
+  # Packs the assembled runtime layout tree (the deploy pass's DATA_SRC_DIR)
+  # into the standalone DwarFS image published next to the runtime
+  # executable: tebako-runtime-<tebako>-<ruby>-<platform>.tfs (item 30,
+  # producer side). The lean flow's driver mounts this image directly
+  # instead of extracting a runtime layout.
   #
-  # Tool choice (documented per the owner rule): the image is written with
-  # the writer DEFAULTS (mkdwarfs compression level 7) by our own factory
-  # toolchain, never by a random system binary:
+  # Tool choice (documented per the owner rule): the image is written by
+  # our own factory toolchain, never by a random system binary:
   #   1. the tfs binary (tebako-rs tfs-cli, `tfs mkimage --format dwarfs`)
   #      when one is resolvable (--tfs / TEBAKO_TFS / PATH) -- the
-  #      documented tool; tfs is pointed at the build's own SHA256-verified
-  #      mkdwarfs via --mkdwarfs so both the embedded fs.bin and the
-  #      standalone image come from the same writer;
+  #      documented tool; mkimage binds the libdwarfs-t writer
+  #      IN-PROCESS (no mkdwarfs shell-out);
   #   2. otherwise the build's own deps/bin/mkdwarfs directly (the same
-  #      prebuilt binary the deploy pass already shelled to for fs.bin;
-  #      tfs-cli's mkimage is a thin wrapper over exactly this invocation
-  #      until it binds the writer API in-process).
+  #      prebuilt binary the deploy pass already shelled to for fs.bin).
   # Both are build-time factory tools; nothing here becomes a runtime
   # dependency of the shipped packages.
   class ImagePackager
@@ -94,8 +89,7 @@ module TebakoRuntimeBuilder
     def pack_with_tfs(tfs, layout_dir, image_path)
       puts "-- Packing the runtime layout as #{image_path} (tfs mkimage)"
       TebakoRuntimeBuilder::BuildHelpers.run_with_capture_v(
-        [tfs, "mkimage", "--format", "dwarfs", layout_dir, "-o", image_path,
-         "--mkdwarfs", mkdwarfs_path].compact
+        [tfs, "mkimage", "--format", "dwarfs", layout_dir, "-o", image_path]
       )
     end
 

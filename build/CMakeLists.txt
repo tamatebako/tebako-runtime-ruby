@@ -564,13 +564,25 @@ endif(TEBAKO_EMBED_IMAGE)
 
 set(CMAKE_CXX_FLAGS "${RUBY_C_FLAGS} -I${GEN_DIR}")
 
-add_library(tebako-fs STATIC
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/tebako-main.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/include/tebako/tebako-main.h
+# The entry driver sources: the v1 C++ driver (src/tebako-main.cpp) by
+# default; with -DTEBAKO_RUST_DRIVER=ON the Rust tebako-driver
+# (libtebako_driver.a, linked from TEBKO_RUST_LIBDIR by mlibs.rb) takes
+# the role and only the incbin TU is built here. Image-era builds carry
+# zero-size image symbols either way (TEBAKO_EMBED_IMAGE restores the
+# v1 embedded shape).
+set(TEBAKO_FS_SOURCES
   ${GEN_DIR}/tebako-fs.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/include/tebako/tebako-fs.h
   ${GEN_DIR}/tebako-version.h
 )
+if(NOT TEBAKO_RUST_DRIVER)
+  list(APPEND TEBAKO_FS_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/tebako-main.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/tebako/tebako-main.h
+  )
+endif()
+
+add_library(tebako-fs STATIC ${TEBAKO_FS_SOURCES})
 
 # The incbin translation unit embeds ${DATA_BIN_FILE} via the assembler's
 # .incbin directive -- a dependency the build system cannot see. Without

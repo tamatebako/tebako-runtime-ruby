@@ -141,15 +141,30 @@ module TebakoRuntimeBuilder
     private
 
     def linux_gnu_libraries(ruby_ver, with_compression)
-      libraries = ["-Wl,--start-group"] + COMMON_LINUX_LIBRARIES + COMMON_ARCHIEVE_LIBRARIES +
+      libraries = linux_libraries_base(rust_libdir ? LINUX_GNU_LIBRARIES : nil) ||
+                  ["-Wl,--start-group"] + COMMON_LINUX_LIBRARIES + COMMON_ARCHIEVE_LIBRARIES +
                   ["-Wl,--end-group"] + LINUX_GNU_LIBRARIES
       linux_libraries(libraries, ruby_ver, with_compression)
     end
 
     def linux_musl_libraries(ruby_ver, with_compression)
-      libraries = ["-Wl,--start-group"] + COMMON_LINUX_LIBRARIES + COMMON_ARCHIEVE_LIBRARIES +
+      libraries = linux_libraries_base(rust_libdir ? LINUX_MUSL_LIBRARIES : nil) ||
+                  ["-Wl,--start-group"] + COMMON_LINUX_LIBRARIES + COMMON_ARCHIEVE_LIBRARIES +
                   ["-Wl,--end-group"] + LINUX_MUSL_LIBRARIES
       linux_libraries(libraries, ruby_ver, with_compression)
+    end
+
+    # The v2 link (image era): whole-archive libtebako-fs.a (the incbin
+    # TU) + the sealed Rust objects + the closure archives — the C++
+    # libtfs and its dwarfs/codec closure ride in the sealed unit.
+    # Returns nil for the v1 path.
+    def linux_libraries_base(platform_libraries)
+      return nil if platform_libraries.nil?
+
+      ["-Wl,--start-group",
+       "-Wl,--push-state,--whole-archive -l:libtebako-fs.a -Wl,--pop-state"] +
+        rust_link_libraries +
+        ["-Wl,--end-group"] + platform_libraries
     end
 
     def linux_libraries(libraries, ruby_ver, _with_compression)
@@ -160,6 +175,11 @@ module TebakoRuntimeBuilder
     end
 
     def msys_libraries(ruby_ver, with_compression)
+      raise TebakoRuntimeBuilder::Error.new(
+        "the v2 Rust-driver link is not wired for msys yet (the rb_w32_pread shim and the boost tag handling need their own pass)",
+        112
+      ) if rust_libdir
+
       libraries = with_compression ? ["-Wl,-Bstatic"] : []
       # The dwarfs reader set + codecs go inside a group: miniruby.exe links
       # with a bare $(MAINLIBS) rule (no group of its own), and GNU ld's
@@ -195,19 +215,64 @@ module TebakoRuntimeBuilder
     def darwin_libraries(ruby_ver)
       libs = String.new
 
-      DARWIN_DEP_LIBS_1.each { |lib| libs << "#{@deps_lib_dir}/lib#{lib}.a " }
+      # The v2 link (image era): the sealed Rust driver + tfs objects
+      # and the closure archives from the tebako-rs build (dwarfs-t,
+      # squashfs, botan, rnp, codecs) — no C++ libtfs, no vcpkg closure.
+      # The brew libs below stay: they are ruby's own dependencies (and
+      # v1-proven to satisfy dwarfs-t's openssl references).
+      libs << "#{rust_link_libraries.join(' ')} " if rust_libdir
+      DARWIN_DEP_LIBS_1.each { |lib| libs << "#{@deps_lib_dir}/lib#{lib}.a " } unless rust_libdir
       process_brew_libs!(libs, ruby_ver.ruby31? ? DARWIN_BREW_LIBS_31 : DARWIN_BREW_LIBS_PRE_31)
       process_brew_libs!(libs, DARWIN_BREW_LIBS)
 
-      # The vcpkg set by full path: Apple ld does not implement -l:<filename>
-      vcpkg_lib_dir = Dir.glob(File.join(@deps_lib_dir, "..", "vcpkg_installed", "*", "lib")).min
-      DARWIN_DEP_LIBS_2.each { |lib| libs << "#{vcpkg_lib_dir}/lib#{lib}.a " }
+      unless rust_libdir
+        # The vcpkg set by full path: Apple ld does not implement -l:<filename>
+        vcpkg_lib_dir = Dir.glob(File.join(@deps_lib_dir, "..", "vcpkg_installed", "*", "lib")).min
+        DARWIN_DEP_LIBS_2.each { |lib| libs << "#{vcpkg_lib_dir}/lib#{lib}.a " }
+      end
       # No allocator link: brew's static libjemalloc.a crashes tebako
       # binaries at startup on the XCode 15.4 runners (je_arena_ralloc
       # SEGV at builtin init), and the dylib fails the test_101
       # no-shared-libs assertion. System malloc until a properly built
       # static jemalloc ships with libtfs-deps.
       "-ltebako-fs #{libs}-lc++ -lc++abi"
+    end
+
+    # The v2 link unit (image era): the two Rust staticlibs SCOPED to
+    # the tebako_* surface by tebako-arscope (tebako-rs) plus the
+    # closure archives. Scoping is mandatory: ruby's YJIT carries its
+    # own rustc std into the same link, and two rustc stds collide on
+    # rust_eh_personality/compiler-rt/mangled names — after scoping,
+    # nothing but tebako_* is visible from our side. The factory never
+    # invokes a linker on the archives itself: the scoped unit is
+    # staged by tebako-rs (a release artifact, or a local
+    # TEBAKO_RUST_LIBDIR with libtebako_driver.a + libtfs.a +
+    # closure/*.a).
+    def rust_link_libraries
+      libs = %w[libtebako_driver.a libtfs.a].map do |name|
+        path = File.join(rust_libdir, name)
+        raise TebakoRuntimeBuilder::Error.new(
+          "missing v2 link input: #{path} — run tebako-arscope (tebako-rs) and stage the scoped staticlibs",
+          112
+        ) unless File.file?(path)
+
+        path
+      end
+      closure = Dir.glob(File.join(rust_libdir, "closure", "*.a")).sort
+      raise TebakoRuntimeBuilder::Error.new(
+        "TEBAKO_RUST_LIBDIR (#{rust_libdir}) carries no closure/*.a — stage the scoped link unit first",
+        112
+      ) if closure.empty?
+
+      libs + closure
+    end
+
+    # The v2 link switch (image era): TEBAKO_RUST_LIBDIR names the
+    # directory holding the scoped link unit (libtebako_driver.a +
+    # libtfs.a + closure/*.a).
+    def rust_libdir
+      dir = ENV.fetch("TEBAKO_RUST_LIBDIR", nil)
+      dir unless dir.nil? || dir.empty?
     end
 
     # .....................................................

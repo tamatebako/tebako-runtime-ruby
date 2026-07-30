@@ -61,9 +61,9 @@ RSpec.describe TebakoRuntimeBuilder::ImagePackager do
     old.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
   end
 
-  it "packs the layout via tfs mkimage when tfs resolves, pointing it at the deps mkdwarfs" do
+  it "packs the layout via tfs mkimage when tfs resolves (the in-process writer — no mkdwarfs handoff)" do
     tfs = fake_tool(@dir, "tfs")
-    mkdwarfs = fake_tool(deps_bin_dir, "mkdwarfs")
+    fake_tool(deps_bin_dir, "mkdwarfs")
     packager = described_class.new(platform, deps_bin_dir, tfs: tfs)
 
     with_env("FAKE_ARGS_LOG" => File.join(@dir, "args.log")) do
@@ -71,8 +71,7 @@ RSpec.describe TebakoRuntimeBuilder::ImagePackager do
     end
 
     expect(File.file?(image_path)).to be(true)
-    expect(args_log).to eq(["mkimage", "--format", "dwarfs", layout_dir, "-o", image_path,
-                            "--mkdwarfs", mkdwarfs])
+    expect(args_log).to eq(["mkimage", "--format", "dwarfs", layout_dir, "-o", image_path])
   end
 
   it "uses tfs from PATH when nothing is requested explicitly" do
@@ -89,7 +88,7 @@ RSpec.describe TebakoRuntimeBuilder::ImagePackager do
     expect(args_log.first(3)).to eq(["mkimage", "--format", "dwarfs"])
   end
 
-  it "falls back to the deps mkdwarfs (tfs-cli's wrapped invocation) when no tfs resolves" do
+  it "falls back to the deps mkdwarfs when no tfs resolves" do
     fake_tool(deps_bin_dir, "mkdwarfs")
     empty = File.join(@dir, "empty-path")
     FileUtils.mkdir_p(empty)

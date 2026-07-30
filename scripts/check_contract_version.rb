@@ -48,11 +48,14 @@ class ContractVersionCheck
   DRIVER_SRC = REPO_ROOT.join("build", "src", "tebako-main.cpp").freeze
 
   DEFINE_PATTERN = /^\s*#\s*define\s+TEBAKO_CONTRACT_VERSION\s+(\d+)u?\s*$/.freeze
+  # The Rust form (crates/tebako-driver/src/lib.rs in the tebako product
+  # repo — the contract-2 driver, consumed as libtebako_driver.a).
+  RUST_PATTERN = /pub const TEBAKO_CONTRACT_VERSION: u32 = (\d+);/.freeze
 
-  def initialize(contract_yml: CONTRACT_YML, schema_yml: SCHEMA_YML, driver_src: DRIVER_SRC)
+  def initialize(contract_yml: CONTRACT_YML, schema_yml: SCHEMA_YML, driver_src: nil)
     @contract_yml = Pathname.new(contract_yml)
     @schema_yml = Pathname.new(schema_yml)
-    @driver_src = Pathname.new(driver_src)
+    @driver_src = Pathname.new(driver_src || ENV["TEBAKO_DRIVER_SRC"] || DRIVER_SRC)
   end
 
   # Human-readable violations: schema errors against contract.yml, a missing
@@ -61,7 +64,7 @@ class ContractVersionCheck
   def errors
     violations = schema_errors
     if violations.empty? && driver_version.nil?
-      violations << "#{@driver_src} carries no #define TEBAKO_CONTRACT_VERSION -- " \
+      violations << "#{@driver_src} carries no TEBAKO_CONTRACT_VERSION constant -- " \
                     "the runtime must compile its contract version in (roadmap 45)"
     elsif violations.empty? && driver_version != yaml_version
       violations << "contract.yml contract_version is #{yaml_version} but the compiled-in " \
@@ -81,8 +84,11 @@ class ContractVersionCheck
   end
 
   def driver_version
-    match = @driver_src.each_line.find { |line| line.match?(DEFINE_PATTERN) }&.match(DEFINE_PATTERN)
-    match && match[1].to_i
+    @driver_src.each_line do |line|
+      match = line.match(DEFINE_PATTERN) || line.match(RUST_PATTERN)
+      return match[1].to_i if match
+    end
+    nil
   end
 
   private
