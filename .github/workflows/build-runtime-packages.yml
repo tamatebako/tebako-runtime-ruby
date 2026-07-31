@@ -262,7 +262,7 @@ jobs:
           VCPKG_ROOT: ${{ github.workspace }}/.vcpkg-root
           CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: gcc.exe
         run: |
-          export PATH="/ucrt64/bin:$PATH"
+          export PATH="/c/Users/runneradmin/.cargo/bin:/ucrt64/bin:$PATH"
           mkdir -p .build/link-unit
           ruby tebako-rs/tools/stage_link_unit .build/link-unit --target x86_64-pc-windows-gnu
 
