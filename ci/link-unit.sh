@@ -5,7 +5,15 @@
 # and shellcheck-able.
 set -euo pipefail
 
-export PATH="/c/Users/runneradmin/.cargo/bin:$PATH"
+# Toolchain rules (hard-won, TODO.v2-1/01):
+# - the C++ compiler MUST be the msys ucrt64 one: the ruby link uses it,
+#   and the C++ TLS internals differ from the choco mingw's (gcc 14's
+#   __emutls_v._ZSt11__once_call is undefined at the gcc 16 ruby link).
+# - the msys /usr/bin stays OFF PATH: vcpkg downloads its OWN msys2 for
+#   the autotools ports (invoked by absolute path, self-contained), and
+#   the setup-msys2 runtime on PATH ABI-clashes with it (openssl's perl
+#   eval crash — three legs lost).
+export PATH="/d/a/_temp/msys64/ucrt64/bin:/c/Users/runneradmin/.cargo/bin:/c/Windows/System32"
 mkdir -p .build/link-unit
 /d/a/_temp/msys64/ucrt64/bin/ruby.exe tebako-rs/tools/stage_link_unit \
   .build/link-unit --target x86_64-pc-windows-gnu
