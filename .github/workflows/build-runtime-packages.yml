@@ -275,12 +275,12 @@ jobs:
 
       - name: Dump vcpkg build logs on failure
         if: failure() && matrix.env.os == 'windows'
-        shell: msys2 {0}
+        shell: bash
         run: |
-          for f in .vcpkg-root/buildtrees/*/build-x64-mingw-static-*-err.log .vcpkg-root/buildtrees/*/install-x64-mingw-static-*-err.log; do
-            [ -f "$f" ] || continue
+          for f in .vcpkg-root/buildtrees/*/*-out.log .vcpkg-root/buildtrees/*/*-err.log; do
+            [ -s "$f" ] || continue
             echo "=== $f ==="
-            tail -40 "$f"
+            tail -30 "$f"
           done
 
       - name: Setup Ruby
