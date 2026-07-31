@@ -295,10 +295,13 @@ module TebakoRuntimeBuilder
 
     # The v2 link switch (image era): TEBAKO_RUST_LIBDIR names the
     # directory holding the scoped link unit (libtebako_driver.a +
-    # libtfs.a + closure/*.a).
+    # libtfs.a + closure/*.a). Normalize separators: the workflow passes
+    # a Windows-form path (D:\a\...), and Dir.glob treats '\' as an
+    # escape character — the backslash form silently matches nothing
+    # (proven on the windows 3.1.6 leg: 36 staged archives invisible).
     def rust_libdir
       dir = ENV.fetch("TEBAKO_RUST_LIBDIR", nil)
-      dir unless dir.nil? || dir.empty?
+      dir&.tr('\\', '/') unless dir.to_s.empty?
     end
 
     # .....................................................
