@@ -192,7 +192,14 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
       filename: package.basename.to_s,
       sha256: Digest::SHA256.file(package).hexdigest,
       size_bytes: package.size
-    }.tap { |entry| entry[:image] = image_entry(image) if image }
+    }.tap do |entry|
+      # The additive abi line (spec 05 §5): the runtime's own platform
+      # string, emitted by build_runtime as <package>.abi. Consumers that
+      # predate the key ignore it (the compat window).
+      sidecar = Pathname.new("#{package.sub(%r{\.exe\z}, '')}.abi")
+      entry[:abi] = sidecar.read.strip if sidecar.file?
+      entry[:image] = image_entry(image) if image
+    end
   end
 
   # The additive image metadata: name, sha256, size (consumers ignoring the
@@ -422,7 +429,9 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     packages_dir = Pathname.new("runtime-packages")
     raise "No runtime packages directory found" unless packages_dir.directory?
 
-    packages = packages_dir.glob("*")
+    # `.abi` sidecars are manifest inputs (the runtime's platform string,
+    # read by manifest_entry) — never packages of their own.
+    packages = packages_dir.glob("*").reject { |p| p.extname == ".abi" }
     raise "No packages found in runtime-packages directory" if packages.empty?
 
     puts "Found packages:\n#{packages.map(&:basename).join("\n")}"

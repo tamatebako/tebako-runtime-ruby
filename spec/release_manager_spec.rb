@@ -183,6 +183,37 @@ RSpec.describe ReleaseManager do
     expect(entries.map { |entry| entry[:contract_version] }).to eq([expected, expected])
   end
 
+  # spec 05 §5's abi line: build_runtime's <package>.abi sidecar folds
+  # into the entry as the additive `abi` key; absent sidecar, no key
+  # (the compat window — pre-abi releases stay consumable).
+  it "emits the abi line from the .abi sidecar, omitting it when absent" do
+    exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
+    package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64.abi").tap do |sidecar|
+      sidecar.write("arm64-darwin-23\n")
+    end
+    plain = package("tebako-runtime-#{SPEC_VERSION}-3.1.6-linux-gnu-x86_64")
+
+    with_packages do
+      # build_manifest_entries sorts by basename: 3.1.6 (no sidecar)
+      # first, 3.3.7 (sidecar) second
+      entries = manager.build_manifest_entries([exe, plain])
+      expect(entries.first).not_to have_key(:abi)
+      expect(entries.last[:abi]).to eq("arm64-darwin-23")
+    end
+  end
+
+  it "never treats .abi sidecars as packages" do
+    dir = @dir.join("runtime-packages")
+    dir.mkdir
+    dir.join("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64").write("exe")
+    dir.join("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64.abi").write("arm64-darwin-23\n")
+
+    with_packages do
+      packages = manager.validate_packages_directory
+      expect(packages.map { |p| p.extname }).not_to include(".abi")
+    end
+  end
+
   it "checksummes both the package and its image, image line following its package" do
     exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
     img = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64.tfs")

@@ -61,6 +61,7 @@ module TebakoRuntimeBuilder
       cmake_build
       finalize
       pack_image if @image
+      write_abi_sidecar
       @output
     end
 
@@ -171,6 +172,21 @@ module TebakoRuntimeBuilder
     def pack_image
       TebakoRuntimeBuilder::ImagePackager.new(@platform, File.join(deps, "bin"), tfs: @tfs)
                                          .package(File.join(output_folder, "s"), image_output)
+    end
+
+    # The runtime's own platform string (spec 05 §5's abi line — ruby:
+    # `Gem::Platform.local.to_s`, the RbConfig arch with the darwin segment
+    # hyphenated) as `<output>.abi`. Native-extension payloads constrain
+    # BOTH the version line and this line; the release flow folds it into
+    # the manifest entry's additive `abi` key.
+    def write_abi_sidecar
+      tree = File.join(output_folder, "s")
+      rbconfig = Dir[File.join(tree, "lib", "ruby", "*", "*", "rbconfig.rb")].first
+      raise TebakoRuntimeBuilder::Error.new("no rbconfig.rb under #{tree} — the layout tree is incomplete", 105) unless rbconfig
+
+      arch = File.basename(File.dirname(rbconfig))
+      abi = arch.gsub(/darwin(\d+)/, 'darwin-\1')
+      File.write("#{output.sub(/\.exe\z/, '')}.abi", "#{abi}\n")
     end
   end
 end
