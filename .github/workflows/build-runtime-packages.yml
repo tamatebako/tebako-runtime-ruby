@@ -256,19 +256,22 @@ jobs:
             vcpkg-archives-${{ runner.os }}-${{ runner.arch }}-
       - name: Build + stage the windows-gnu link unit
         if: matrix.env.os == 'windows'
-        # Git-bash, never an msys2 shell: vcpkg's autotools ports
-        # (libiconv/openssl family) die in `make install` when the port
-        # build is spawned from an msys2 shell — the toolchain stays
-        # ucrt64 via PATH so the later msys ruby link is consistent.
+        # Git-bash, and NO msys2 bin dir on PATH: vcpkg's downloaded
+        # msys2 (make/perl) ABI-clashes with the setup-msys2 install when
+        # both are on PATH (openssl's make install died in a perl eval
+        # crash — three legs lost). The msys2 ruby is invoked by
+        # ABSOLUTE path only; the C++ runtimes static-link (several mingw
+        # installs on the runner make DLL resolution nondeterministic).
         shell: bash
         env:
           DWARFS_RS_VCPKG_ROOT: ${{ github.workspace }}/.vcpkg-root
           VCPKG_ROOT: ${{ github.workspace }}/.vcpkg-root
           CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: gcc.exe
+          RUSTFLAGS: -C link-arg=-static -C link-arg=-static-libgcc -C link-arg=-static-libstdc++
         run: |
-          export PATH="/c/Users/runneradmin/.cargo/bin:/d/a/_temp/msys64/ucrt64/bin:$PATH"
+          export PATH="/c/Users/runneradmin/.cargo/bin:$PATH"
           mkdir -p .build/link-unit
-          ruby tebako-rs/tools/stage_link_unit .build/link-unit --target x86_64-pc-windows-gnu
+          /d/a/_temp/msys64/ucrt64/bin/ruby.exe tebako-rs/tools/stage_link_unit .build/link-unit --target x86_64-pc-windows-gnu
 
       - name: Dump vcpkg build logs on failure
         if: failure() && matrix.env.os == 'windows'
