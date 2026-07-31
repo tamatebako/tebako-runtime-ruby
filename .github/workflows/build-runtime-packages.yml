@@ -271,10 +271,9 @@ jobs:
           # Short installed-tree root (MAX_PATH: boost's deepest headers
           # overran 260 inside the cargo build dir)
           DWARFS_RS_VCPKG_INSTALLED_DIR: C:/vcpkg-inst
-        run: |
-          export PATH="/c/Users/runneradmin/.cargo/bin:$PATH"
-          mkdir -p .build/link-unit
-          /d/a/_temp/msys64/ucrt64/bin/ruby.exe tebako-rs/tools/stage_link_unit .build/link-unit --target x86_64-pc-windows-gnu
+        # Everything lives in ci/link-unit.sh (reviewed, shellcheck-able) —
+        # never inline run-blocks; they get string-edited and break silently.
+        run: bash ci/link-unit.sh
 
       - name: Dump vcpkg build logs on failure
         if: failure() && matrix.env.os == 'windows'
