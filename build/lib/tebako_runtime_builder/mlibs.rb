@@ -175,10 +175,21 @@ module TebakoRuntimeBuilder
     end
 
     def msys_libraries(ruby_ver, with_compression)
-      raise TebakoRuntimeBuilder::Error.new(
-        "the v2 Rust-driver link is not wired for msys yet (the rb_w32_pread shim and the boost tag handling need their own pass)",
-        112
-      ) if rust_libdir
+      if rust_libdir
+        # The v2 link (image era), msys flavor: the scoped staticlibs +
+        # the mingw closure inside a group (GNU ld's single-pass scan
+        # needs it for the circular member refs), with the pacman-covered
+        # deps deduped — ruby statically links openssl/zlib/lzma from
+        # pacman, and the vcpkg closure's copies of those must not
+        # collide with them (same ABI line; the group's own references
+        # resolve against the pacman set that follows).
+        libraries = with_compression ? ["-Wl,-Bstatic"] : []
+        libraries += ["-Wl,--start-group"] +
+                     rust_link_libraries_msys +
+                     ["-Wl,--end-group"] +
+                     MSYS_LIBRARIES
+        return linux_libraries(libraries, ruby_ver, with_compression)
+      end
 
       libraries = with_compression ? ["-Wl,-Bstatic"] : []
       # The dwarfs reader set + codecs go inside a group: miniruby.exe links
@@ -193,6 +204,16 @@ module TebakoRuntimeBuilder
                    ["-Wl,--end-group"] +
                    MSYS_LIBRARIES
       linux_libraries(libraries, ruby_ver, with_compression)
+    end
+
+    # The link unit minus the libraries pacman already covers for ruby:
+    # openssl (ssl/crypto), zlib, and lzma all come statically from the
+    # msys system set (MSYS_LIBRARIES), and two copies in one link is a
+    # duplicate-definition failure. Everything else (the scoped
+    # staticlibs, boost, codecs, jemalloc, flatbuffers, archive) rides.
+    def rust_link_libraries_msys
+      pacman_covered = %w[libssl.a libcrypto.a libz.a libzlib.a liblzma.a]
+      rust_link_libraries.reject { |lib| pacman_covered.include?(File.basename(lib)) }
     end
 
     # Resolve the boost archive references in COMMON_LINUX_LIBRARIES to the
