@@ -13,7 +13,7 @@ set -euo pipefail
 #   downloads its OWN msys2 for the autotools ports and the two runtimes
 #   ABI-clash (openssl's perl eval crash). Git's own /usr/bin carries the
 #   coreutils and is PROVEN safe (the Git-bash legs build openssl fine).
-export PATH="/d/a/_temp/msys64/ucrt64/bin:/c/Program Files/Git/usr/bin:/c/Users/runneradmin/.cargo/bin:/c/Windows/System32"
+export PATH="/d/a/_temp/msys64/ucrt64/bin:/c/Program Files/Git/usr/bin:/c/Program Files/Git/cmd:/c/Users/runneradmin/.cargo/bin:/c/Windows/System32"
 mkdir -p .build/link-unit
 /d/a/_temp/msys64/ucrt64/bin/ruby.exe tebako-rs/tools/stage_link_unit \
   .build/link-unit --target x86_64-pc-windows-gnu
