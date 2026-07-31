@@ -334,6 +334,11 @@ jobs:
             echo "== $1: ruby.exe link rule region:"; grep -n -B4 -A6 "EXTOBJS.*-o \$@)" "$1" || true
             echo "== $1: LIBS/MAINLIBS definitions:"; grep -n "^LIBS\|^MAINLIBS\|^EXTLIBS" "$1" || true
           ' _ {} \; || true
+          # the ExternalProject-swallowed inner build log (the make error's
+          # real stderr never reaches the CI output otherwise)
+          find .build/deps/src -name "*-build-*.log" -o -name "*-err.log" | while read -r f; do
+            echo "=== $f (tail) ==="; tail -60 "$f" || true
+          done
 
       # The build emits TWO artifacts per leg since item 30: the runtime
       # executable and its filesystem image (<runtime>.tfs, the layout
