@@ -254,6 +254,13 @@ jobs:
           key: vcpkg-archives-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('dwarfs-rs/dwarfs-t/vcpkg.json', 'dwarfs-rs/dwarfs-t/vcpkg_ports/**', 'dwarfs-rs/dwarfs-t/vcpkg_triplets/**') }}
           restore-keys: |
             vcpkg-archives-${{ runner.os }}-${{ runner.arch }}-
+      - name: Cache the cargo target dir (link unit)
+        if: matrix.env.os == 'windows'
+        uses: Swatinem/rust-cache@9d47c88ad934b5cefd8e0c376e7d226daca89ee3 # v2.7.5
+        with:
+          workspaces: |
+            tebako-rs
+
       - name: Build + stage the windows-gnu link unit
         if: matrix.env.os == 'windows'
         # Git-bash, and NO msys2 bin dir on PATH: vcpkg's downloaded
