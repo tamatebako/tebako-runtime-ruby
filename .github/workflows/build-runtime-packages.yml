@@ -256,11 +256,21 @@ jobs:
             vcpkg-archives-${{ runner.os }}-${{ runner.arch }}-
       - name: Cache the cargo target dir (link unit)
         if: matrix.env.os == 'windows'
-        uses: Swatinem/rust-cache@9d47c88ad934b5cefd8e0c376e7d226daca89ee3 # v2.7.5
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
         with:
           workspaces: |
             tebako-rs
 
+      - name: Restore the vcpkg baseline (dwarfs-t is the single writer)
+        if: matrix.env.os == 'windows'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Never fails the leg: a miss means the ports build normally.
+        run: |
+          bash dwarfs-rs/dwarfs-t/ci/vcpkg-baseline-restore.sh \
+            dwarfs-rs/dwarfs-t x64-mingw-static C:/vcpkg-inst \
+            || echo "baseline miss — ports build normally"
       - name: Build + stage the windows-gnu link unit
         if: matrix.env.os == 'windows'
         # Git-bash, and NO msys2 bin dir on PATH: vcpkg's downloaded
@@ -273,11 +283,12 @@ jobs:
         env:
           DWARFS_RS_VCPKG_ROOT: ${{ github.workspace }}/.vcpkg-root
           VCPKG_ROOT: ${{ github.workspace }}/.vcpkg-root
+          # Short installed-tree root (MAX_PATH: boost's deepest headers
+          # overran 260 inside the cargo build dir); also the canonical
+          # root the vcpkg-baseline artifact restores into.
+          DWARFS_RS_VCPKG_INSTALLED_DIR: C:/vcpkg-inst
           CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: gcc.exe
           RUSTFLAGS: -C link-arg=-static-libgcc -C link-arg=-static-libstdc++
-          # Short installed-tree root (MAX_PATH: boost's deepest headers
-          # overran 260 inside the cargo build dir)
-          DWARFS_RS_VCPKG_INSTALLED_DIR: C:/vcpkg-inst
         # Everything lives in ci/link-unit.sh (reviewed, shellcheck-able) —
         # never inline run-blocks; they get string-edited and break silently.
         run: bash ci/link-unit.sh
