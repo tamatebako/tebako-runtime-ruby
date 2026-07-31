@@ -256,15 +256,29 @@ jobs:
             vcpkg-archives-${{ runner.os }}-${{ runner.arch }}-
       - name: Build + stage the windows-gnu link unit
         if: matrix.env.os == 'windows'
-        shell: msys2 {0}
+        # Git-bash, never an msys2 shell: vcpkg's autotools ports
+        # (libiconv/openssl family) die in `make install` when the port
+        # build is spawned from an msys2 shell — the toolchain stays
+        # ucrt64 via PATH so the later msys ruby link is consistent.
+        shell: bash
         env:
           DWARFS_RS_VCPKG_ROOT: ${{ github.workspace }}/.vcpkg-root
           VCPKG_ROOT: ${{ github.workspace }}/.vcpkg-root
           CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: gcc.exe
         run: |
-          export PATH="/c/Users/runneradmin/.cargo/bin:/ucrt64/bin:$PATH"
+          export PATH="/c/Users/runneradmin/.cargo/bin:/d/a/_temp/msys64/ucrt64/bin:$PATH"
           mkdir -p .build/link-unit
           ruby tebako-rs/tools/stage_link_unit .build/link-unit --target x86_64-pc-windows-gnu
+
+      - name: Dump vcpkg build logs on failure
+        if: failure() && matrix.env.os == 'windows'
+        shell: msys2 {0}
+        run: |
+          for f in .vcpkg-root/buildtrees/*/build-x64-mingw-static-*-err.log .vcpkg-root/buildtrees/*/install-x64-mingw-static-*-err.log; do
+            [ -f "$f" ] || continue
+            echo "=== $f ==="
+            tail -40 "$f"
+          done
 
       - name: Setup Ruby
         if: matrix.env.container == null && matrix.env.os != 'windows'
