@@ -187,7 +187,12 @@ module TebakoRuntimeBuilder
         libraries += ["-Wl,--start-group"] +
                      rust_link_libraries_msys +
                      ["-Wl,--end-group"] +
-                     MSYS_LIBRARIES
+                     MSYS_LIBRARIES +
+                     # Rust std's Windows references the dwarfs closure
+                     # does not cover (proven by the mingw-ld link probe):
+                     # RtlNtStatusToDosError (ntdll) and
+                     # GetUserProfileDirectoryW (userenv).
+                     ["-lntdll", "-luserenv"]
         return linux_libraries(libraries, ruby_ver, with_compression)
       end
 
