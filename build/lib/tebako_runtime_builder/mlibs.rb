@@ -176,15 +176,18 @@ module TebakoRuntimeBuilder
 
     def msys_libraries(ruby_ver, with_compression)
       if rust_libdir
-        # The v2 link (image era), msys flavor: the scoped staticlibs +
-        # the mingw closure inside a group (GNU ld's single-pass scan
-        # needs it for the circular member refs), with the pacman-covered
-        # deps deduped — ruby statically links openssl/zlib/lzma from
-        # pacman, and the vcpkg closure's copies of those must not
-        # collide with them (same ABI line; the group's own references
-        # resolve against the pacman set that follows).
+        # The v2 link (image era), msys flavor: whole-archive libtebako-fs.a
+        # (the fs TU: mount point + the tebako_main shim forwarding the
+        # exe's own root to the driver) + the scoped staticlibs + the
+        # mingw closure inside a group (GNU ld's single-pass scan needs it
+        # for the circular member refs), with the pacman-covered deps
+        # deduped — ruby statically links openssl/zlib/lzma from pacman,
+        # and the vcpkg closure's copies of those must not collide with
+        # them (same ABI line; the group's own references resolve against
+        # the pacman set that follows).
         libraries = with_compression ? ["-Wl,-Bstatic"] : []
-        libraries += ["-Wl,--start-group"] +
+        libraries += ["-Wl,--start-group",
+                      "-Wl,--push-state,--whole-archive -l:libtebako-fs.a -Wl,--pop-state"] +
                      rust_link_libraries_msys +
                      ["-Wl,--end-group"] +
                      MSYS_LIBRARIES +

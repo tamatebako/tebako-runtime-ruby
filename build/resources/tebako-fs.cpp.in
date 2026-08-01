@@ -14,3 +14,5 @@ namespace tebako {
 }
 
 @TEBAKO_FS_IMAGE_DEF@
+
+@TEBAKO_MAIN_SHIM@

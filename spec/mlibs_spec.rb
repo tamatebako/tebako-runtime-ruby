@@ -96,6 +96,40 @@ RSpec.describe TebakoRuntimeBuilder::Mlibs do
         expect(result).not_to include("-l:libboost_chrono.a")
       end
     end
+    context "with a staged rust link unit (the v2 link)" do
+      subject(:mlibs) do
+        described_class.new(TebakoRuntimeBuilder::Platform.new("x64-mingw-ucrt", "x86_64"), "/deps/lib")
+      end
+
+      let(:root) { Dir.mktmpdir }
+
+      before do
+        FileUtils.touch(File.join(root, "libtebako_driver.a"))
+        FileUtils.touch(File.join(root, "libtfs.a"))
+        FileUtils.mkdir_p(File.join(root, "closure"))
+        FileUtils.touch(File.join(root, "closure", "libfmt.a"))
+        @prev_libdir = ENV.fetch("TEBAKO_RUST_LIBDIR", nil)
+        ENV["TEBAKO_RUST_LIBDIR"] = root
+      end
+
+      after do
+        @prev_libdir.nil? ? ENV.delete("TEBAKO_RUST_LIBDIR") : ENV["TEBAKO_RUST_LIBDIR"] = @prev_libdir
+        FileUtils.remove_entry(root)
+      end
+
+      it "whole-archives libtebako-fs.a ahead of the scoped staticlibs (the fs TU carries the tebako_main shim)" do
+        result = mlibs.compute(ruby_ver)
+        expect(result).to start_with(
+          "-Wl,-Bstatic -Wl,--start-group " \
+          "-Wl,--push-state,--whole-archive -l:libtebako-fs.a -Wl,--pop-state #{root}/libtebako_driver.a"
+        )
+      end
+
+      it "dedupes the pacman-covered closure archives" do
+        FileUtils.touch(File.join(root, "closure", "libssl.a"))
+        expect(mlibs.compute(ruby_ver)).not_to include("closure/libssl.a")
+      end
+    end
   end
 
   context "on darwin" do

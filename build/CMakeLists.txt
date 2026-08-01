@@ -353,6 +353,27 @@ extern const INCBIN_ALIGN unsigned char gfsData[] = {0};\n\
 extern const unsigned char* const gfsEnd = gfsData;\n\
 extern const unsigned int gfsSize = 0;")
 endif(TEBAKO_EMBED_IMAGE)
+
+# The tebako_main shim (Rust-driver builds only): the v1 entry hook
+# ruby's patched main.c calls, defined HERE so the runtime root is the
+# exe's own compiled-in fs_mount_point. The factory is the single owner
+# of the value — the driver crate carries no copy, so exe and driver
+# cannot drift (the 2026-08-01 msys class: driver mounted the POSIX
+# root, ruby looked in the drive-letter root). The driver archive's own
+# tebako_main member is never pulled (the symbol is already defined).
+if(TEBAKO_RUST_DRIVER)
+  set(TEBAKO_MAIN_SHIM "\
+// The v1 entry hook (TEBAKO_RUST_DRIVER builds): forwards to the Rust\n\
+// driver's generic boot with the exe's own compiled-in mount point.\n\
+extern \"C\" {\n\
+  int tebako_driver_boot(int* argc, char*** argv, const char* runtime_root);\n\
+  int tebako_main(int* argc, char*** argv) {\n\
+    return tebako_driver_boot(argc, argv, tebako::fs_mount_point);\n\
+  }\n\
+}")
+else()
+  set(TEBAKO_MAIN_SHIM "/* v1 C++ driver build: tebako_main lives in tebako-main.cpp */")
+endif()
 configure_file(${CMAKE_SOURCE_DIR}/resources/tebako-fs.cpp.in ${GEN_DIR}/tebako-fs.cpp @ONLY)
 configure_file(${CMAKE_SOURCE_DIR}/resources/stub.rb.in ${GEN_DIR}/local/stub.rb @ONLY)
 
