@@ -95,7 +95,7 @@ module TebakoRuntimeBuilder
     # manifest (via -DFS_MOUNT_POINT → the deploy pass) — never re-authored
     # here. Field set per docs/spec/schemas/layout.yaml (snake_case,
     # lists-not-maps): schema/version, era, image_layout, mount_root,
-    # interpreter api version.
+    # interpreter_api_version.
     LAYOUT_DECLARATION = {
       "schema" => "layout",
       "schema_version" => 1,
@@ -109,7 +109,7 @@ module TebakoRuntimeBuilder
       FileUtils.mkdir_p(File.dirname(path))
       declaration = LAYOUT_DECLARATION.merge(
         "mount_root" => @mount_point,
-        "interpreter" => { "name" => "ruby", "api_version" => @ruby_ver.api_version }
+        "interpreter_api_version" => @ruby_ver.api_version
       )
       File.write(path, YAML.dump(declaration))
       puts "   ... env image layout declaration: #{path}"

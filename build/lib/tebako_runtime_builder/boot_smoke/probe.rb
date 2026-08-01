@@ -171,7 +171,7 @@ module BootSmokeProbe
       "era" => 2,
       "image_layout" => 1,
       "mount_root" => MOUNT_POINT,
-      "interpreter" => { "name" => "ruby", "api_version" => api }
+      "interpreter_api_version" => api
     }
     mismatched = expected.reject { |key, value| layout.is_a?(Hash) && layout[key] == value }
     raise "#{path} declares #{layout.inspect} — expected #{mismatched.inspect} (mismatched exe↔image pair)" unless mismatched.empty?
