@@ -54,7 +54,11 @@ module TebakoRuntimeBuilder
     # metadata, never the interpreter.
     MARKER_SUFFIXES = %w[.abi .sha256 .origin].freeze
     NON_EXECUTABLE_SUFFIXES = (IMAGE_SUFFIXES + MARKER_SUFFIXES).freeze
-    ENV_SCRUBBED = %w[RUBYLIB BUNDLE_GEMFILE BUNDLE_BIN_PATH BUNDLER_VERSION BUNDLER_SETUP].freeze
+    # The child env is REPLACED, not inherited: RUBYOPT carries only the
+    # probe and the rubygems/gem variables a host ruby setup would
+    # otherwise leak in (the msys leg's gem_home resolved to the HOST
+    # ucrt64 ruby's gem dir via an inherited GEM_HOME).
+    ENV_SCRUBBED = %w[RUBYLIB GEM_HOME GEM_PATH BUNDLE_GEMFILE BUNDLE_BIN_PATH BUNDLER_VERSION BUNDLER_SETUP].freeze
     PROBE_PATH = File.expand_path("boot_smoke/probe.rb", __dir__).freeze
 
     def initialize(runtime_root = ENV.fetch("TEBAKO_RUNTIME_ROOT", nil), platform: Platform.new)
@@ -134,12 +138,14 @@ module TebakoRuntimeBuilder
     end
 
     # The child env is REPLACED, not inherited: RUBYOPT carries only the
-    # probe and the bundler/rubygems variables a `bundle exec` host would
-    # otherwise leak in are scrubbed, so require "bundler"/gem resolution
-    # inside the runtime resolve against the image, never the host. The
-    # child also boots from an empty scratch cwd: bundler's rubygems plugin
-    # otherwise auto-detects the host checkout's Gemfile from the cwd and
-    # materializes the host bundle inside the runtime.
+    # probe and the gem/bundler variables a `bundle exec` host would
+    # otherwise leak in are scrubbed (the msys leg's gem_home resolved to
+    # the HOST ucrt64 ruby's gem dir via an inherited GEM_HOME), so
+    # require "bundler"/gem resolution inside the runtime resolve against
+    # the image, never the host. The child also boots from an empty
+    # scratch cwd: bundler's rubygems plugin otherwise auto-detects the
+    # host checkout's Gemfile from the cwd and materializes the host
+    # bundle inside the runtime.
     #
     # When the sibling <executable>.tfs exists the handoff mirrors the
     # image-era bootstrap exactly: TEBAKO_RUNTIME_IMAGE names it and the
