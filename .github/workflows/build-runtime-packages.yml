@@ -385,6 +385,40 @@ jobs:
           test -s "$img" || { echo "::error::missing runtime filesystem image $img"; exit 1; }
           ls -l "$exe" "$img"
 
+      # Spec 18 S51 (C4): the nm provenance assert — the exe's tebako_main
+      # must resolve from the fs TU (the CMake-built libtebako-fs.a),
+      # never from the toolchain stub (its tebako_main returns 0 without
+      # mounting: a shadowed link boots as a plain interpreter). Asserted
+      # on the BUILD-TREE ruby.exe: strip -S on PE removes the COFF
+      # symbol table (the shipped exe is the same link, stripped).
+      # Everything lives in the committed script — never inline run-blocks.
+      - name: Check tebako_main symbol provenance (S51)
+        if: matrix.env.os == 'windows'
+        shell: msys2 {0}
+        run: |
+          bash ci/check_symbol_provenance.sh \
+            --exe ".build/deps/src/_ruby_${{ matrix.ruby }}/ruby.exe" \
+            --stub-archive .build/deps/lib/libtebako-fs.a \
+            --real-archive .build/o/libtebako-fs.a
+
+      # Spec 18 S51 (C4), POSIX legs: the same assert on the shipped exe
+      # (strip -S keeps the symbol table on ELF and Mach-O). Host builds
+      # (macos) also assert the archive side — the stub archive must be
+      # gone and the real archive's member provenance must be the fs TU;
+      # container legs built inside the image, so only the exe side is
+      # host-visible there.
+      - name: Check tebako_main symbol provenance (S51)
+        if: matrix.env.os != 'windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby }}-${{ matrix.env.os }}-${{ matrix.env.arch }}"
+          args=(--exe "runtime-packages/$runtime")
+          if [ "${{ matrix.env.container == null }}" = "true" ]; then
+            args+=(--stub-archive .build/deps/lib/libtebako-fs.a --real-archive .build/o/libtebako-fs.a)
+          fi
+          bash ci/check_symbol_provenance.sh "${args[@]}"
+
       # Roadmap item 19: boot-smoke the freshly built runtime BEFORE the
       # artifacts leave the leg. spec/boot_smoke_spec.rb (tag :boot_smoke)
       # boots the executable and exercises the memfs syscall surface
