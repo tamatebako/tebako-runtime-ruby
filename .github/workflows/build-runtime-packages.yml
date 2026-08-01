@@ -288,7 +288,14 @@ jobs:
           # root the vcpkg-baseline artifact restores into.
           DWARFS_RS_VCPKG_INSTALLED_DIR: C:/vcpkg-inst
           CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: gcc.exe
-          RUSTFLAGS: -C link-arg=-static-libgcc -C link-arg=-static-libstdc++
+          # Trailing -lmsvcrt: rustc's -nodefaultlibs late-lib order ends
+          # -lmsvcrt -lmingwex -luser32 -lkernel32, so libmingwex's compat
+          # _assert.o (pulled at the LAST -lmingwex) never sees the
+          # __imp___msvcrt_assert provider behind it (probe-proven:
+          # libmsvcrt.a carries it; gcc's own tail keeps msvcrt after
+          # mingwex, rustc's does not). The end-of-line -lmsvcrt restores
+          # the invariant.
+          RUSTFLAGS: -C link-arg=-static-libgcc -C link-arg=-static-libstdc++ -C link-arg=-lmsvcrt
         # Everything lives in ci/link-unit.sh (reviewed, shellcheck-able) —
         # never inline run-blocks; they get string-edited and break silently.
         run: bash ci/link-unit.sh
