@@ -301,8 +301,9 @@ set (TGD ${DATA_SRC_DIR}/lib/ruby/gems/${RUBY_API_VER})
 # This is actually a constant that shall match libdwarfs-wr TEBAKO_MOUNT_POINT at tebako-common.h
 # The mount root FLOWS from the source tarball's tebako-mount-root
 # manifest (-DFS_MOUNT_POINT from builder.rb; tamatebako/ruby owns the
-# value). The convention below is the fallback for pre-manifest tarballs
-# only — keep it equal to the current patch literals.
+# value, and builder.rb refuses a manifest-less tarball with exit 132).
+# The convention below is the default for bare cmake invocations only —
+# keep it equal to the current patch literals.
 if(NOT DEFINED FS_MOUNT_POINT)
   if(${IS_MSYS})
     set(FS_MOUNT_POINT "A:/t")

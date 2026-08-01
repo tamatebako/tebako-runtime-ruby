@@ -123,22 +123,13 @@ module TebakoRuntimeBuilder
       ENV.fetch("TEBAKO_RUST_LIBDIR", nil) && !ENV["TEBAKO_RUST_LIBDIR"].empty?
     end
 
-    # The memfs mount root the runtime is built against. The value flows
-    # from the source tarball's tebako-mount-root manifest (written by
-    # tamatebako/ruby's SourcePrep — the single owner of the constant;
-    # the contract filename below is the layout contract point). A
-    # pre-manifest tarball (v0.2.12 and older) falls back to the
-    # platform convention — only ever build those with the matching pin.
-    MOUNT_ROOT_MANIFEST = "tebako-mount-root".freeze
-
+    # The memfs mount root the runtime is built against (spec 18 C1/S49).
+    # The value FLOWS from the source tarball's tebako-mount-root manifest
+    # (MountRoot; tamatebako/ruby's SourcePrep is the single owner). A
+    # pre-manifest tarball (v0.2.12 and older) is refused by name with
+    # exit 132 — never a fallback to the platform convention.
     def mount_root(tarball)
-      entry = `tar -tzf #{tarball}`.lines.map(&:strip).find { |name| name.end_with?("/#{MOUNT_ROOT_MANIFEST}") }
-      return @platform.fs_mount_point if entry.nil?
-
-      root = `tar -xOzf #{tarball} #{entry}`.strip
-      raise TebakoRuntimeBuilder::Error.new("empty #{MOUNT_ROOT_MANIFEST} in #{tarball}", 131) if root.empty?
-
-      root
+      TebakoRuntimeBuilder::MountRoot.new(tarball).read
     end
 
     def cmake_configure(assets) # rubocop:disable Metrics/AbcSize,Metrics/MethodLength

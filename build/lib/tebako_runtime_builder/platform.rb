@@ -40,9 +40,12 @@ module TebakoRuntimeBuilder
       @macos = @ostype =~ /darwin/ ? true : false
       @msys  = @ostype =~ /msys|mingw|cygwin/ ? true : false
 
-      # The mount-root CONVENTION (the fallback when the source tarball
-      # carries no tebako-mount-root manifest; tamatebako/ruby's patch
-      # literals are the owner — keep these equal to them).
+      # The mount-root CONVENTION (tamatebako/ruby's patch literals are
+      # the owner — keep these equal to them). Builds never fall back to
+      # it: the value flows from the tarball's tebako-mount-root manifest
+      # (MountRoot, exit 132 when absent). What reads the convention is
+      # the host-side expectation of a built exe's compiled-in root (the
+      # boot smoke) and the CMake default for bare invocations.
       @fs_mount_point = @msys ? "A:/t" : "/__tfs__"
       @exe_suffix = @msys ? ".exe" : ""
     end
