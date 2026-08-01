@@ -111,10 +111,29 @@ module TebakoRuntimeBuilder
       @ncores
     end
 
+    # (os id, arch id) → release platform id. Owned by tpkg::Platform
+    # (tebako-rs, docs/spec/03 §3); NOT derivable by formula
+    # ("windows-ucrt64" carries no arch segment).
+    HOST_IDS = {
+      %w[windows x86_64] => "windows-ucrt64",
+      %w[macos arm64] => "macos-arm64",
+      %w[macos x86_64] => "macos-x86_64",
+      %w[linux-gnu x86_64] => "linux-gnu-x86_64",
+      %w[linux-gnu arm64] => "linux-gnu-arm64",
+      %w[linux-musl x86_64] => "linux-musl-x86_64",
+      %w[linux-musl arm64] => "linux-musl-arm64"
+    }.freeze
+
+    # The lookup for callers with no detected host (the release pipeline's
+    # expected-asset model); same named failure as the instance path.
+    def self.host_id_for(os_id, arch_id)
+      HOST_IDS.fetch([os_id, arch_id]) { raise TebakoRuntimeBuilder::Error.new("#{os_id}/#{arch_id}", 112) }
+    end
+
     # Platform id as used by tebako-runtime-ruby package names
-    # (e.g. "macos-arm64", "linux-gnu-x86_64")
+    # (e.g. "macos-arm64", "windows-ucrt64")
     def host_id
-      "#{host_os_id}-#{host_arch_id}"
+      self.class.host_id_for(host_os_id, host_arch_id)
     end
 
     def brew_prefix(package)

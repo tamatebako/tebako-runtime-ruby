@@ -33,6 +33,12 @@ require "json"
 require "pathname"
 require "yaml"
 
+# The Platform model owns the (os, arch) → release platform id lookup
+# (HOST_IDS, mirroring tpkg::Platform in tebako-rs) — expected asset names
+# are built through it, never by formula.
+$LOAD_PATH.unshift(File.expand_path("../build/lib", __dir__))
+require "tebako_runtime_builder"
+
 RUNTIME_REPO = "tamatebako/tebako-runtime-ruby"
 
 # The bootstrap <-> runtime contract version (roadmap 45) emitted into every
@@ -110,9 +116,10 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     ruby_json = ENV.fetch("EXPECTED_RUBY_MATRIX", nil)
     return [] unless env_json && ruby_json
 
-    envs = JSON.parse(env_json)
-    rubies = JSON.parse(ruby_json)
-    envs.product(rubies).map { |env, ruby| "tebako-runtime-#{@version}-#{ruby}-#{env["os"]}-#{env["arch"]}" }
+    JSON.parse(env_json).product(JSON.parse(ruby_json)).map do |env, ruby|
+      platform = TebakoRuntimeBuilder::Platform.host_id_for(env["os"], env["arch"])
+      "tebako-runtime-#{@version}-#{ruby}-#{platform}"
+    end
   rescue JSON::ParserError => e
     puts "::warning::Could not compute expected package list: #{e.message}"
     []

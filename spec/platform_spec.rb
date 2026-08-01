@@ -36,7 +36,7 @@ RSpec.describe TebakoRuntimeBuilder::Platform do
   it "detects msys" do
     platform = described_class.new("x64-mingw-ucrt", "x86_64")
     expect(platform.msys?).to be(true)
-    expect(platform.host_id).to eq("windows-x86_64")
+    expect(platform.host_id).to eq("windows-ucrt64")
     expect(platform.fs_mount_point).to eq("A:/t")
     expect(platform.exe_suffix).to eq(".exe")
     expect(platform.m_files).to eq("MinGW Makefiles")

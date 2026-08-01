@@ -157,8 +157,8 @@ RSpec.describe TebakoRuntimeBuilder::Builder do
   end
 
   it "strips the .exe suffix when naming the image" do
-    expect(builder("/tmp/pkg/tebako-runtime-9.9.9-3.3.7-windows-x86_64.exe").image_output)
-      .to eq("/tmp/pkg/tebako-runtime-9.9.9-3.3.7-windows-x86_64.tfs")
+    expect(builder("/tmp/pkg/tebako-runtime-9.9.9-3.3.7-windows-ucrt64.exe").image_output)
+      .to eq("/tmp/pkg/tebako-runtime-9.9.9-3.3.7-windows-ucrt64.tfs")
   end
 
   it "derives the default image name from the default package name" do

@@ -443,8 +443,8 @@ RSpec.describe ReleaseManager do
 
     it "accepts a windows executable carrying the .exe suffix" do
       ENV["EXPECTED_ENV_MATRIX"] = '[{"host":"windows-2022","container":null,"os":"windows","arch":"x86_64"}]'
-      store.assets << FakeAsset.new(1, "tebako-runtime-#{SPEC_VERSION}-3.3.7-windows-x86_64.exe")
-      store.assets << FakeAsset.new(2, "tebako-runtime-#{SPEC_VERSION}-3.3.7-windows-x86_64.tfs")
+      store.assets << FakeAsset.new(1, "tebako-runtime-#{SPEC_VERSION}-3.3.7-windows-ucrt64.exe")
+      store.assets << FakeAsset.new(2, "tebako-runtime-#{SPEC_VERSION}-3.3.7-windows-ucrt64.tfs")
       store.assets << FakeAsset.new(3, "SHA256SUMS.txt")
       store.assets << FakeAsset.new(4, "manifest.json")
 

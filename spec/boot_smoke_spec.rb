@@ -25,8 +25,8 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
     end
 
     it "parses a windows .exe artifact name" do
-      artifact = described_class::Artifact.new("tebako-runtime-0.15.9-3.3.7-windows-x86_64.exe")
-      expect(artifact.platform_id).to eq("windows-x86_64")
+      artifact = described_class::Artifact.new("tebako-runtime-0.15.9-3.3.7-windows-ucrt64.exe")
+      expect(artifact.platform_id).to eq("windows-ucrt64")
     end
 
     it "rejects a name that is not a runtime artifact" do
@@ -45,7 +45,7 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
 
     it "ignores the sidecar markers (abi facet + era-2 contract card + sha256/origin trust markers)" do
       Dir.mktmpdir do |dir|
-        exe = File.join(dir, "tebako-runtime-0.15.9-3.1.6-windows-x86_64")
+        exe = File.join(dir, "tebako-runtime-0.15.9-3.1.6-windows-ucrt64")
         FileUtils.touch(exe)
         FileUtils.touch("#{exe}.tfs")
         FileUtils.touch("#{exe}.abi")
