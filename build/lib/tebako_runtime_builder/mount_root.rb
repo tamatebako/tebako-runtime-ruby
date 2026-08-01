@@ -35,7 +35,7 @@ module TebakoRuntimeBuilder
   # convention vs. patch-literals drift is exactly the mismatch class the
   # era-2 contract set closes.
   class MountRoot
-    MANIFEST = "tebako-mount-root".freeze
+    MANIFEST = "tebako-mount-root"
 
     def initialize(tarball)
       @tarball = tarball
@@ -49,7 +49,7 @@ module TebakoRuntimeBuilder
         )
       end
 
-      root = `tar -xOzf #{@tarball} #{entry}`.strip
+      root = `tar -xOzf #{tar_path} #{entry}`.strip
       raise TebakoRuntimeBuilder::Error.new("empty #{MANIFEST} in #{@tarball}", 131) if root.empty?
 
       root
@@ -58,7 +58,20 @@ module TebakoRuntimeBuilder
     private
 
     def manifest_entry
-      `tar -tzf #{@tarball}`.lines.map(&:strip).find { |name| name.end_with?("/#{MANIFEST}") }
+      `tar -tzf #{tar_path}`.lines.map(&:strip).find { |name| name.end_with?("/#{MANIFEST}") }
+    end
+
+    # GNU tar parses 'D:/...' as a remote host on msys ("Cannot connect
+    # to D: resolve failed" — the pitfall BuildPasses.extract_overlay
+    # documents); feed it the cygpath form there, elsewhere the path as-is.
+    def tar_path
+      @tar_path ||= begin
+        path = @tarball
+        if TebakoRuntimeBuilder::Platform.new.msys?
+          path = TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["cygpath", "-u", path]).strip
+        end
+        path
+      end
     end
   end
 end

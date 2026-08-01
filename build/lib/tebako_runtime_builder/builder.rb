@@ -78,6 +78,12 @@ module TebakoRuntimeBuilder
       "#{output.sub(/\.exe\z/, "")}.tfs"
     end
 
+    # The era-2 contract card constants (spec 18 C2): what this factory
+    # builds. Written into every package's .contract.yaml sidecar by
+    # write_contract_sidecar (see below) and folded into the release
+    # manifest entry by scripts/upload_release.rb.
+    CONTRACT_CARD = { "contract_era" => 2, "image_layout" => 1 }.freeze
+
     private
 
     # A runtime with neither the embedded image (v1 shape) nor the
@@ -209,13 +215,10 @@ module TebakoRuntimeBuilder
     # The era-2 contract provenance (spec 18 C2) as `<output>.contract.yaml`,
     # folded into the release manifest entry by scripts/upload_release.rb
     # (fail-closed there: a package without it is pre-era and refused).
-    # contract_era/image_layout declare what this factory builds; mount_root
-    # is the SAME flow as -DFS_MOUNT_POINT (the tarball's tebako-mount-root
-    # manifest — ONE source, memoized at configure); built_from names the
-    # source release and every consumed tarball with its verified sha256
-    # (msys consumes two: pass1 + pass2).
-    CONTRACT_CARD = { "contract_era" => 2, "image_layout" => 1 }.freeze
-
+    # mount_root is the SAME flow as -DFS_MOUNT_POINT (the tarball's
+    # tebako-mount-root manifest — ONE source, memoized at configure);
+    # built_from names the source release and every consumed tarball with
+    # its verified sha256 (msys consumes two: pass1 + pass2).
     def write_contract_sidecar(assets)
       card = CONTRACT_CARD.merge(
         "mount_root" => @mount_root,

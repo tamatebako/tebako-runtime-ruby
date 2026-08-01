@@ -11,6 +11,18 @@ require_relative "../scripts/upload_release"
 # Contract version the specs publish under (never a real release version)
 SPEC_VERSION = "9.9.9"
 
+# The builder-emitted contract sidecar every era-2 runtime package carries
+# (spec 18 C2); executable fixtures get one by default.
+SPEC_CONTRACT = {
+  "contract_era" => 2,
+  "image_layout" => 1,
+  "mount_root" => "/__tfs__",
+  "built_from" => {
+    "release" => "v0.2.13",
+    "sources" => [{ "name" => "tfs-ruby-3.3.7-src.tar.gz", "sha256" => "0" * 64 }]
+  }
+}.freeze
+
 # Recording octokit stand-ins: ReleaseManager accepts any client object
 # (client:), and every publish interaction becomes observable through the
 # store's public collections; transient failures are scriptable per call.
@@ -120,18 +132,6 @@ RSpec.describe ReleaseManager do
   end
 
   let(:manager) { described_class.new }
-
-  # The builder-emitted contract sidecar every era-2 runtime package
-  # carries (spec 18 C2); executable fixtures get one by default.
-  SPEC_CONTRACT = {
-    "contract_era" => 2,
-    "image_layout" => 1,
-    "mount_root" => "/__tfs__",
-    "built_from" => {
-      "release" => "v0.2.13",
-      "sources" => [{ "name" => "tfs-ruby-3.3.7-src.tar.gz", "sha256" => "0" * 64 }]
-    }
-  }.freeze
 
   def package(name, contents = name)
     @dir.join(name).tap do |path|
