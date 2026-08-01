@@ -50,9 +50,10 @@ module TebakoRuntimeBuilder
     BOOT_TIMEOUT = 60
     IMAGE_SUFFIXES = %w[.tfs .dwarfs].freeze
     # Sidecar markers the artifact set carries next to the executable (the
-    # factory's abi facet + the store-layout sha256/origin trust markers):
-    # metadata, never the interpreter.
-    MARKER_SUFFIXES = %w[.abi .sha256 .origin].freeze
+    # factory's abi facet + era-2 contract card (.contract.yaml) + the
+    # store-layout sha256/origin trust markers): metadata, never the
+    # interpreter.
+    MARKER_SUFFIXES = %w[.abi .sha256 .origin .yaml].freeze
     NON_EXECUTABLE_SUFFIXES = (IMAGE_SUFFIXES + MARKER_SUFFIXES).freeze
     # The child env is REPLACED, not inherited: RUBYOPT carries only the
     # probe and the rubygems/gem variables a host ruby setup would

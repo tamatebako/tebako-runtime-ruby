@@ -26,6 +26,7 @@
 # POSSIBILITY OF SUCH DAMAGE.
 
 require "fileutils"
+require "yaml"
 
 module TebakoRuntimeBuilder
   # End-to-end runtime package build (tools/build_runtime):
@@ -62,6 +63,7 @@ module TebakoRuntimeBuilder
       finalize
       pack_image if @image
       write_abi_sidecar
+      write_contract_sidecar(assets)
       @output
     end
 
@@ -129,7 +131,7 @@ module TebakoRuntimeBuilder
     # pre-manifest tarball (v0.2.12 and older) is refused by name with
     # exit 132 — never a fallback to the platform convention.
     def mount_root(tarball)
-      TebakoRuntimeBuilder::MountRoot.new(tarball).read
+      @mount_root ||= TebakoRuntimeBuilder::MountRoot.new(tarball).read
     end
 
     def cmake_configure(assets) # rubocop:disable Metrics/AbcSize,Metrics/MethodLength
@@ -158,6 +160,11 @@ module TebakoRuntimeBuilder
       FileUtils.mkdir_p(output_folder)
       TebakoRuntimeBuilder::BuildHelpers.run_with_capture(args, env: @platform.b_env)
     rescue TebakoRuntimeBuilder::Error => e
+      # The mount-root refusals (131/132) keep their named exit codes —
+      # wrapping them as a generic configure failure would hide the C1
+      # contract verdict (spec 18 S49).
+      raise if [131, 132].include?(e.error_code)
+
       raise TebakoRuntimeBuilder::Error.new("'build_runtime' configure step failed: #{e.message}", 103)
     end
 
@@ -197,6 +204,27 @@ module TebakoRuntimeBuilder
       arch = File.basename(File.dirname(rbconfig))
       abi = arch.gsub(/darwin(\d+)/, 'darwin-\1')
       File.write("#{output.sub(/\.exe\z/, '')}.abi", "#{abi}\n")
+    end
+
+    # The era-2 contract provenance (spec 18 C2) as `<output>.contract.yaml`,
+    # folded into the release manifest entry by scripts/upload_release.rb
+    # (fail-closed there: a package without it is pre-era and refused).
+    # contract_era/image_layout declare what this factory builds; mount_root
+    # is the SAME flow as -DFS_MOUNT_POINT (the tarball's tebako-mount-root
+    # manifest — ONE source, memoized at configure); built_from names the
+    # source release and every consumed tarball with its verified sha256
+    # (msys consumes two: pass1 + pass2).
+    CONTRACT_CARD = { "contract_era" => 2, "image_layout" => 1 }.freeze
+
+    def write_contract_sidecar(assets)
+      card = CONTRACT_CARD.merge(
+        "mount_root" => @mount_root,
+        "built_from" => {
+          "release" => @release,
+          "sources" => assets.map { |(path, sha256)| { "name" => File.basename(path), "sha256" => sha256 } }
+        }
+      )
+      File.write("#{output.sub(/\.exe\z/, '')}.contract.yaml", YAML.dump(card))
     end
   end
 end

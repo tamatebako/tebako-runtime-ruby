@@ -43,6 +43,15 @@ CONTRACT_YML = Pathname.new(File.expand_path("../contract.yml", __dir__)).freeze
 
 # Upload release manager for tebako build workflow
 class ReleaseManager # rubocop:disable Metrics/ClassLength
+  # The era-2 release card (spec 18 C2): every runtime package carries a
+  # builder-emitted `<package>.contract.yaml` sidecar (contract_era,
+  # image_layout, mount_root, built_from) that manifest_entry folds into
+  # the manifest.json entry. A package without it — or one declaring an
+  # era this pipeline does not speak — is refused by name (fail closed;
+  # S11/S16): a manifest entry never goes out under-declared.
+  CONTRACT_SIDECAR_SUFFIX = ".contract.yaml"
+  CONTRACT_ERA = 2
+
   def initialize(client: nil)
     validate_environment
     @client = client || Octokit::Client.new(access_token: ENV.fetch("GITHUB_TOKEN"), auto_paginate: true)
@@ -184,14 +193,19 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
 
   def manifest_entry(package, image = nil)
     ruby_version, platform = parse_package_filename(package.basename.to_s)
+    contract = contract_sidecar(package)
     {
       tebako_version: @version,
+      contract_era: contract.fetch("contract_era"),
       contract_version: @contract_version,
       ruby_version: ruby_version,
       platform: platform,
       filename: package.basename.to_s,
       sha256: Digest::SHA256.file(package).hexdigest,
-      size_bytes: package.size
+      size_bytes: package.size,
+      mount_root: contract.fetch("mount_root"),
+      image_layout: contract.fetch("image_layout"),
+      built_from: contract.fetch("built_from")
     }.tap do |entry|
       # The additive abi line (spec 05 §5): the runtime's own platform
       # string, emitted by build_runtime as <package>.abi. Consumers that
@@ -200,6 +214,34 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
       entry[:abi] = sidecar.read.strip if sidecar.file?
       entry[:image] = image_entry(image) if image
     end
+  end
+
+  # The package's builder-emitted contract sidecar (the era-2 release
+  # card's provenance half), fail-closed: a missing file, missing keys,
+  # or a declared era this pipeline does not speak are named refusals —
+  # never a silently under-declared manifest entry (spec 18 C2/S11/S16).
+  def contract_sidecar(package)
+    path = Pathname.new("#{package.sub(%r{\.exe\z}, '')}#{CONTRACT_SIDECAR_SUFFIX}")
+    unless path.file?
+      raise "runtime package #{package.basename} carries no #{CONTRACT_SIDECAR_SUFFIX} contract sidecar — " \
+            "it was built by a pre-era factory; rebuild it with the current tebako-runtime-ruby (spec 18 C2)"
+    end
+
+    data = YAML.load_file(path)
+    data = nil unless data.is_a?(Hash)
+    missing = %w[contract_era mount_root image_layout built_from] - (data || {}).keys
+    unless missing.empty?
+      raise "contract sidecar #{path.basename} is missing #{missing.join(", ")} — " \
+            "rebuild the package with the current tebako-runtime-ruby (spec 18 C2)"
+    end
+
+    era = data.fetch("contract_era")
+    unless era == CONTRACT_ERA
+      raise "contract sidecar #{path.basename} declares contract_era #{era.inspect} but this release pipeline " \
+            "speaks #{CONTRACT_ERA} — upgrade tebako-runtime-ruby"
+    end
+
+    data
   end
 
   # The additive image metadata: name, sha256, size (consumers ignoring the
@@ -429,9 +471,12 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     packages_dir = Pathname.new("runtime-packages")
     raise "No runtime packages directory found" unless packages_dir.directory?
 
-    # `.abi` sidecars are manifest inputs (the runtime's platform string,
-    # read by manifest_entry) — never packages of their own.
-    packages = packages_dir.glob("*").reject { |p| p.extname == ".abi" }
+    # `.abi` sidecars (the runtime's platform string) and `.contract.yaml`
+    # sidecars (the era-2 release card provenance) are manifest inputs read
+    # by manifest_entry — never packages of their own.
+    packages = packages_dir.glob("*").reject do |p|
+      p.extname == ".abi" || p.basename.to_s.end_with?(CONTRACT_SIDECAR_SUFFIX)
+    end
     raise "No packages found in runtime-packages directory" if packages.empty?
 
     puts "Found packages:\n#{packages.map(&:basename).join("\n")}"

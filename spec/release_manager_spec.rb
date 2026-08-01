@@ -121,8 +121,27 @@ RSpec.describe ReleaseManager do
 
   let(:manager) { described_class.new }
 
+  # The builder-emitted contract sidecar every era-2 runtime package
+  # carries (spec 18 C2); executable fixtures get one by default.
+  SPEC_CONTRACT = {
+    "contract_era" => 2,
+    "image_layout" => 1,
+    "mount_root" => "/__tfs__",
+    "built_from" => {
+      "release" => "v0.2.13",
+      "sources" => [{ "name" => "tfs-ruby-3.3.7-src.tar.gz", "sha256" => "0" * 64 }]
+    }
+  }.freeze
+
   def package(name, contents = name)
-    @dir.join(name).tap { |path| path.write(contents) }
+    @dir.join(name).tap do |path|
+      path.write(contents)
+      write_contract_sidecar(path) unless name.end_with?(".tfs", ".abi", ReleaseManager::CONTRACT_SIDECAR_SUFFIX)
+    end
+  end
+
+  def write_contract_sidecar(path, contract = SPEC_CONTRACT)
+    File.write("#{path.to_s.sub(%r{\.exe\z}, '')}#{ReleaseManager::CONTRACT_SIDECAR_SUFFIX}", YAML.dump(contract))
   end
 
   def with_packages(&block)
@@ -162,11 +181,56 @@ RSpec.describe ReleaseManager do
 
     entry = manager.build_manifest_entries([exe, img]).first
 
-    expect(entry.keys).to contain_exactly(:tebako_version, :contract_version, :ruby_version, :platform,
-                                          :filename, :sha256, :size_bytes, :image)
+    expect(entry.keys).to contain_exactly(:tebako_version, :contract_era, :contract_version, :ruby_version,
+                                          :platform, :filename, :sha256, :size_bytes,
+                                          :mount_root, :image_layout, :built_from, :image)
     expect(entry[:tebako_version]).to eq(SPEC_VERSION)
     expect(entry[:sha256]).to eq(Digest::SHA256.file(exe).hexdigest)
     expect(entry[:size_bytes]).to eq(exe.size)
+  end
+
+  # Spec 18 C2: the era-2 contract card — contract_era / mount_root /
+  # image_layout / built_from flow from the package's builder-emitted
+  # .contract.yaml sidecar into the entry unchanged.
+  it "flows the contract sidecar fields into the manifest entry" do
+    exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
+
+    entry = manager.build_manifest_entries([exe]).first
+
+    expect(entry[:contract_era]).to eq(2)
+    expect(entry[:mount_root]).to eq("/__tfs__")
+    expect(entry[:image_layout]).to eq(1)
+    expect(entry[:built_from]).to eq(
+      "release" => "v0.2.13",
+      "sources" => [{ "name" => "tfs-ruby-3.3.7-src.tar.gz", "sha256" => "0" * 64 }]
+    )
+  end
+
+  # S11/S16: a package without the builder's contract sidecar is pre-era;
+  # the publish refuses it by name rather than shipping an under-declared
+  # manifest entry (fail closed — no special pleading for side-loaded
+  # runtimes either).
+  it "refuses a package without the contract sidecar" do
+    exe = @dir.join("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64").tap { |path| path.write("exe") }
+
+    expect { manager.build_manifest_entries([exe]) }
+      .to raise_error(/carries no \.contract\.yaml contract sidecar.*pre-era/)
+  end
+
+  it "refuses a sidecar declaring a contract era this pipeline does not speak" do
+    exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
+    write_contract_sidecar(exe, SPEC_CONTRACT.merge("contract_era" => 3))
+
+    expect { manager.build_manifest_entries([exe]) }
+      .to raise_error(/contract_era 3.*speaks 2.*upgrade/)
+  end
+
+  it "refuses a sidecar missing contract fields" do
+    exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
+    write_contract_sidecar(exe, SPEC_CONTRACT.reject { |key,| key == "mount_root" })
+
+    expect { manager.build_manifest_entries([exe]) }
+      .to raise_error(/missing mount_root/)
   end
 
   # Roadmap 45: every published package entry names the bootstrap <->
@@ -211,6 +275,20 @@ RSpec.describe ReleaseManager do
     with_packages do
       packages = manager.validate_packages_directory
       expect(packages.map { |p| p.extname }).not_to include(".abi")
+    end
+  end
+
+  it "never treats .contract.yaml sidecars as packages" do
+    dir = @dir.join("runtime-packages")
+    dir.mkdir
+    dir.join("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64").write("exe")
+    dir.join("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64#{ReleaseManager::CONTRACT_SIDECAR_SUFFIX}")
+       .write(YAML.dump(SPEC_CONTRACT))
+
+    with_packages do
+      packages = manager.validate_packages_directory
+      expect(packages.map { |p| p.basename.to_s })
+        .to contain_exactly("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
     end
   end
 
@@ -298,6 +376,28 @@ RSpec.describe ReleaseManager do
         .to eq("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64.tfs")
       expect(manifest.first["image"]["sha256"]).to eq(Digest::SHA256.file(img).hexdigest)
       expect(manifest.first["image"]["size_bytes"]).to eq(img.size)
+    end
+  end
+
+  # Spec 18 C2: the published manifest.json IS the release card — the
+  # loader reads the contract set before any download, so the JSON must
+  # carry every era-2 field (validated here, at the producer).
+  it "writes the era-2 contract set into the manifest.json asset" do
+    exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
+    entries = manager.build_manifest_entries([exe])
+
+    with_packages do
+      manifest = JSON.parse(manager.generate_manifest(entries).read)
+      entry = manifest.first
+      expect(entry["contract_era"]).to eq(2)
+      expect(entry["contract_version"]).to eq(YAML.load_file(File.join(REPO_ROOT, "contract.yml"))
+                                                 .fetch("contract_version"))
+      expect(entry["mount_root"]).to eq("/__tfs__")
+      expect(entry["image_layout"]).to eq(1)
+      expect(entry["built_from"]).to eq(
+        "release" => "v0.2.13",
+        "sources" => [{ "name" => "tfs-ruby-3.3.7-src.tar.gz", "sha256" => "0" * 64 }]
+      )
     end
   end
 
@@ -435,7 +535,11 @@ RSpec.describe ReleaseManager do
     def stage_packages(*names)
       dir = @dir.join("runtime-packages")
       dir.mkdir
-      names.each { |name| dir.join(name).write("bytes-of-#{name}") }
+      names.each do |name|
+        path = dir.join(name)
+        path.write("bytes-of-#{name}")
+        write_contract_sidecar(path) unless name.end_with?(".tfs")
+      end
     end
 
     it "publishes and passes the gate when the expected set is complete" do
