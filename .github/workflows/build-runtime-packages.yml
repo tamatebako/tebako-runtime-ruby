@@ -177,12 +177,16 @@ jobs:
       # jobs only: container jobs build inside the CI container image whose
       # toolchain is baked into the image itself, so there is no host-side
       # path to cache (the container image is the cache).
+      # save-always: a boot-smoke failure must NEVER poison the cache — the
+      # default (save on success only) meant every red leg left the next one
+      # cold (~60 min of rebuild per iteration, the msys campaign's tax).
       - name: Cache build prefix
         if: matrix.env.container == null
         uses: actions/cache@v4
         with:
           path: .build
           key: tebako-runtime-${{ matrix.env.os }}-${{ matrix.env.arch }}-${{ matrix.ruby }}-${{ needs.prepare.outputs.tebako-version }}-${{ needs.prepare.outputs.source-pin }}-v${{ env.CACHE_VER }}
+          save-always: true
 
       - name: Build runtime using ci container
         if: matrix.env.container != null
