@@ -19,14 +19,14 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
   end
 
   # An msys ruby source tree fixture carrying the anchors the prepare
-  # hot-patches act on (dir.c: the glob hint and the stat conversion;
-  # file.c/io.c: the stat conversion)
+  # hot-patches act on (dir.c: the glob hint; io.c: the fd_is_text block —
+  # the stat wire-layout hot-patch is gone: the released source carries
+  # the pinned tebako_stat ABI from tamatebako/ruby v0.2.13)
   def write_msys_source_fixtures(dir)
-    conversion = TebakoRuntimeBuilder::BuildPasses::MSYS_STAT_CONVERSION_ANCHOR
     glob = TebakoRuntimeBuilder::BuildPasses::MSYS_GLOB_OPENDIR_ANCHOR
-    File.write(File.join(dir, "dir.c"), "#{glob}\n#{conversion}\n")
-    File.write(File.join(dir, "file.c"), "#{conversion}\n")
-    File.write(File.join(dir, "io.c"), "#{conversion}\n")
+    fd_text = TebakoRuntimeBuilder::BuildPasses::MSYS_FD_IS_TEXT_ANCHOR
+    File.write(File.join(dir, "dir.c"), "#{glob}\n")
+    File.write(File.join(dir, "io.c"), "tfs_close\n#{fd_text}\n")
   end
 
   describe ".prepare" do
@@ -115,43 +115,6 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
 
     it "fails when dir.c does not exist" do
       FileUtils.rm(dir_c)
-      expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc") }
-        .to raise_error(TebakoRuntimeBuilder::Error, /does not exist/)
-    end
-  end
-
-  describe ".prepare msys struct stat wire layout" do
-    before do
-      write_msys_source_fixtures(ruby_src)
-    end
-
-    it "reads libtfs struct stat fills through the wire layout in dir.c, file.c and io.c" do
-      described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc")
-
-      %w[dir.c file.c io.c].each do |name|
-        contents = File.read(File.join(ruby_src, name))
-        expect(contents).to include("struct tfs_wire_stat")
-        expect(contents).to include("const struct tfs_wire_stat *w = (const struct tfs_wire_stat *) i;")
-        expect(contents).not_to include("o->st_size = i->st_size;")
-      end
-    end
-
-    it "is idempotent across the msys pass-2 overlay prepare re-run" do
-      described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc")
-      expect do
-        described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc")
-      end.not_to raise_error
-      expect(File.read(File.join(ruby_src, "io.c")).scan("struct tfs_wire_stat {").length).to eq(1)
-    end
-
-    it "fails loudly when a conversion anchor is absent (the pre-patched tree changed)" do
-      File.write(File.join(ruby_src, "io.c"), "static void\nunrelated(void);\n")
-      expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc") }
-        .to raise_error(TebakoRuntimeBuilder::Error, /struct stat conversion anchor/)
-    end
-
-    it "fails when a patched translation unit does not exist" do
-      FileUtils.rm(File.join(ruby_src, "file.c"))
       expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc") }
         .to raise_error(TebakoRuntimeBuilder::Error, /does not exist/)
     end
