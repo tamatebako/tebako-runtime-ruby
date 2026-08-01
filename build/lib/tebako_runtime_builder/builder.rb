@@ -123,6 +123,24 @@ module TebakoRuntimeBuilder
       ENV.fetch("TEBAKO_RUST_LIBDIR", nil) && !ENV["TEBAKO_RUST_LIBDIR"].empty?
     end
 
+    # The memfs mount root the runtime is built against. The value flows
+    # from the source tarball's tebako-mount-root manifest (written by
+    # tamatebako/ruby's SourcePrep — the single owner of the constant;
+    # the contract filename below is the layout contract point). A
+    # pre-manifest tarball (v0.2.12 and older) falls back to the
+    # platform convention — only ever build those with the matching pin.
+    MOUNT_ROOT_MANIFEST = "tebako-mount-root".freeze
+
+    def mount_root(tarball)
+      entry = `tar -tzf #{tarball}`.lines.map(&:strip).find { |name| name.end_with?("/#{MOUNT_ROOT_MANIFEST}") }
+      return @platform.fs_mount_point if entry.nil?
+
+      root = `tar -xOzf #{tarball} #{entry}`.strip
+      raise TebakoRuntimeBuilder::Error.new("empty #{MOUNT_ROOT_MANIFEST} in #{tarball}", 131) if root.empty?
+
+      root
+    end
+
     def cmake_configure(assets) # rubocop:disable Metrics/AbcSize,Metrics/MethodLength
       (tarball, sha256) = assets[0]
       args = ["cmake",
@@ -133,7 +151,8 @@ module TebakoRuntimeBuilder
               "-DRUNTIME_NAME:STRING=#{File.basename(output).sub(/\.exe\z/, "")}",
               "-DDEPS:STRING=#{deps}",
               "-DTEBAKO_VERSION:STRING=#{@tebako_version}",
-              "-DLOG_LEVEL:STRING=error"]
+              "-DLOG_LEVEL:STRING=error",
+              "-DFS_MOUNT_POINT:STRING=#{mount_root(tarball)}"]
       if assets.length == 2
         (tarball_p2, sha256_p2) = assets[1]
         args += ["-DRUBY_TARBALL_P2:STRING=file://#{tarball_p2}", "-DRUBY_HASH_P2:STRING=#{sha256_p2}"]

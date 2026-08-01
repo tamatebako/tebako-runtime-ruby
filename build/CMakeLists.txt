@@ -299,11 +299,17 @@ set (TLD ${DATA_SRC_DIR}/local)
 # TGD folder is used to install gems
 set (TGD ${DATA_SRC_DIR}/lib/ruby/gems/${RUBY_API_VER})
 # This is actually a constant that shall match libdwarfs-wr TEBAKO_MOUNT_POINT at tebako-common.h
-if(${IS_MSYS})
-  set(FS_MOUNT_POINT "A:/__tebako_memfs__")
-else(${IS_MSYS})
-  set(FS_MOUNT_POINT "/__tebako_memfs__")
-endif(${IS_MSYS})
+# The mount root FLOWS from the source tarball's tebako-mount-root
+# manifest (-DFS_MOUNT_POINT from builder.rb; tamatebako/ruby owns the
+# value). The convention below is the fallback for pre-manifest tarballs
+# only — keep it equal to the current patch literals.
+if(NOT DEFINED FS_MOUNT_POINT)
+  if(${IS_MSYS})
+    set(FS_MOUNT_POINT "A:/t")
+  else(${IS_MSYS})
+    set(FS_MOUNT_POINT "/__tfs__")
+  endif(${IS_MSYS})
+endif(NOT DEFINED FS_MOUNT_POINT)
 
 message(STATUS "DATA_SRC_DIR: ${DATA_SRC_DIR}")
 message(STATUS "DATA_PRE_DIR: ${DATA_PRE_DIR}")

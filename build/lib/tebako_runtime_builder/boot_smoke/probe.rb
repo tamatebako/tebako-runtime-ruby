@@ -38,7 +38,7 @@
 # judge. A check raises on a violated invariant rather than reporting a
 # false-looking ok, so "fail" always names the drifted syscall.
 module BootSmokeProbe
-  MOUNT_POINT = ENV.fetch("TEBAKO_BOOT_MOUNT_POINT", "/__tebako_memfs__").freeze
+  MOUNT_POINT = ENV.fetch("TEBAKO_BOOT_MOUNT_POINT", "/__tfs__").freeze
   STUB = File.join(MOUNT_POINT, "local", "stub.rb").freeze
 
   def self.report(name)

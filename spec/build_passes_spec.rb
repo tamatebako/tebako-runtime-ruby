@@ -36,7 +36,7 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
     end
 
     it "substitutes @TEBAKO_MLIBS@ and builds the toolchain stub library" do
-      described_class.prepare("x86_64-linux-gnu", ruby_src, deps_lib_dir, "3.3.7", "/__tebako_memfs__", "cc")
+      described_class.prepare("x86_64-linux-gnu", ruby_src, deps_lib_dir, "3.3.7", "/__tfs__", "cc")
 
       makefile_in = File.read(File.join(ruby_src, "template", "Makefile.in"))
       expect(makefile_in).not_to include("@TEBAKO_MLIBS@")
@@ -52,14 +52,14 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
 
     it "fails loudly when the placeholder is absent (not a pre-patched tree)" do
       File.write(File.join(ruby_src, "template", "Makefile.in"), "MAINLIBS = @MAINLIBS@\n")
-      expect { described_class.prepare("x86_64-linux-gnu", ruby_src, deps_lib_dir, "3.3.7", "/__tebako_memfs__", "cc") }
+      expect { described_class.prepare("x86_64-linux-gnu", ruby_src, deps_lib_dir, "3.3.7", "/__tfs__", "cc") }
         .to raise_error(TebakoRuntimeBuilder::Error, /not a tebako pre-patched ruby source tree/)
     end
 
     it "is idempotent across rebuild re-runs (substitutes from the .tebako-orig copy)" do
-      described_class.prepare("x86_64-linux-gnu", ruby_src, deps_lib_dir, "3.3.7", "/__tebako_memfs__", "cc")
+      described_class.prepare("x86_64-linux-gnu", ruby_src, deps_lib_dir, "3.3.7", "/__tfs__", "cc")
       expect do
-        described_class.prepare("x86_64-linux-gnu", ruby_src, deps_lib_dir, "3.3.7", "/__tebako_memfs__", "cc")
+        described_class.prepare("x86_64-linux-gnu", ruby_src, deps_lib_dir, "3.3.7", "/__tfs__", "cc")
       end.not_to raise_error
       makefile_in = File.read(File.join(ruby_src, "template", "Makefile.in"))
       expect(makefile_in).to include("MAINLIBS = -Wl,--start-group")
@@ -67,7 +67,7 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
 
     it "fails when template/Makefile.in does not exist" do
       FileUtils.rm(File.join(ruby_src, "template", "Makefile.in"))
-      expect { described_class.prepare("x86_64-linux-gnu", ruby_src, deps_lib_dir, "3.3.7", "/__tebako_memfs__", "cc") }
+      expect { described_class.prepare("x86_64-linux-gnu", ruby_src, deps_lib_dir, "3.3.7", "/__tfs__", "cc") }
         .to raise_error(TebakoRuntimeBuilder::Error, /does not exist/)
     end
 
@@ -75,7 +75,7 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
       File.write(File.join(ruby_src, "template", "Makefile.in"), "MAINLIBS = @MAINLIBS@\n")
       write_msys_source_fixtures(ruby_src)
       expect do
-        described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tebako_memfs__", "cc")
+        described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc")
       end.not_to raise_error
       expect(File.read(File.join(ruby_src, "template", "Makefile.in"))).to eq("MAINLIBS = @MAINLIBS@\n")
       expect(File.file?(File.join(deps_lib_dir, "libtebako-fs.a"))).to be(true)
@@ -91,7 +91,7 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
     end
 
     it "guards the nfiles capacity hint against libtfs dir handles" do
-      described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tebako_memfs__", "cc")
+      described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc")
 
       contents = File.read(dir_c)
       expect(contents).to include("!tebako_fs_dir_is_embedded((tebako_dir_t) dirp) /* tebako patch */ && " \
@@ -100,22 +100,22 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
     end
 
     it "is idempotent across the msys pass-2 overlay prepare re-run" do
-      described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tebako_memfs__", "cc")
+      described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc")
       expect do
-        described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tebako_memfs__", "cc")
+        described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc")
       end.not_to raise_error
       expect(File.read(dir_c).scan("dirp->nfiles").length).to eq(1)
     end
 
     it "fails loudly when the anchor is absent (the pre-patched tree changed)" do
       File.write(dir_c, "#ifdef _WIN32\n        if ((capacity = 16) > 0) {\n#endif\n")
-      expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tebako_memfs__", "cc") }
+      expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc") }
         .to raise_error(TebakoRuntimeBuilder::Error, /capacity-hint anchor/)
     end
 
     it "fails when dir.c does not exist" do
       FileUtils.rm(dir_c)
-      expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tebako_memfs__", "cc") }
+      expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc") }
         .to raise_error(TebakoRuntimeBuilder::Error, /does not exist/)
     end
   end
@@ -126,7 +126,7 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
     end
 
     it "reads libtfs struct stat fills through the wire layout in dir.c, file.c and io.c" do
-      described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tebako_memfs__", "cc")
+      described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc")
 
       %w[dir.c file.c io.c].each do |name|
         contents = File.read(File.join(ruby_src, name))
@@ -137,22 +137,22 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
     end
 
     it "is idempotent across the msys pass-2 overlay prepare re-run" do
-      described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tebako_memfs__", "cc")
+      described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc")
       expect do
-        described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tebako_memfs__", "cc")
+        described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc")
       end.not_to raise_error
       expect(File.read(File.join(ruby_src, "io.c")).scan("struct tfs_wire_stat {").length).to eq(1)
     end
 
     it "fails loudly when a conversion anchor is absent (the pre-patched tree changed)" do
       File.write(File.join(ruby_src, "io.c"), "static void\nunrelated(void);\n")
-      expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tebako_memfs__", "cc") }
+      expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc") }
         .to raise_error(TebakoRuntimeBuilder::Error, /struct stat conversion anchor/)
     end
 
     it "fails when a patched translation unit does not exist" do
       FileUtils.rm(File.join(ruby_src, "file.c"))
-      expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tebako_memfs__", "cc") }
+      expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc") }
         .to raise_error(TebakoRuntimeBuilder::Error, /does not exist/)
     end
   end
@@ -200,8 +200,8 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
       # The rbconfig the pass rewrites (memfs prefix, as the pre-patched
       # mkconfig bakes it); make invocations are stubbed out
       File.write(File.join(ruby_src, "rbconfig.rb"),
-                 %(  CONFIG["prefix"] = (TOPDIR || DESTDIR + "/__tebako_memfs__")\n) +
-                   %(  CONFIG["RUBY_EXEC_PREFIX"] = "/__tebako_memfs__"\n))
+                 %(  CONFIG["prefix"] = (TOPDIR || DESTDIR + "/__tfs__")\n) +
+                   %(  CONFIG["RUBY_EXEC_PREFIX"] = "/__tfs__"\n))
       allow(TebakoRuntimeBuilder::BuildHelpers).to receive(:run_with_capture).and_return("")
     end
 

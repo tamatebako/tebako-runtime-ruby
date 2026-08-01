@@ -182,7 +182,7 @@ module TebakoRuntimeBuilder
       begin
         strings, = Open3.capture2e("strings", ruby)
         puts "   ... compiled-in paths in #{ruby}:"
-        puts strings.lines.grep(%r{__tebako_memfs__|o/sD:|tebako-runtime-ruby}).first(12)
+        puts strings.lines.grep(%r{__tfs__|o/sD:|tebako-runtime-ruby}).first(12)
       rescue StandardError => e
         puts "   ... strings failed: #{e.message}"
       end
@@ -245,7 +245,7 @@ module TebakoRuntimeBuilder
       begin
         strings, = Open3.capture2e("strings", ruby)
         puts "   ... compiled-in paths in #{ruby}:"
-        puts strings.lines.grep(%r{/__tebako_memfs__|o/sD:|/lib/ruby}).first(12)
+        puts strings.lines.grep(%r{/__tfs__|o/sD:|/lib/ruby}).first(12)
       rescue StandardError
         nil
       end

@@ -11,7 +11,7 @@ RSpec.describe TebakoRuntimeBuilder::Platform do
     expect(platform.macos?).to be(false)
     expect(platform.msys?).to be(false)
     expect(platform.host_id).to eq("linux-gnu-x86_64")
-    expect(platform.fs_mount_point).to eq("/__tebako_memfs__")
+    expect(platform.fs_mount_point).to eq("/__tfs__")
     expect(platform.exe_suffix).to eq("")
     expect(platform.m_files).to eq("Unix Makefiles")
   end
@@ -29,7 +29,7 @@ RSpec.describe TebakoRuntimeBuilder::Platform do
     expect(platform.macos?).to be(true)
     expect(platform.musl?).to be(false)
     expect(platform.host_id).to eq("macos-arm64")
-    expect(platform.fs_mount_point).to eq("/__tebako_memfs__")
+    expect(platform.fs_mount_point).to eq("/__tfs__")
     expect(platform.b_env["CXXFLAGS"]).to include("-DTARGET_OS_SIMULATOR=0")
   end
 
@@ -37,7 +37,7 @@ RSpec.describe TebakoRuntimeBuilder::Platform do
     platform = described_class.new("x64-mingw-ucrt", "x86_64")
     expect(platform.msys?).to be(true)
     expect(platform.host_id).to eq("windows-x86_64")
-    expect(platform.fs_mount_point).to eq("A:/__tebako_memfs__")
+    expect(platform.fs_mount_point).to eq("A:/t")
     expect(platform.exe_suffix).to eq(".exe")
     expect(platform.m_files).to eq("MinGW Makefiles")
     expect(platform.b_env["CXXFLAGS"]).to include("-DGFLAGS_IS_A_DLL=0")

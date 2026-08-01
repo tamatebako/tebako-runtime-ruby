@@ -367,7 +367,7 @@ module TebakoRuntimeBuilder
           run_make_with_serial_fallback(["make", "-j#{platform.ncores}"])
           # The pre-patched tool/mkconfig.rb bakes the memfs mount point into
           # the generated rbconfig.rb (ungated), which would send
-          # 'make install' into /__tebako_memfs__ on the host (EROFS) and
+          # 'make install' into /__tfs__ on the host (EROFS) and
           # ship a memfs-prefix rbconfig in the image. Point the generated
           # rbconfig.rb (a build artifact, not the patched source) at the
           # packaging prefix instead, then force verconf.h/loadpath.o to
