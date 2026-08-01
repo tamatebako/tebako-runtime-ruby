@@ -49,7 +49,7 @@ module TebakoRuntimeBuilder
         )
       end
 
-      root = `tar -xOzf #{tar_path} #{entry}`.strip
+      root = tar_output("-xOzf", tar_path, entry).strip
       raise TebakoRuntimeBuilder::Error.new("empty #{MANIFEST} in #{@tarball}", 131) if root.empty?
 
       root
@@ -58,7 +58,17 @@ module TebakoRuntimeBuilder
     private
 
     def manifest_entry
-      `tar -tzf #{tar_path}`.lines.map(&:strip).find { |name| name.end_with?("/#{MANIFEST}") }
+      tar_output("-tzf", tar_path).lines.map(&:strip).find { |name| name.end_with?("/#{MANIFEST}") }
+    end
+
+    # A tar invocation whose failure is a READ error (corrupt tarball,
+    # unreadable path) — raised as such, exit 133, and never conflated
+    # with "manifest absent" (the 132 pre-era case, which requires a
+    # successful listing that simply lacks the entry).
+    def tar_output(mode, *args)
+      TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["tar", mode, *args])
+    rescue TebakoRuntimeBuilder::Error => e
+      raise TebakoRuntimeBuilder::Error.new("cannot read source tarball #{@tarball}: #{e.message}", 133)
     end
 
     # GNU tar parses 'D:/...' as a remote host on msys ("Cannot connect

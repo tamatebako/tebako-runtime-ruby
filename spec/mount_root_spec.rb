@@ -52,4 +52,14 @@ RSpec.describe TebakoRuntimeBuilder::MountRoot do
         expect(error.error_code).to eq(131)
       end
   end
+
+  it "distinguishes a corrupt tarball (133 read error) from an absent manifest (132 pre-era)" do
+    corrupt = File.join(staging_dir, "corrupt.tar.gz")
+    File.write(corrupt, "not a tarball at all\n")
+    expect { described_class.new(corrupt).read }
+      .to raise_error(TebakoRuntimeBuilder::Error) do |error|
+        expect(error.message).to match(/cannot read source tarball/)
+        expect(error.error_code).to eq(133)
+      end
+  end
 end
