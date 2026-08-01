@@ -166,6 +166,16 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
         expect(run.state("load_path_default_gem")).to eq("ok")
         expect(run.detail("load_path_default_gem")).not_to be_empty
       end
+
+      it "declares the era-2 image layout at /lib/tebako/layout.yaml (spec 18 C3)" do
+        # The env image's own declaration: the mount root the exe compiled
+        # in (TEBAKO_BOOT_MOUNT_POINT is the same expectation host-side),
+        # the era-2 contract set, and the interpreter api line — a pre-era
+        # image or a mismatched exe↔image pair fails by name here, at
+        # build time, ahead of the driver's exit-78 verdict.
+        expect(run).to be_booted, boot_failure(run)
+        expect(run.state("layout_yaml")).to eq("ok"), "probe layout_yaml detail: #{run.detail("layout_yaml")}"
+      end
     end
 
     describe "bundler" do

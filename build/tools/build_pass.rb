@@ -82,12 +82,15 @@ begin
     #       ARGV[9] -- RUNTIME_NAME (msys implib)
     #       ARGV[10] -- EMBED ("1": also write the incbin fs.bin image;
     #                  "0": image era, the standalone .tfs is the only image)
-    unless ARGV.length == 11
+    #       ARGV[11] -- FS_MOUNT_POINT (the exe's compiled-in root, flowed
+    #                  from the tarball manifest; written into the image's
+    #                  /lib/tebako/layout.yaml — spec 18 C3)
+    unless ARGV.length == 12
       raise TebakoRuntimeBuilder::Error,
-            "build_pass deploy command expects 11 arguments, #{ARGV.length} has been provided."
+            "build_pass deploy command expects 12 arguments, #{ARGV.length} has been provided."
     end
     TebakoRuntimeBuilder::BuildPasses.deploy(ARGV[1], ARGV[2], ARGV[3], ARGV[4], ARGV[5], ARGV[6], ARGV[7],
-                                             ARGV[8], ARGV[9], embed: ARGV[10] == "1")
+                                             ARGV[8], ARGV[9], mount_point: ARGV[11], embed: ARGV[10] == "1")
   when "overlay"
     #       ARGV[1] -- PASS2_TARBALL
     #       ARGV[2] -- PASS2_SHA256

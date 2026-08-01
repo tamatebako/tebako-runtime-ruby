@@ -27,6 +27,7 @@
 
 require "fileutils"
 require "open3"
+require "yaml"
 
 module TebakoRuntimeBuilder
   # Builds the runtime package filesystem image (fs.bin) from the stashed
@@ -64,7 +65,7 @@ module TebakoRuntimeBuilder
       "raise PermissionError.new(path, action) # tebako backport (bundler < 2.6.6)\n"
 
     def initialize(platform, ruby_ver, stash_dir, data_src_dir, data_pre_dir, data_bin_file, deps_bin_dir, # rubocop:disable Metrics/ParameterLists,Metrics/MethodLength
-                   embed: true)
+                   mount_point:, embed: true)
       @platform = platform
       @ruby_ver = ruby_ver
       @stash_dir = stash_dir
@@ -72,6 +73,7 @@ module TebakoRuntimeBuilder
       @data_pre_dir = data_pre_dir
       @data_bin_file = data_bin_file
       @deps_bin_dir = deps_bin_dir
+      @mount_point = mount_point
       @embed = embed
 
       @tbd = File.join(@data_src_dir, "bin")
@@ -84,6 +86,33 @@ module TebakoRuntimeBuilder
       backport_bundler_erofs_degradation
       deploy(stub_dir)
       mkdwarfs if @embed
+    end
+
+    # The env image's own contract declaration (spec 18 C3/S17), read by
+    # the driver post-mount, before ruby init: a missing layout is an
+    # era-1 refusal; a mount_root ≠ the exe's compiled-in expectation is
+    # exit 78. mount_root FLOWS from the tarball's tebako-mount-root
+    # manifest (via -DFS_MOUNT_POINT → the deploy pass) — never re-authored
+    # here. Field set per docs/spec/schemas/layout.yaml (snake_case,
+    # lists-not-maps): schema/version, era, image_layout, mount_root,
+    # interpreter api version.
+    LAYOUT_DECLARATION = {
+      "schema" => "layout",
+      "schema_version" => 1,
+      "era" => 2,
+      "image_layout" => 1
+    }.freeze
+    LAYOUT_PATH = File.join("lib", "tebako", "layout.yaml").freeze
+
+    def deploy_layout
+      path = File.join(@data_src_dir, LAYOUT_PATH)
+      FileUtils.mkdir_p(File.dirname(path))
+      declaration = LAYOUT_DECLARATION.merge(
+        "mount_root" => @mount_point,
+        "interpreter" => { "name" => "ruby", "api_version" => @ruby_ver.api_version }
+      )
+      File.write(path, YAML.dump(declaration))
+      puts "   ... env image layout declaration: #{path}"
     end
 
     private
@@ -144,6 +173,7 @@ module TebakoRuntimeBuilder
         deploy_stub(stub_dir)
       end
       deploy_preload
+      deploy_layout
       TebakoRuntimeBuilder::Stripper.strip(@platform, @data_src_dir)
     end
 

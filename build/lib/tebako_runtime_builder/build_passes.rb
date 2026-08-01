@@ -439,11 +439,12 @@ module TebakoRuntimeBuilder
       end
 
       def deploy(ruby_ver, stash_dir, data_src_dir, data_pre_dir, data_bin_file, stub_dir, deps_bin_dir, # rubocop:disable Metrics/ParameterLists
-                 ruby_source_dir = nil, runtime_name = nil, embed: true)
+                 ruby_source_dir = nil, runtime_name = nil, mount_point:, embed: true)
         rv = TebakoRuntimeBuilder::RubyVersion.new(ruby_ver)
         platform = TebakoRuntimeBuilder::Platform.new
         TebakoRuntimeBuilder::ImageBuilder.new(platform, rv, stash_dir, data_src_dir, data_pre_dir,
-                                               data_bin_file, deps_bin_dir, embed: embed).build(stub_dir)
+                                               data_bin_file, deps_bin_dir, mount_point: mount_point,
+                                               embed: embed).build(stub_dir)
         create_implib(ruby_source_dir, data_src_dir, runtime_name, rv) if platform.msys?
       end
 

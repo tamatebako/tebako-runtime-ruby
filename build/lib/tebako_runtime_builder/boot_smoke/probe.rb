@@ -85,6 +85,7 @@ module BootSmokeProbe
       require "fileutils"
       defined?(FileUtils::VERSION) ? FileUtils::VERSION : "loaded"
     end
+    report("layout_yaml") { layout_yaml_check }
   end
 
   def self.bundler
@@ -149,6 +150,33 @@ module BootSmokeProbe
   def self.stdlib_file_read_size(api, name)
     path = File.join(MOUNT_POINT, "lib", "ruby", api, name)
     [File.size(path), File.binread(path).bytesize, File.binread(path, 16).unpack1("H*")]
+  end
+
+  # The env image's own contract declaration (spec 18 C3/S17): the image
+  # must carry /lib/tebako/layout.yaml naming the mount root the exe
+  # compiled in (TEBAKO_BOOT_MOUNT_POINT flows the same expectation
+  # host-side), the era-2 contract set, and the interpreter api line. A
+  # pre-era image (no layout) or a mismatched pair fails the check by
+  # name — the factory-side surface of the driver's exit-78 verdict.
+  def self.layout_yaml_check
+    require "yaml"
+    path = File.join(MOUNT_POINT, "lib", "tebako", "layout.yaml")
+    raise "missing #{path} in the env image (pre-era image — rebuild with the current factory)" unless File.file?(path)
+
+    layout = YAML.safe_load(File.read(path))
+    api = "#{RUBY_VERSION.split(".")[0, 2].join(".")}.0"
+    expected = {
+      "schema" => "layout",
+      "schema_version" => 1,
+      "era" => 2,
+      "image_layout" => 1,
+      "mount_root" => MOUNT_POINT,
+      "interpreter" => { "name" => "ruby", "api_version" => api }
+    }
+    mismatched = expected.reject { |key, value| layout.is_a?(Hash) && layout[key] == value }
+    raise "#{path} declares #{layout.inspect} — expected #{mismatched.inspect} (mismatched exe↔image pair)" unless mismatched.empty?
+
+    "era=2 mount_root=#{layout["mount_root"]} api=#{api}"
   end
 
   def self.lstat_check

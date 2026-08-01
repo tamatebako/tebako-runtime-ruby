@@ -2,6 +2,7 @@
 
 require "spec_helper"
 require "fileutils"
+require "yaml"
 
 # The image-content repair ImageBuilder applies for the ruby 3.4 line:
 # backport_bundler_erofs_degradation rewrites the layout tree's bundled
@@ -64,7 +65,8 @@ RSpec.describe TebakoRuntimeBuilder::ImageBuilder do
     rv = TebakoRuntimeBuilder::RubyVersion.new(ruby_version)
     platform = TebakoRuntimeBuilder::Platform.new("arm64-darwin23", "arm64")
     described_class.new(platform, rv, File.join(@dir, "stash"), data_src_dir, File.join(@dir, "pre"),
-                        File.join(@dir, "out", "fs.bin"), File.join(@dir, "deps", "bin"), embed: false)
+                        File.join(@dir, "out", "fs.bin"), File.join(@dir, "deps", "bin"),
+                        mount_point: "/__tfs__", embed: false)
   end
 
   def data_src_dir
@@ -134,5 +136,39 @@ RSpec.describe TebakoRuntimeBuilder::ImageBuilder do
 
   it "is a no-op when the layout tree carries no bundler" do
     expect { backport("3.4.2") }.not_to raise_error
+  end
+
+  # Spec 18 C3/S17: the env image declares itself at /lib/tebako/layout.yaml —
+  # the driver reads exactly this file post-mount (missing → era-1 refusal;
+  # mount_root ≠ the exe's compiled-in root → exit 78). mount_root flows
+  # from the tarball manifest through the deploy pass; the interpreter api
+  # line comes from the built ruby version.
+  describe "#deploy_layout" do
+    def layout_for(ruby_version, mount_point: "/__tfs__")
+      rv = TebakoRuntimeBuilder::RubyVersion.new(ruby_version)
+      platform = TebakoRuntimeBuilder::Platform.new("arm64-darwin23", "arm64")
+      described_class.new(platform, rv, File.join(@dir, "stash"), data_src_dir, File.join(@dir, "pre"),
+                          File.join(@dir, "out", "fs.bin"), File.join(@dir, "deps", "bin"),
+                          mount_point: mount_point, embed: false).deploy_layout
+      YAML.load_file(File.join(data_src_dir, "lib", "tebako", "layout.yaml"))
+    end
+
+    it "writes the era-2 layout declaration into the image tree" do
+      expect(layout_for("3.3.7")).to eq(
+        "schema" => "layout",
+        "schema_version" => 1,
+        "era" => 2,
+        "image_layout" => 1,
+        "mount_root" => "/__tfs__",
+        "interpreter" => { "name" => "ruby", "api_version" => "3.3.0" }
+      )
+    end
+
+    it "flows the msys drive-letter mount root and the 4.0 api line" do
+      expect(layout_for("4.0.6", mount_point: "A:/t")).to include(
+        "mount_root" => "A:/t",
+        "interpreter" => { "name" => "ruby", "api_version" => "4.0.0" }
+      )
+    end
   end
 end

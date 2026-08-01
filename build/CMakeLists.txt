@@ -589,7 +589,7 @@ set(CMAKE_CXX_EXTENSIONS   OFF)
 # Packaged filesystem
 
 add_custom_target(packaged_filesystem
-  COMMAND ${RUBY_INTERP} ${CMAKE_SOURCE_DIR}/tools/build_pass.rb deploy ${RUBY_VER} ${RUBY_STASH_DIR} ${DATA_SRC_DIR} ${DATA_PRE_DIR} ${DATA_BIN_FILE} ${GEN_DIR}/local ${DEPS_BIN_DIR} ${RUBY_SOURCE_DIR} ${RUNTIME_NAME} $<BOOL:${TEBAKO_EMBED_IMAGE}>
+  COMMAND ${RUBY_INTERP} ${CMAKE_SOURCE_DIR}/tools/build_pass.rb deploy ${RUBY_VER} ${RUBY_STASH_DIR} ${DATA_SRC_DIR} ${DATA_PRE_DIR} ${DATA_BIN_FILE} ${GEN_DIR}/local ${DEPS_BIN_DIR} ${RUBY_SOURCE_DIR} ${RUNTIME_NAME} $<BOOL:${TEBAKO_EMBED_IMAGE}> "${FS_MOUNT_POINT}"
   DEPENDS setup
 )
 # The deploy pass writes ${DATA_BIN_FILE} (mkdwarfs) only for the embedded
