@@ -49,6 +49,11 @@ module TebakoRuntimeBuilder
     SCENARIOS = %w[boot stat io bundler locks].freeze
     BOOT_TIMEOUT = 60
     IMAGE_SUFFIXES = %w[.tfs .dwarfs].freeze
+    # Sidecar markers the artifact set carries next to the executable (the
+    # factory's abi facet + the store-layout sha256/origin trust markers):
+    # metadata, never the interpreter.
+    MARKER_SUFFIXES = %w[.abi .sha256 .origin].freeze
+    NON_EXECUTABLE_SUFFIXES = (IMAGE_SUFFIXES + MARKER_SUFFIXES).freeze
     ENV_SCRUBBED = %w[RUBYLIB BUNDLE_GEMFILE BUNDLE_BIN_PATH BUNDLER_VERSION BUNDLER_SETUP].freeze
     PROBE_PATH = File.expand_path("boot_smoke/probe.rb", __dir__).freeze
 
@@ -106,7 +111,7 @@ module TebakoRuntimeBuilder
 
     def resolve_in_directory(dir)
       candidates = Dir.glob(File.join(dir, "tebako-runtime-*"))
-                      .select { |path| File.file?(path) && !IMAGE_SUFFIXES.include?(File.extname(path)) }
+                      .select { |path| File.file?(path) && !NON_EXECUTABLE_SUFFIXES.include?(File.extname(path)) }
       raise_no_executable!(dir) if candidates.empty?
       raise_several!(dir, candidates) if candidates.length > 1
 
