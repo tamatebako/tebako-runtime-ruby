@@ -221,7 +221,7 @@ inner_gnu() {
     build-essential ninja-build pkg-config \
     autoconf automake autoconf-archive libtool \
     curl zip unzip tar ca-certificates git gnupg \
-    libbz2-dev ruby
+    python3 libbz2-dev ruby
 
   echo "== cmake $CMAKE_VERSION (Kitware binary; focal's apt cmake is 3.16) =="
   case "$ARCH" in
@@ -281,18 +281,19 @@ inner_musl() {
   triplet=$(triplet_for musl "$ARCH")
 
   echo "== apk toolchain (alpine 3.17) =="
-  # libclang: rnp-rs's build.rs runs bindgen (the rnp-src source-built
-  # model) — bindgen dlopens libclang.so at runtime. 3.17 ships clang 15
-  # (the clang19-libclang package of tebako-rs's 3.21 legs does not exist
-  # here); the shim below gives bindgen the unversioned name.
+  # clang15-libclang: rnp-rs's build.rs runs bindgen (the rnp-src
+  # source-built model) — bindgen dlopens libclang.so at runtime, and
+  # only the versioned libclang package ships on alpine (3.17 has no
+  # unversioned `libclang`; tebako-rs's 3.21 legs use clang19-libclang).
+  # The shim below gives bindgen the unversioned name.
   apk --no-cache add \
     build-base cmake ninja git bash \
     autoconf automake libtool make pkgconfig perl python3 \
     curl zip unzip tar ca-certificates linux-headers \
-    ruby libclang
+    ruby clang15-libclang
 
   so=$(find /usr/lib -name 'libclang.so*' 2>/dev/null | sort -V | tail -1)
-  [ -n "$so" ] || die "no libclang.so* under /usr/lib after apk add libclang"
+  [ -n "$so" ] || die "no libclang.so* under /usr/lib after apk add clang15-libclang"
   so_dir=$(dirname "$so")
   [ -e "$so_dir/libclang.so" ] || ln -s "$so" "$so_dir/libclang.so"
   export LIBCLANG_PATH="$so_dir"
