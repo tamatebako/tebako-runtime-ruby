@@ -80,6 +80,18 @@ module TebakoRuntimeBuilder
       fetch_asset(asset_name(ruby_version))
     end
 
+    # The published sha256 of a version's linux-gnu scenario tarball (the
+    # unsuffixed back-compat asset every version ships), read from the
+    # pinned release's SHA256SUMS. This is the per-version cache-key input
+    # of the build workflow's .build cache: the key and the download-time
+    # verification in #fetch_asset now share the same source of truth, so
+    # a cache restores only prefix trees built from exactly these bytes.
+    # The sha moves only when the version's own tarball moves (its patches
+    # or upstream), never when an unrelated line's does.
+    def tarball_sha256(ruby_version)
+      expected_sha256(asset_name(ruby_version))
+    end
+
     # Returns [tarball_path, sha256] for the named release asset
     def fetch_asset(name) # rubocop:disable Metrics/MethodLength
       sha256 = expected_sha256(name)

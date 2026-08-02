@@ -364,6 +364,13 @@ RSpec.describe ReleaseManager do
       .to output(/Missing runtime package: tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64/).to_stdout
   end
 
+  it "reads the prepare job's object-shaped ruby matrix rows ({version, src_sha256})" do
+    ENV["EXPECTED_RUBY_MATRIX"] = "[{\"version\":\"3.3.7\",\"src_sha256\":\"#{"a" * 64}\"}]"
+
+    expect { manager.report_missing_packages([]) }
+      .to output(/Missing runtime package: tebako-runtime-#{SPEC_VERSION}-3\.3\.7-macos-arm64/).to_stdout
+  end
+
   it "writes the manifest.json asset with the image entries" do
     exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
     img = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64.tfs")

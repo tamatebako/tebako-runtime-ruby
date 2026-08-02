@@ -116,13 +116,20 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     ruby_json = ENV.fetch("EXPECTED_RUBY_MATRIX", nil)
     return [] unless env_json && ruby_json
 
-    JSON.parse(env_json).product(JSON.parse(ruby_json)).map do |env, ruby|
+    JSON.parse(env_json).product(expected_ruby_versions(ruby_json)).map do |env, ruby|
       platform = TebakoRuntimeBuilder::Platform.host_id_for(env["os"], env["arch"])
       "tebako-runtime-#{@version}-#{ruby}-#{platform}"
     end
   rescue JSON::ParserError => e
     puts "::warning::Could not compute expected package list: #{e.message}"
     []
+  end
+
+  # The prepare job's ruby matrix rows are {version, src_sha256} objects
+  # (src_sha256 keys the .build cache); plain string rows from older runs
+  # stay accepted.
+  def expected_ruby_versions(ruby_json)
+    JSON.parse(ruby_json).map { |row| row.is_a?(Hash) ? row.fetch("version") : row }
   end
 
   # Metadata files (SHA256SUMS.txt, manifest.json) are always overwritten,

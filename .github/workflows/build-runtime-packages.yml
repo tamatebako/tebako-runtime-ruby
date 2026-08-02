@@ -103,10 +103,12 @@ jobs:
           echo "Building runtimes for Tebako version $version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-      # The tamatebako/ruby source release pin the runtimes build from. It
-      # keys the build job's .build cache: a prefix restored under the same
-      # key was built from the pinned source, so a pin move must change the
-      # key (see the Cache step below for what a stale restore does).
+      # The tamatebako/ruby source release pin the runtimes build from,
+      # echoed for traceability. The build job's .build cache no longer
+      # keys on the pin itself: generate_matrix.rb reads the pinned
+      # release's SHA256SUMS and emits each version's OWN tarball sha into
+      # the ruby matrix (src_sha256), and the Cache step keys on that (see
+      # below) -- a per-line source change re-spends only that line's legs.
       - name: Get tamatebako/ruby source pin
         id: get-source-pin
         run: |
@@ -145,7 +147,7 @@ jobs:
           ./scripts/generate_matrix.rb
 
   build:
-    name: Build runtime package for ${{ matrix.env.os }} / ${{ matrix.env.arch }} / Ruby ${{ matrix.ruby }}
+    name: Build runtime package for ${{ matrix.env.os }} / ${{ matrix.env.arch }} / Ruby ${{ matrix.ruby.version }}
     needs: prepare
     runs-on: ${{ matrix.env.host }}
     strategy:
@@ -166,17 +168,26 @@ jobs:
 
       # Per-(platform, ruby) cache of the whole build prefix (.build), which
       # holds both the ruby-independent deps and the ruby-specific build
-      # trees. The key carries the tamatebako/ruby source release pin: a
-      # prefix built from the PREVIOUS pin is stale by definition, so the
-      # ExternalProject download step re-runs and re-extracts the new source
-      # over the restored ruby tree -- a remove+rename that does not survive
-      # Windows file locking ('file RENAME failed ... Access is denied'),
-      # and a full rebuild the cache buys nothing for anyway. Caches are
-      # immutable per key, so a stale entry could never repair itself; keyed
-      # on the pin, a pin move is a clean cache miss instead. Host-native
-      # jobs only: container jobs build inside the CI container image whose
-      # toolchain is baked into the image itself, so there is no host-side
-      # path to cache (the container image is the cache).
+      # trees. The key carries the version's OWN source tarball sha256
+      # (src_sha256, emitted into the ruby matrix from the pinned
+      # tamatebako/ruby release's SHA256SUMS): the sha moves only when that
+      # version's patched source moved, so a per-line patch change or a pin
+      # bump re-spends only the affected versions' legs, never the whole
+      # matrix (fault isolation). A prefix restored under the same key was
+      # built from exactly the verified bytes the SourceFetcher downloads --
+      # the cache key and the download-time sha256 verification share the
+      # same source of truth. A prefix built from a DIFFERENT tarball is
+      # stale by definition, so the ExternalProject download step re-runs
+      # and re-extracts the new source over the restored ruby tree -- a
+      # remove+rename that does not survive Windows file locking ('file
+      # RENAME failed ... Access is denied'), and a full rebuild the cache
+      # buys nothing for anyway. Caches are immutable per key, so a stale
+      # entry could never repair itself; keyed on the tarball sha, a source
+      # move is a clean cache miss instead. CACHE_VER stays the manual
+      # escape hatch. Host-native jobs only: container jobs build inside
+      # the CI container image whose toolchain is baked into the image
+      # itself, so there is no host-side path to cache (the container
+      # image is the cache).
       # save-always: a boot-smoke failure must NEVER poison the cache — the
       # default (save on success only) meant every red leg left the next one
       # cold (~60 min of rebuild per iteration, the msys campaign's tax).
@@ -185,7 +196,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .build
-          key: tebako-runtime-${{ matrix.env.os }}-${{ matrix.env.arch }}-${{ matrix.ruby }}-${{ needs.prepare.outputs.tebako-version }}-${{ needs.prepare.outputs.source-pin }}-v${{ env.CACHE_VER }}
+          key: tebako-runtime-${{ matrix.env.os }}-${{ matrix.env.arch }}-${{ matrix.ruby.version }}-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby.src_sha256 }}-v${{ env.CACHE_VER }}
           save-always: true
 
       # The v2 link unit (image era), POSIX legs: tebako-driver + scoped tfs
@@ -277,15 +288,15 @@ jobs:
             *) echo "::error::no container arch suffix for '${{ matrix.env.arch }}'"; exit 1 ;;
           esac
           container="ghcr.io/tamatebako/tebako-${{ matrix.env.container }}:${{ needs.prepare.outputs.tebako-version }}-${arch_suffix}"
-          echo "Building runtime for Ruby ${{ matrix.ruby }} on ${{ matrix.env.os }}/${{ matrix.env.arch }}"
-          runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby }}-${{ matrix.env.os }}-${{ matrix.env.arch }}"
+          echo "Building runtime for Ruby ${{ matrix.ruby.version }} on ${{ matrix.env.os }}/${{ matrix.env.arch }}"
+          runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
           # TEBAKO_RUST_LIBDIR: the staged v2 link unit (see the POSIX
           # link-unit steps above) — the builder's rust_driver? switch then
           # links the scoped Rust staticlibs instead of the C++ driver.
           docker run -v ${{github.workspace}}:/mnt/w \
             -e TEBAKO_RUST_LIBDIR=/mnt/w/.build/link-unit \
             -t $container \
-            /mnt/w/tools/build_runtime --ruby "${{ matrix.ruby }}" --output "/mnt/w/runtime-packages/$runtime" \
+            /mnt/w/tools/build_runtime --ruby "${{ matrix.ruby.version }}" --output "/mnt/w/runtime-packages/$runtime" \
             --prefix /root/.build ${{ matrix.env.os == 'linux-gnu' && '--patchelf' || '' }}
 
       - name: Select XCode
@@ -425,9 +436,9 @@ jobs:
           # The staged v2 link unit (see the POSIX link-unit steps above).
           TEBAKO_RUST_LIBDIR: ${{ github.workspace }}/.build/link-unit
         run: |
-          echo "Building runtime for Ruby ${{ matrix.ruby }} on ${{ matrix.env.os }}/${{ matrix.env.arch }}"
-          runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby }}-${{ matrix.env.os }}-${{ matrix.env.arch }}"
-          tools/build_runtime --ruby "${{ matrix.ruby }}" --output "runtime-packages/$runtime" --prefix .build
+          echo "Building runtime for Ruby ${{ matrix.ruby.version }} on ${{ matrix.env.os }}/${{ matrix.env.arch }}"
+          runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
+          tools/build_runtime --ruby "${{ matrix.ruby.version }}" --output "runtime-packages/$runtime" --prefix .build
 
       - name: Build runtime on Windows
         if: matrix.env.container == null && matrix.env.os == 'windows'
@@ -436,9 +447,9 @@ jobs:
           TEBAKO_RUST_LIBDIR: ${{ github.workspace }}/.build/link-unit
         run: |
           git config --global core.longpaths true
-          echo "Building runtime for Ruby ${{ matrix.ruby }} on ${{ matrix.env.os }}/${{ matrix.env.arch }}"
-          runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby }}-${{ matrix.env.os }}-${{ matrix.env.arch }}"
-          tools/build_runtime --ruby "${{ matrix.ruby }}" --output "runtime-packages/$runtime" --prefix .build
+          echo "Building runtime for Ruby ${{ matrix.ruby.version }} on ${{ matrix.env.os }}/${{ matrix.env.arch }}"
+          runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
+          tools/build_runtime --ruby "${{ matrix.ruby.version }}" --output "runtime-packages/$runtime" --prefix .build
 
       # Diagnostics for tamatebako/tebako#345: on failure, surface the
       # ext/openssl mkmf log (which lib/header did extconf pick, and why did
@@ -468,7 +479,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby }}-${{ matrix.env.os }}-${{ matrix.env.arch }}"
+          runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
           exe="runtime-packages/$runtime"
           # The windows artifact name (.exe suffix or not) is still settling
           # (no windows assets shipped yet) -- accept either spelling.
@@ -490,7 +501,7 @@ jobs:
         shell: msys2 {0}
         run: |
           bash ci/check_symbol_provenance.sh \
-            --exe ".build/deps/src/_ruby_${{ matrix.ruby }}/ruby.exe" \
+            --exe ".build/deps/src/_ruby_${{ matrix.ruby.version }}/ruby.exe" \
             --stub-archive .build/deps/lib/libtebako-fs.a \
             --real-archive .build/o/libtebako-fs.a
 
@@ -505,7 +516,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby }}-${{ matrix.env.os }}-${{ matrix.env.arch }}"
+          runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
           args=(--exe "runtime-packages/$runtime")
           if [ "${{ matrix.env.container == null }}" = "true" ]; then
             args+=(--stub-archive .build/deps/lib/libtebako-fs.a --real-archive .build/o/libtebako-fs.a)
@@ -582,7 +593,7 @@ jobs:
       - name: Upload runtime package
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: runtime-packages-${{ matrix.env.os }}-${{ matrix.env.arch }}-${{ matrix.ruby }}
+          name: runtime-packages-${{ matrix.env.os }}-${{ matrix.env.arch }}-${{ matrix.ruby.version }}
           path: runtime-packages
           retention-days: 1
 

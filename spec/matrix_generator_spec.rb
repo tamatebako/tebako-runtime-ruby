@@ -1,12 +1,35 @@
 # frozen_string_literal: true
 
 require "spec_helper"
+require "digest"
+require "fileutils"
 require "json"
 
 require_relative "../scripts/generate_matrix"
 
 RSpec.describe MatrixGenerator do
-  let(:generator) { described_class.new }
+  # The pinned source release's SHA256SUMS, served from a file:// mirror --
+  # the real SourceFetcher path, no network.
+  let(:mirror_dir) { Dir.mktmpdir }
+  let(:cache_dir) { Dir.mktmpdir }
+  let(:fetcher) { TebakoRuntimeBuilder::SourceFetcher.new(mirror: "file://#{mirror_dir}", cache_dir: cache_dir) }
+  let(:generator) { described_class.new(fetcher: fetcher) }
+
+  def src_sha(version)
+    Digest::SHA256.hexdigest("src-tarball-#{version}")
+  end
+
+  def write_sums(versions)
+    File.write(File.join(mirror_dir, "SHA256SUMS"),
+               versions.map { |v| "#{src_sha(v)}  tfs-ruby-#{v}-src.tar.gz" }.join("\n") << "\n")
+  end
+
+  before { write_sums(%w[3.1.6 3.3.7 4.0.6]) }
+
+  after do
+    FileUtils.remove_entry(mirror_dir)
+    FileUtils.remove_entry(cache_dir)
+  end
 
   let(:matrix_data) do
     {
@@ -92,6 +115,17 @@ RSpec.describe MatrixGenerator do
                   "os" => "linux-musl", "arch" => "x86_64" }])
     end
 
+    it "enriches every entry with the model-owned host_id (windows-ucrt64 is not a formula)" do
+      env = generator.filter_env(matrix_data["env"])
+      env.each { |entry| entry["host_id"] = TebakoRuntimeBuilder::Platform.host_id_for(entry["os"], entry["arch"]) }
+
+      by_os = env.to_h { |entry| [entry["os"], entry["host_id"]] }
+      expect(by_os["windows"]).to eq("windows-ucrt64")
+      expect(by_os["macos"]).to match(/\Amacos-(arm64|x86_64)\z/)
+      expect(by_os["linux-gnu"]).to match(/\Alinux-gnu-(x86_64|arm64)\z/)
+      expect(by_os["linux-musl"]).to match(/\Alinux-musl-(x86_64|arm64)\z/)
+    end
+
     it "selects every arch of an os when no arch is given" do
       ENV["MATRIX_ENV_FILTER"] = "linux-gnu"
 
@@ -114,15 +148,27 @@ RSpec.describe MatrixGenerator do
       generator.process_env_matrix(matrix_data)
 
       expect(output_lines).to eq(['env-matrix=[{"host":"windows-2022","container":null,' \
-                                  '"os":"windows","arch":"x86_64"}]'])
+                                  '"os":"windows","arch":"x86_64","host_id":"windows-ucrt64"}]'])
     end
 
-    it "writes the ruby matrix as a GITHUB_OUTPUT line" do
+    it "writes the ruby matrix as object rows carrying each version's own src_sha256" do
       ENV["GITHUB_EVENT_NAME"] = "pull_request"
 
       generator.process_ruby_matrix(matrix_data)
 
-      expect(output_lines).to eq(['ruby-matrix=["3.3.7","4.0.6"]'])
+      expect(output_lines).to eq(["ruby-matrix=#{JSON.generate([
+                                                                 { "version" => "3.3.7",
+                                                                   "src_sha256" => src_sha("3.3.7") },
+                                                                 { "version" => "4.0.6",
+                                                                   "src_sha256" => src_sha("4.0.6") }
+                                                               ])}"])
+    end
+
+    it "reads every version's sha from the pinned release's SHA256SUMS (named error when absent)" do
+      ENV["GITHUB_EVENT_NAME"] = "workflow_dispatch"
+
+      expect { generator.process_ruby_matrix({ "ruby" => { "full" => %w[3.3.7 9.9.9] } }) }
+        .to raise_error(TebakoRuntimeBuilder::Error, /tfs-ruby-9\.9\.9-src\.tar\.gz not found in the SHA256SUMS/)
     end
 
     it "appends both matrices to the same output file" do
@@ -154,7 +200,7 @@ RSpec.describe MatrixGenerator do
         write_matrix_json(dir, JSON.generate(matrix_data))
         ENV["GITHUB_EVENT_NAME"] = "push"
 
-        Dir.chdir(dir) { described_class.new.run }
+        Dir.chdir(dir) { described_class.new(fetcher: fetcher).run }
 
         expect(output_lines.map { |line| line.split("=", 2).first }).to eq(%w[env-matrix ruby-matrix])
       end
