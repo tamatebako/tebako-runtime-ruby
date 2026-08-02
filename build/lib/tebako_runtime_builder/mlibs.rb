@@ -158,13 +158,20 @@ module TebakoRuntimeBuilder
     # TU) + the sealed Rust objects + the closure archives — the C++
     # libtfs and its dwarfs/codec closure ride in the sealed unit.
     # Returns nil for the v1 path.
+    # The trailing -l:libz.a: ruby's own zlib need (addr2line's
+    # uncompress, the zlib ext) plus librnp's pgp compression refs at
+    # the exe link. v1 covered it via COMMON_ARCHIEVE_LIBRARIES; the
+    # gated dwarfs manifest ships no zlib at all (tebako-rs 1411fc2),
+    # so the platform tail adds it back — focal's zlib1g-dev and
+    # alpine's zlib-static, both already carried by the build images
+    # (gnu slice 30736892551: miniruby's link died on 'uncompress').
     def linux_libraries_base(platform_libraries)
       return nil if platform_libraries.nil?
 
       ["-Wl,--start-group",
        "-Wl,--push-state,--whole-archive -l:libtebako-fs.a -Wl,--pop-state"] +
         rust_link_libraries +
-        ["-Wl,--end-group"] + platform_libraries
+        ["-Wl,--end-group"] + platform_libraries + ["-l:libz.a"]
     end
 
     def linux_libraries(libraries, ruby_ver, _with_compression)

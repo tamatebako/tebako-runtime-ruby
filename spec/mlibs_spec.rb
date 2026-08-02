@@ -49,6 +49,41 @@ RSpec.describe TebakoRuntimeBuilder::Mlibs do
     end
   end
 
+  context "on linux-gnu with a staged rust link unit (the v2 link)" do
+    subject(:mlibs) do
+      described_class.new(TebakoRuntimeBuilder::Platform.new("x86_64-linux-gnu", "x86_64"), "/deps/lib")
+    end
+
+    let(:root) { Dir.mktmpdir }
+
+    before do
+      FileUtils.touch(File.join(root, "libtebako_driver.a"))
+      FileUtils.touch(File.join(root, "libtfs.a"))
+      FileUtils.mkdir_p(File.join(root, "closure"))
+      FileUtils.touch(File.join(root, "closure", "libfmt.a"))
+      @prev_libdir = ENV.fetch("TEBAKO_RUST_LIBDIR", nil)
+      ENV["TEBAKO_RUST_LIBDIR"] = root
+    end
+
+    after do
+      @prev_libdir.nil? ? ENV.delete("TEBAKO_RUST_LIBDIR") : ENV["TEBAKO_RUST_LIBDIR"] = @prev_libdir
+      FileUtils.remove_entry(root)
+    end
+
+    it "group-wraps the scoped staticlibs + closure ahead of the platform tail" do
+      result = mlibs.compute(ruby_ver)
+      expect(result).to start_with(
+        "-Wl,--start-group " \
+        "-Wl,--push-state,--whole-archive -l:libtebako-fs.a -Wl,--pop-state #{root}/libtebako_driver.a"
+      )
+      expect(result).to include("#{root}/closure/libfmt.a -Wl,--end-group -l:libacl.a")
+    end
+
+    it "appends -l:libz.a (ruby's zlib need — the gated dwarfs manifest ships no zlib)" do
+      expect(mlibs.compute(ruby_ver)).to end_with("-l:libz.a")
+    end
+  end
+
   context "on msys" do
     subject(:mlibs) do
       described_class.new(TebakoRuntimeBuilder::Platform.new("x64-mingw-ucrt", "x86_64"), "/deps/lib")
