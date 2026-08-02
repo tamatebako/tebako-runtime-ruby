@@ -251,6 +251,17 @@ inner_gnu() {
   ldconfig
   export LIBCLANG_PATH=/usr/lib/llvm-19/lib
 
+  # ONE compiler for the whole staged unit: clang-19. Focal's gcc-9.4 is
+  # doubly unfit — Botan 3.12's configure.py refuses gcc < 11 (slice
+  # 30733013847) and dwarfs-t's C++20 has never been exercised on gcc-9
+  # (every proven build is clang or gcc >= 13). clang-19 uses focal's
+  # libstdc++ headers, so object-level symbol refs stay at gcc-9's
+  # GLIBCXX ceiling — well inside the build container's libstdc++-10 —
+  # and glibc refs stay <= 2.31 by construction (focal headers).
+  export CC=clang-19
+  export CXX=clang++-19
+  "$CC" --version | head -1
+
   echo "== rustup ($RUST_VERSION) =="
   rustup_install
 
