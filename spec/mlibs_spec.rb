@@ -82,6 +82,17 @@ RSpec.describe TebakoRuntimeBuilder::Mlibs do
     it "appends -l:libz.a (ruby's zlib need — the gated dwarfs manifest ships no zlib)" do
       expect(mlibs.compute(ruby_ver)).to end_with("-l:libz.a")
     end
+
+    it "dedupes the closure archives the platform set already covers (the pacman_covered class)" do
+      FileUtils.touch(File.join(root, "closure", "libjemalloc.a"))
+      FileUtils.touch(File.join(root, "closure", "libssl.a"))
+      FileUtils.touch(File.join(root, "closure", "liblzma.a"))
+      result = mlibs.compute(ruby_ver)
+      expect(result).not_to include("closure/libjemalloc.a")
+      expect(result).not_to include("closure/libssl.a")
+      expect(result).not_to include("closure/liblzma.a")
+      expect(result).to include("#{root}/closure/libfmt.a")
+    end
   end
 
   context "on msys" do

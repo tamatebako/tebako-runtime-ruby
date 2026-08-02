@@ -168,10 +168,24 @@ module TebakoRuntimeBuilder
     def linux_libraries_base(platform_libraries)
       return nil if platform_libraries.nil?
 
+      covered = linux_covered(platform_libraries)
+      libs = rust_link_libraries.reject { |path| covered.include?(File.basename(path)) }
       ["-Wl,--start-group",
        "-Wl,--push-state,--whole-archive -l:libtebako-fs.a -Wl,--pop-state"] +
-        rust_link_libraries +
+        libs +
         ["-Wl,--end-group"] + platform_libraries + ["-l:libz.a"]
+    end
+
+    # The closure archives the platform set already covers, by basename
+    # (the msys pacman_covered class): two copies of one library in one
+    # link is a duplicate-definition failure whenever both get pulled —
+    # the closure's libjemalloc.a vs the image's own (gnu slice
+    # 30738214135); libssl/libcrypto/liblzma are the same latent pair
+    # (the libtfs-deps provisioning puts them in the deps lib dir, and
+    # ruby's ext/openssl compiles against exactly those headers, so the
+    # platform copy is also the better-matched one).
+    def linux_covered(platform_libraries)
+      platform_libraries.filter_map { |lib| lib[%r{^-l:(lib.+\.a)$}, 1] } + ["libz.a"]
     end
 
     def linux_libraries(libraries, ruby_ver, _with_compression)
