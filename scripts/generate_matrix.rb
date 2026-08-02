@@ -28,10 +28,18 @@
 
 require "json"
 require "logger"
+require "tmpdir"
+
+# The Platform/SourceFetcher model (build/lib) — the source release pin
+# (SourceFetcher::DEFAULT_RELEASE) and the SHA256SUMS reads are owned
+# there, never re-derived here.
+$LOAD_PATH.unshift(File.expand_path("../build/lib", __dir__))
+require "tebako_runtime_builder"
 
 # Matrix generator for tebako build workflow
 class MatrixGenerator
-  def initialize
+  def initialize(fetcher: nil)
+    @source_fetcher = fetcher
     @logger = Logger.new($stdout)
     @logger.formatter = proc do |severity, _, _, msg|
       "#{severity}: #{msg}\n"
@@ -108,14 +116,33 @@ class MatrixGenerator
     get_ruby_versions(data, suffix)
   end
 
+  # The ruby matrix rows carry the version's OWN source tarball sha256
+  # ({version, src_sha256}) from the pinned tamatebako/ruby release's
+  # SHA256SUMS: the build job's .build cache keys on it, so a per-line
+  # source change re-spends only that line's legs (fault isolation). The
+  # sha is read through TebakoRuntimeBuilder::SourceFetcher -- the same
+  # object that verifies the tarball against the same SHA256SUMS at
+  # download time, so the cache key and the download verification share
+  # one source of truth. select_ruby_versions keeps returning plain
+  # version strings (matrix.json sets and MATRIX_RUBY_FILTER slices stay
+  # string-shaped).
   def process_ruby_matrix(data)
     @logger.info("Processing ruby matrix...")
     ruby_versions = select_ruby_versions(data)
+    rows = ruby_versions.map { |version| { "version" => version, "src_sha256" => src_sha256(version) } }
 
-    @logger.info("Generated ruby matrix: #{JSON.pretty_generate(ruby_versions)}")
-    write_output("ruby-matrix", ruby_versions)
+    @logger.info("Generated ruby matrix: #{JSON.pretty_generate(rows)}")
+    write_output("ruby-matrix", rows)
   rescue StandardError => e
     report_matrix_error("ruby", e, data)
+  end
+
+  def src_sha256(version)
+    source_fetcher.tarball_sha256(version)
+  end
+
+  def source_fetcher
+    @source_fetcher ||= TebakoRuntimeBuilder::SourceFetcher.new(cache_dir: Dir.mktmpdir("tfs-src-sums"))
   end
 
   def read_matrix_json

@@ -60,6 +60,17 @@ RSpec.describe TebakoRuntimeBuilder::SourceFetcher do
     expect(fetcher.asset_name("4.0.6")).to eq("tfs-ruby-4.0.6-src.tar.gz")
   end
 
+  describe "#tarball_sha256" do
+    it "reads the version's own sum from the release's SHA256SUMS" do
+      expect(fetcher.tarball_sha256("3.3.7")).to eq(sha256)
+    end
+
+    it "raises, naming the asset and release, when the version is not published" do
+      expect { fetcher.tarball_sha256("3.2.7") }
+        .to raise_error(TebakoRuntimeBuilder::Error, /tfs-ruby-3\.2\.7-src\.tar\.gz not found in the SHA256SUMS/)
+    end
+  end
+
   describe ".scenario_asset_names" do
     it "resolves the unsuffixed linux-gnu scenario for gnu and macos" do
       expect(described_class.scenario_asset_names("3.3.7",
