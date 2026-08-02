@@ -348,6 +348,12 @@ inner_musl() {
   # dlopens libclang. -crt-static OFF: the artifacts are dynamic-musl, the
   # same shape as the runtimes this factory ships (ci/musl-build.sh).
   export RUSTFLAGS="-C target-feature=-crt-static"
+  # dwarfs-t declares cmake >= 3.28 for the world but >= 3.24 for tebako
+  # consumers (its TEBAKO_BUILD conditional); alpine 3.17 ships 3.24.4 and
+  # dwarfs-t-sys never sets the flag (every proven dwarfs-t-sys build ran
+  # on a >= 3.28 cmake, slice 30733014587). musl-only: the gnu leg's
+  # kitware 3.31 needs no such word and gets no behavioral variance.
+  export TEBAKO_BUILD=1
   export DWARFS_RS_VCPKG_ROOT="$WS/.vcpkg-musl"
   export DWARFS_RS_VCPKG_TRIPLET="$triplet"
   export SQFS_SYS_VCPKG_TRIPLET="$triplet"
