@@ -242,6 +242,15 @@ jobs:
           restore-keys: |
             vcpkg-archives-linkunit-${{ matrix.env.os }}-${{ matrix.env.arch }}-
           save-always: true
+      # The musl staging container's source-built cmake (3.17's stock
+      # 3.24 is too old for the boost 1.90 ports; built once per arch).
+      - name: Cache the musl cmake build (link unit)
+        if: matrix.env.os == 'linux-musl'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/tebako-cmake-musl-${{ matrix.env.arch }}
+          key: cmake-musl-3.31.8-${{ matrix.env.arch }}
+          save-always: true
       - name: Stage the POSIX link unit
         if: matrix.env.os != 'windows'
         env:

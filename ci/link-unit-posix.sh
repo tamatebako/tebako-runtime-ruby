@@ -198,14 +198,23 @@ host_container() { # $1=gnu|musl
   esac
   # Host dirs the caches warm (actions/cache + Swatinem/rust-cache): the
   # vcpkg archive cache and the cargo registry/git databases ride into the
-  # container; the target dir lives in the mounted workspace.
+  # container; the target dir lives in the mounted workspace. musl also
+  # gets the source-built cmake's cache dir (3.17's stock cmake is too
+  # old for the boost 1.90 ports).
   mkdir -p "$HOME/.cache/vcpkg" "$HOME/.cargo/registry" "$HOME/.cargo/git"
+  extra_mounts=""
+  if [ "$flavor" = musl ]; then
+    mkdir -p "$HOME/.cache/tebako-cmake-musl-$ARCH"
+    extra_mounts="-v $HOME/.cache/tebako-cmake-musl-$ARCH:/opt/cmake-musl"
+  fi
   echo "== staging the link unit inside $image (flavor $flavor, arch $ARCH) =="
+  # shellcheck disable=SC2086
   docker run --rm \
     -v "$WS:$WS" -w "$WS" \
     -v "$HOME/.cache/vcpkg:/root/.cache/vcpkg" \
     -v "$HOME/.cargo/registry:/root/.cargo/registry" \
     -v "$HOME/.cargo/git:/root/.cargo/git" \
+    $extra_mounts \
     -e GITHUB_WORKSPACE="$WS" \
     "$image" sh "$WS/ci/link-unit-posix.sh" --inner "$flavor" "$ARCH"
 }
@@ -318,9 +327,12 @@ inner_musl() {
   # source-built model) — bindgen dlopens libclang.so at runtime, and
   # only the versioned libclang package ships on alpine (3.17 has no
   # unversioned `libclang`; tebako-rs's 3.21 legs use clang19-libclang).
-  # The shim below gives bindgen the unversioned name.
+  # The shim below gives bindgen the unversioned name. No apk cmake:
+  # 3.17's 3.24.4 is too old for the boost 1.90 ports (they declare 3.25
+  # — FetchContent SYSTEM is real, slice 30734477576) — a new enough
+  # cmake is provisioned from source below.
   apk --no-cache add \
-    build-base cmake ninja git bash \
+    build-base ninja git bash \
     autoconf automake libtool make pkgconfig perl python3 \
     curl zip unzip tar ca-certificates linux-headers \
     ruby clang15-libclang
@@ -329,6 +341,26 @@ inner_musl() {
   # version.cmake's rev-parse/log or dwarfs-t's configure fails closed
   # ('missing version files').
   git config --global --add safe.directory '*'
+
+  # cmake $CMAKE_VERSION from source (bootstrap needs only g++ + make),
+  # installed into the host-mounted cache dir — the build pays once, every
+  # later leg restores it. 3.17's musl is the whole point of this
+  # container, so a newer alpine (or a glibc-linked prebuilt cmake) is
+  # never the answer.
+  if [ ! -x /opt/cmake-musl/bin/cmake ]; then
+    echo "== building cmake $CMAKE_VERSION from source (first musl leg pays this once) =="
+    curl -fsSL -o /tmp/cmake-src.tgz \
+      "https://github.com/Kitware/CMake/releases/download/v$CMAKE_VERSION/cmake-$CMAKE_VERSION.tar.gz"
+    mkdir -p /tmp/cmake-src
+    tar -xzf /tmp/cmake-src.tgz -C /tmp/cmake-src --strip-components=1
+    rm -f /tmp/cmake-src.tgz
+    (cd /tmp/cmake-src && ./bootstrap --prefix=/opt/cmake-musl --parallel="$(nproc)" \
+       && make -j"$(nproc)" && make install)
+    rm -rf /tmp/cmake-src
+  fi
+  PATH="/opt/cmake-musl/bin:$PATH"
+  export PATH
+  cmake --version | head -1
 
   so=$(find /usr/lib -name 'libclang.so*' 2>/dev/null | sort -V | tail -1)
   [ -n "$so" ] || die "no libclang.so* under /usr/lib after apk add clang15-libclang"
@@ -373,12 +405,6 @@ inner_musl() {
   # dlopens libclang. -crt-static OFF: the artifacts are dynamic-musl, the
   # same shape as the runtimes this factory ships (ci/musl-build.sh).
   export RUSTFLAGS="-C target-feature=-crt-static"
-  # dwarfs-t declares cmake >= 3.28 for the world but >= 3.24 for tebako
-  # consumers (its TEBAKO_BUILD conditional); alpine 3.17 ships 3.24.4 and
-  # dwarfs-t-sys never sets the flag (every proven dwarfs-t-sys build ran
-  # on a >= 3.28 cmake, slice 30733014587). musl-only: the gnu leg's
-  # kitware 3.31 needs no such word and gets no behavioral variance.
-  export TEBAKO_BUILD=1
   export DWARFS_RS_VCPKG_ROOT="$WS/.vcpkg-musl"
   export DWARFS_RS_VCPKG_TRIPLET="$triplet"
   export SQFS_SYS_VCPKG_TRIPLET="$triplet"
