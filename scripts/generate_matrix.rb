@@ -69,6 +69,11 @@ class MatrixGenerator
     @logger.info("Processing environment matrix...")
     env = validate_json_section(data, "env")
     env = filter_env(env)
+    # The release platform id per entry — tpkg::Platform's vocabulary,
+    # mirrored by Platform.host_id_for (the SSOT: "windows-ucrt64" is NOT
+    # derivable from os+arch by formula — the workflow's runtime artifact
+    # names flow from this, never from a local os-arch join).
+    env.each { |entry| entry["host_id"] = TebakoRuntimeBuilder::Platform.host_id_for(entry["os"], entry["arch"]) }
     @logger.info("Generated env matrix:")
     @logger.info(JSON.pretty_generate(env))
     write_output("env-matrix", env)

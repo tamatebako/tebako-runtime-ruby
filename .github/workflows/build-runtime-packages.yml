@@ -289,7 +289,7 @@ jobs:
           esac
           container="ghcr.io/tamatebako/tebako-${{ matrix.env.container }}:${{ needs.prepare.outputs.tebako-version }}-${arch_suffix}"
           echo "Building runtime for Ruby ${{ matrix.ruby.version }} on ${{ matrix.env.os }}/${{ matrix.env.arch }}"
-          runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.os }}-${{ matrix.env.arch }}"
+          runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
           # TEBAKO_RUST_LIBDIR: the staged v2 link unit (see the POSIX
           # link-unit steps above) — the builder's rust_driver? switch then
           # links the scoped Rust staticlibs instead of the C++ driver.
@@ -437,7 +437,7 @@ jobs:
           TEBAKO_RUST_LIBDIR: ${{ github.workspace }}/.build/link-unit
         run: |
           echo "Building runtime for Ruby ${{ matrix.ruby.version }} on ${{ matrix.env.os }}/${{ matrix.env.arch }}"
-          runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.os }}-${{ matrix.env.arch }}"
+          runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
           tools/build_runtime --ruby "${{ matrix.ruby.version }}" --output "runtime-packages/$runtime" --prefix .build
 
       - name: Build runtime on Windows
@@ -448,7 +448,7 @@ jobs:
         run: |
           git config --global core.longpaths true
           echo "Building runtime for Ruby ${{ matrix.ruby.version }} on ${{ matrix.env.os }}/${{ matrix.env.arch }}"
-          runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.os }}-${{ matrix.env.arch }}"
+          runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
           tools/build_runtime --ruby "${{ matrix.ruby.version }}" --output "runtime-packages/$runtime" --prefix .build
 
       # Diagnostics for tamatebako/tebako#345: on failure, surface the
@@ -479,7 +479,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.os }}-${{ matrix.env.arch }}"
+          runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
           exe="runtime-packages/$runtime"
           # The windows artifact name (.exe suffix or not) is still settling
           # (no windows assets shipped yet) -- accept either spelling.
@@ -516,7 +516,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.os }}-${{ matrix.env.arch }}"
+          runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
           args=(--exe "runtime-packages/$runtime")
           if [ "${{ matrix.env.container == null }}" = "true" ]; then
             args+=(--stub-archive .build/deps/lib/libtebako-fs.a --real-archive .build/o/libtebako-fs.a)

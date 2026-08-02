@@ -115,6 +115,17 @@ RSpec.describe MatrixGenerator do
                   "os" => "linux-musl", "arch" => "x86_64" }])
     end
 
+    it "enriches every entry with the model-owned host_id (windows-ucrt64 is not a formula)" do
+      env = generator.filter_env(matrix_data["env"])
+      env.each { |entry| entry["host_id"] = TebakoRuntimeBuilder::Platform.host_id_for(entry["os"], entry["arch"]) }
+
+      by_os = env.to_h { |entry| [entry["os"], entry["host_id"]] }
+      expect(by_os["windows"]).to eq("windows-ucrt64")
+      expect(by_os["macos"]).to match(/\Amacos-(arm64|x86_64)\z/)
+      expect(by_os["linux-gnu"]).to match(/\Alinux-gnu-(x86_64|arm64)\z/)
+      expect(by_os["linux-musl"]).to match(/\Alinux-musl-(x86_64|arm64)\z/)
+    end
+
     it "selects every arch of an os when no arch is given" do
       ENV["MATRIX_ENV_FILTER"] = "linux-gnu"
 
@@ -137,7 +148,7 @@ RSpec.describe MatrixGenerator do
       generator.process_env_matrix(matrix_data)
 
       expect(output_lines).to eq(['env-matrix=[{"host":"windows-2022","container":null,' \
-                                  '"os":"windows","arch":"x86_64"}]'])
+                                  '"os":"windows","arch":"x86_64","host_id":"windows-ucrt64"}]'])
     end
 
     it "writes the ruby matrix as object rows carrying each version's own src_sha256" do
