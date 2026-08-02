@@ -293,6 +293,15 @@ inner_gnu() {
   export PATH
   gcc --version | head -1
 
+  # glibc 2.34 folded libpthread into libc, so the 24.04 runners never
+  # miss it — focal's 2.31 keeps the DSO separate and botan's
+  # os_utils/thread_pool objects (pulled into librnp's static link)
+  # fail with 'undefined reference to pthread_create/pthread_setname_np'
+  # (slice 30734476722). cmake appends LDFLAGS at configure time; vcpkg
+  # sanitizes it out of the port builds, so only the direct cmake
+  # projects (dwarfs-t, librnp) see it.
+  export LDFLAGS="-lpthread"
+
   echo "== rustup ($RUST_VERSION) =="
   rustup_install
 
@@ -335,7 +344,7 @@ inner_musl() {
     build-base ninja git bash \
     autoconf automake libtool make pkgconfig perl python3 \
     curl zip unzip tar ca-certificates linux-headers \
-    ruby clang15-libclang
+    openssl-dev ruby clang15-libclang
 
   # Same root-vs-runner ownership story as the gnu leg: git must answer
   # version.cmake's rev-parse/log or dwarfs-t's configure fails closed
