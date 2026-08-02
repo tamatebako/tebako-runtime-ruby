@@ -221,7 +221,7 @@ inner_gnu() {
     build-essential ninja-build pkg-config \
     autoconf automake autoconf-archive libtool \
     curl zip unzip tar ca-certificates git gnupg \
-    python3 libbz2-dev ruby
+    python3 libbz2-dev ruby libstdc++-10-dev
 
   echo "== cmake $CMAKE_VERSION (Kitware binary; focal's apt cmake is 3.16) =="
   case "$ARCH" in
@@ -254,10 +254,12 @@ inner_gnu() {
   # ONE compiler for the whole staged unit: clang-19. Focal's gcc-9.4 is
   # doubly unfit — Botan 3.12's configure.py refuses gcc < 11 (slice
   # 30733013847) and dwarfs-t's C++20 has never been exercised on gcc-9
-  # (every proven build is clang or gcc >= 13). clang-19 uses focal's
-  # libstdc++ headers, so object-level symbol refs stay at gcc-9's
-  # GLIBCXX ceiling — well inside the build container's libstdc++-10 —
-  # and glibc refs stay <= 2.31 by construction (focal headers).
+  # (every proven build is clang or gcc >= 13). clang picks the newest
+  # installed libstdc++ — libstdc++-10-dev above, exactly the build
+  # container's set (clang-18 + libstdc++-10 is the image's proven C++20
+  # combo): gcc-9's headers lack <span> (slice 30733224603). Object-level
+  # GLIBCXX refs therefore stay at gcc-10's ceiling, and glibc refs stay
+  # <= 2.31 by construction (focal headers).
   export CC=clang-19
   export CXX=clang++-19
   "$CC" --version | head -1

@@ -104,6 +104,13 @@ if [ "$DRIVER" = "rust" ]; then
   if ! printf '%s\n' "$dis" | grep -q 'tebako_main>:' && command -v llvm-objdump >/dev/null 2>&1; then
     dis="$(llvm-objdump -d --disassemble-symbols=tebako_main "$EXE" 2>/dev/null || true)"
   fi
+  if ! printf '%s\n' "$dis" | grep -q 'tebako_main>:' && command -v otool >/dev/null 2>&1; then
+    # darwin last resort: /usr/bin/objdump is a deprecation shim and
+    # llvm-objdump sits behind xcrun (off PATH) — otool (cctools) is
+    # always there. Mach-O labels are bare `_symbol:` lines; take the
+    # body up to the next label (a tail call has no ret).
+    dis="$(otool -tV "$EXE" 2>/dev/null | awk '/^_tebako_main:/{f=1; next} f && /^[_a-zA-Z].*:$/{exit} f{print}' || true)"
+  fi
   if [ -z "$dis" ]; then
     fail "no objdump could disassemble tebako_main in $EXE — the v2 provenance check cannot run"
   elif printf '%s\n' "$dis" | grep -q tebako_driver_boot; then
