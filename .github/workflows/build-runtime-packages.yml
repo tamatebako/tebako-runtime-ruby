@@ -191,7 +191,16 @@ jobs:
       - name: Build runtime using ci container
         if: matrix.env.container != null
         run: |
-          container="ghcr.io/tamatebako/tebako-${{ matrix.env.container }}:${{ needs.prepare.outputs.tebako-version }}"
+          # The container images are published per (version × arch) by
+          # tebako-ci-containers' build-containers.yml: :<ver>-amd64 /
+          # :<ver>-arm64. The plain :<ver> tag is NOT published (an
+          # arch-ambiguous reference raced the two arch legs).
+          case "${{ matrix.env.arch }}" in
+            x86_64) arch_suffix=amd64 ;;
+            arm64)  arch_suffix=arm64 ;;
+            *) echo "::error::no container arch suffix for '${{ matrix.env.arch }}'"; exit 1 ;;
+          esac
+          container="ghcr.io/tamatebako/tebako-${{ matrix.env.container }}:${{ needs.prepare.outputs.tebako-version }}-${arch_suffix}"
           echo "Building runtime for Ruby ${{ matrix.ruby }} on ${{ matrix.env.os }}/${{ matrix.env.arch }}"
           runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby }}-${{ matrix.env.os }}-${{ matrix.env.arch }}"
           docker run -v ${{github.workspace}}:/mnt/w -t $container \
