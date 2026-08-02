@@ -230,6 +230,9 @@ jobs:
           key: vcpkg-archives-linkunit-${{ matrix.env.os }}-${{ matrix.env.arch }}-${{ hashFiles('dwarfs-rs/dwarfs-t/vcpkg.json', 'dwarfs-rs/dwarfs-t/vcpkg_ports/**', 'dwarfs-rs/dwarfs-t/vcpkg_triplets/**', 'tebako-rs/crates/sqfs-sys/vcpkg.json', 'tebako-rs/crates/sqfs-sys/vcpkg_ports/**', 'tebako-rs/crates/sqfs-sys/vcpkg_triplets/**') }}
           restore-keys: |
             vcpkg-archives-linkunit-${{ matrix.env.os }}-${{ matrix.env.arch }}-
+          # Content-addressed port archives cannot poison a later run;
+          # a failed leg keeps its progress instead of restarting cold.
+          save-always: true
       - name: Cache vcpkg package archives (link unit, container legs)
         if: matrix.env.container != null
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -238,6 +241,7 @@ jobs:
           key: vcpkg-archives-linkunit-${{ matrix.env.os }}-${{ matrix.env.arch }}-${{ hashFiles('dwarfs-rs/dwarfs-t/vcpkg.json', 'dwarfs-rs/dwarfs-t/vcpkg_ports/**', 'dwarfs-rs/dwarfs-t/vcpkg_triplets/**', 'tebako-rs/crates/sqfs-sys/vcpkg.json', 'tebako-rs/crates/sqfs-sys/vcpkg_ports/**', 'tebako-rs/crates/sqfs-sys/vcpkg_triplets/**') }}
           restore-keys: |
             vcpkg-archives-linkunit-${{ matrix.env.os }}-${{ matrix.env.arch }}-
+          save-always: true
       - name: Stage the POSIX link unit
         if: matrix.env.os != 'windows'
         env:

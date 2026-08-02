@@ -223,6 +223,13 @@ inner_gnu() {
     curl zip unzip tar ca-certificates git gnupg \
     python3 libbz2-dev ruby libstdc++-10-dev
 
+  # The workspace (and its checkouts) is runner-owned; the container is
+  # root. Without this, every git command dies on 'dubious ownership' —
+  # silent under version.cmake's ERROR_QUIET until its fail-closed guard
+  # ('missing version files', slice 30733548162). The runners set the
+  # same word for their own user in the checkout action's post-job.
+  git config --global --add safe.directory '*'
+
   echo "== cmake $CMAKE_VERSION (Kitware binary; focal's apt cmake is 3.16) =="
   case "$ARCH" in
     x86_64) carch="x86_64" ;;
@@ -264,6 +271,19 @@ inner_gnu() {
   export CXX=clang++-19
   "$CC" --version | head -1
 
+  # rnp-src 0.2.0's build_librnp hardcodes ("gcc", "g++") off macOS and
+  # never reads CC/CXX — on focal that is gcc-9.4, and botan-3's headers
+  # reject its C++14 default ('Botan 3.x requires at least C++20',
+  # slice 30733548162). The crate cannot be steered from here, so the
+  # gcc name resolves to clang-19 instead (the one-compiler rule above
+  # makes the substitution coherent, not a hack).
+  mkdir -p /opt/cc-shim
+  ln -sf /usr/bin/clang-19 /opt/cc-shim/gcc
+  ln -sf /usr/bin/clang++-19 /opt/cc-shim/g++
+  PATH="/opt/cc-shim:$PATH"
+  export PATH
+  gcc --version | head -1
+
   echo "== rustup ($RUST_VERSION) =="
   rustup_install
 
@@ -304,6 +324,11 @@ inner_musl() {
     autoconf automake libtool make pkgconfig perl python3 \
     curl zip unzip tar ca-certificates linux-headers \
     ruby clang15-libclang
+
+  # Same root-vs-runner ownership story as the gnu leg: git must answer
+  # version.cmake's rev-parse/log or dwarfs-t's configure fails closed
+  # ('missing version files').
+  git config --global --add safe.directory '*'
 
   so=$(find /usr/lib -name 'libclang.so*' 2>/dev/null | sort -V | tail -1)
   [ -n "$so" ] || die "no libclang.so* under /usr/lib after apk add clang15-libclang"
