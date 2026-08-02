@@ -409,6 +409,16 @@ inner_musl() {
 
   sqfs_preinstall "$WS/.vcpkg-musl" "$triplet" "$WS/.sqfs-musl"
 
+  # dwarfs-t's frozen_bit_writer.h uses size_t without <cstddef> — fine
+  # where a newer libstdc++ pulls it in transitively (gcc-13 runners),
+  # fatal on 3.17's gcc-12 include graph (slice 30742088790: 'error:
+  # size_t has not been declared'). The durable fix is a one-line
+  # include in dwarfs-t (owner follow-up); until it lands, force the
+  # header in — cmake reads CXXFLAGS at configure time, so the
+  # cached-target-dir bust in the workflow (the link-unit2- key) is
+  # what lets this reach an already-configured build tree.
+  export CXXFLAGS="-include cstddef"
+
   # musl targets default to +crt-static, and a statically linked build
   # script cannot dlopen — but rnp-rs's build.rs runs bindgen, which
   # dlopens libclang. -crt-static OFF: the artifacts are dynamic-musl, the

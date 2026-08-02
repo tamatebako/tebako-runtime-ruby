@@ -219,7 +219,10 @@ jobs:
         with:
           workspaces: |
             tebako-rs
-          key: link-unit-${{ matrix.env.os }}-${{ matrix.env.arch }}
+          # link-unit2-: the musl dwarfs-t build tree is configured with
+          # CXXFLAGS baked in (the cstddef shim) — the v1 entries hold a
+          # shimless CMakeCache that would silently win over the env.
+          key: link-unit2-${{ matrix.env.os }}-${{ matrix.env.arch }}
       # The archive caches are per flavor on purpose: a floor-built gnu
       # archive, a musl archive, and a macos archive never serve each other.
       - name: Cache vcpkg package archives (link unit, macos)
