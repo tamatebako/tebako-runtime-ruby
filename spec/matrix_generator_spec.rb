@@ -44,8 +44,14 @@ RSpec.describe MatrixGenerator do
       expect(generator.select_ruby_versions(matrix_data)).to eq(%w[3.3.7 4.0.6])
     end
 
-    it "uses the full set for push and dispatch events" do
-      %w[push workflow_dispatch schedule repository_dispatch].each do |event|
+    it "uses the tidy set for push events (validation, not the full matrix)" do
+      ENV["GITHUB_EVENT_NAME"] = "push"
+
+      expect(generator.select_ruby_versions(matrix_data)).to eq(%w[3.3.7 4.0.6])
+    end
+
+    it "uses the full set for the publish paths" do
+      %w[workflow_dispatch schedule repository_dispatch].each do |event|
         ENV["GITHUB_EVENT_NAME"] = event
         expect(generator.select_ruby_versions(matrix_data)).to eq(%w[3.1.6 3.3.7 4.0.6])
       end

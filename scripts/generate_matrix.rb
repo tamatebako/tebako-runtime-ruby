@@ -40,7 +40,14 @@ class MatrixGenerator
 
   def determine_ruby_suffix
     event_name = ENV.fetch("GITHUB_EVENT_NAME", "unknown")
-    suffix = event_name == "pull_request" ? "tidy" : "full"
+    # push + pull_request are VALIDATION events: the tidy set (one 3.x tip
+    # + the 4.0 tip × every env) proves the pipeline end-to-end without
+    # firing the full 154-leg matrix on every landing commit. The full set
+    # is reserved for the publish paths (workflow_dispatch /
+    # repository_dispatch / schedule) — a per-platform or per-version fix
+    # must never re-spend the whole matrix (the ten-cancelled-runs class
+    # of the POSIX migration).
+    suffix = %w[pull_request push].include?(event_name) ? "tidy" : "full"
     @logger.info("Using #{suffix} Ruby versions for #{event_name} event")
     suffix
   end
