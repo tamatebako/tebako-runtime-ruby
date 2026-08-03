@@ -1,0 +1,123 @@
+# Copyright (c) 2025-2026 [Ribose Inc](https://www.ribose.com).
+# All rights reserved.
+# This file is a part of tamatebako
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions
+# are met:
+# 1. Redistributions of source code must retain the above copyright
+#    notice, this list of conditions and the following disclaimer.
+# 2. Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+# ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
+# TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+# PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS
+# BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
+
+# The release coordinator — the explicit, operator-facing entry points:
+#
+#   workflow_dispatch: the three first-class slice shapes —
+#       one ruby on every platform   (ruby_filter=<version>, platform=all)
+#       one platform, every ruby     (ruby_filter=full|tidy|catalog, platform=<one>)
+#       one ruby on one platform     (ruby_filter=<version>, platform=<one>)
+#     plus the era baseline (ruby_filter=catalog, platform=all).
+#   repository_dispatch "tebako release": a new tamatebako/ruby source pin
+#     landed — compute_matrix.rb diffs the two pins' SHA256SUMS and only
+#     the versions whose tarballs moved rebuild (a 4.0-only source release
+#     rebuilds 4.0.x), on every platform, and publishes.
+#
+# Every leg fans out to _build-platform.yml; per-platform publishes
+# serialize globally inside it, so any combination of slices is safe to
+# run concurrently.
+
+name: publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      ruby_filter:
+        description: 'Rubies: "full" (line tips), "tidy", "catalog" (every published version), or comma-separated versions'
+        type: string
+        default: 'full'
+      platform:
+        description: 'Platform slice: "all" or one of windows | linux-gnu | linux-musl | macos'
+        type: string
+        default: 'all'
+      arch_filter:
+        description: 'Optional arch slice within each platform (x86_64 | arm64)'
+        type: string
+        default: 'all'
+      publish:
+        description: 'Publish this run''s packages to the release'
+        type: boolean
+        default: true
+      force_rebuild:
+        description: 'Re-upload even unchanged assets'
+        type: boolean
+        default: false
+      audit:
+        description: 'Audit only: verify the release against the expected matrix, no builds/uploads'
+        type: boolean
+        default: false
+  repository_dispatch:
+    types: ['tebako release']
+
+jobs:
+  windows:
+    # repository_dispatch always fans to every platform (a source tarball
+    # change reaches every scenario of the changed versions).
+    if: ${{ github.event_name == 'repository_dispatch' || inputs.platform == 'all' || inputs.platform == 'windows' }}
+    uses: ./.github/workflows/_build-platform.yml
+    with:
+      platform: windows
+      ruby_filter: ${{ inputs.ruby_filter || '' }}
+      arch_filter: ${{ inputs.arch_filter || '' }}
+      publish: ${{ github.event_name == 'repository_dispatch' || inputs.publish }}
+      force_rebuild: ${{ inputs.force_rebuild || false }}
+      audit: ${{ inputs.audit || false }}
+    secrets: inherit
+
+  linux-gnu:
+    if: ${{ github.event_name == 'repository_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux-gnu' }}
+    uses: ./.github/workflows/_build-platform.yml
+    with:
+      platform: linux-gnu
+      ruby_filter: ${{ inputs.ruby_filter || '' }}
+      arch_filter: ${{ inputs.arch_filter || '' }}
+      publish: ${{ github.event_name == 'repository_dispatch' || inputs.publish }}
+      force_rebuild: ${{ inputs.force_rebuild || false }}
+      audit: ${{ inputs.audit || false }}
+    secrets: inherit
+
+  linux-musl:
+    if: ${{ github.event_name == 'repository_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux-musl' }}
+    uses: ./.github/workflows/_build-platform.yml
+    with:
+      platform: linux-musl
+      ruby_filter: ${{ inputs.ruby_filter || '' }}
+      arch_filter: ${{ inputs.arch_filter || '' }}
+      publish: ${{ github.event_name == 'repository_dispatch' || inputs.publish }}
+      force_rebuild: ${{ inputs.force_rebuild || false }}
+      audit: ${{ inputs.audit || false }}
+    secrets: inherit
+
+  macos:
+    if: ${{ github.event_name == 'repository_dispatch' || inputs.platform == 'all' || inputs.platform == 'macos' }}
+    uses: ./.github/workflows/_build-platform.yml
+    with:
+      platform: macos
+      ruby_filter: ${{ inputs.ruby_filter || '' }}
+      arch_filter: ${{ inputs.arch_filter || '' }}
+      publish: ${{ github.event_name == 'repository_dispatch' || inputs.publish }}
+      force_rebuild: ${{ inputs.force_rebuild || false }}
+      audit: ${{ inputs.audit || false }}
+    secrets: inherit

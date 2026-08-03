@@ -25,18 +25,27 @@ shared:
   - contract.yml            # the contract version (release cards)
   - .github/matrix.json     # the version/env vocabularies
   - .github/build-graph.yaml # this model
+  - .github/workflows/_build-platform.yml # the one per-platform build/publish unit
+  - .github/workflows/publish.yml         # the release coordinator
 
 # Per-platform inputs — a change here affects ONLY that platform's legs.
 platforms:
   windows:
     - ci/link-unit.sh
+    - ci/check_symbol_provenance.sh
     - .github/workflows/build-windows.yml
   linux-gnu:
     - ci/link-unit-posix.sh
+    - ci/check_symbol_provenance.sh
     - .github/workflows/build-linux-gnu.yml
   linux-musl:
+    - ci/link-unit-posix.sh
+    - ci/check_symbol_provenance.sh
     - .github/workflows/build-linux-musl.yml
   macos:
+    - ci/link-unit-posix.sh
+    - ci/check_symbol_provenance.sh
+    - Brewfile
     - .github/workflows/build-macos.yml
 
 # Validation-only changes (specs, lint config): run the tidy validation

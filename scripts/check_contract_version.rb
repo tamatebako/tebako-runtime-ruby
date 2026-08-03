@@ -39,7 +39,7 @@ require "yaml"
 #   - TEBAKO_CONTRACT_VERSION in build/src/tebako-main.cpp -- the constant
 #     compiled into the runtime and exported as the env var of the same name
 # The two must never drift: a contract bump edits both in the same commit,
-# and this check fails the build-runtime-packages workflow (and the spec
+# and this check fails the platform build workflows (and the spec
 # suite) when they disagree.
 class ContractVersionCheck
   REPO_ROOT = Pathname.new(File.expand_path("..", __dir__)).freeze

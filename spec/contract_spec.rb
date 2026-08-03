@@ -20,14 +20,28 @@ RSpec.describe ContractVersionCheck do
     end
   end
 
+  # The live-state guard is meaningful only where the v2 driver source is
+  # checked out (CI sets TEBAKO_DRIVER_SRC to the product repo's
+  # crates/tebako-driver/src/lib.rs). The class's build/src/tebako-main.cpp
+  # fallback is the retired v1 generated file — a stale local build tree
+  # must not turn the suite red.
+  def with_live_driver
+    skip "TEBAKO_DRIVER_SRC unset — the v2 driver lives in the tebako product repo" unless ENV["TEBAKO_DRIVER_SRC"]
+    yield
+  end
+
   it "the repo contract.yml validates against the schema and agrees with the driver" do
-    expect(described_class.new.errors).to be_empty
+    with_live_driver do
+      expect(described_class.new.errors).to be_empty
+    end
   end
 
   it "reads both representations (bump-proof: never hardcode the value here)" do
-    check = described_class.new
-    expect(check.yaml_version).to be_a(Integer)
-    expect(check.driver_version).to eq(check.yaml_version)
+    with_live_driver do
+      check = described_class.new
+      expect(check.yaml_version).to be_a(Integer)
+      expect(check.driver_version).to eq(check.yaml_version)
+    end
   end
 
   it "passes when the fixtures agree" do
@@ -44,7 +58,7 @@ RSpec.describe ContractVersionCheck do
 
   it "fails when the driver carries no compiled-in constant" do
     with_fixtures("contract_version: 1\n", "#define TEBAKO_LAUNCHER_ABI_VERSION 1u\n") do |check|
-      expect(check.errors).to contain_exactly(a_string_matching(/carries no #define TEBAKO_CONTRACT_VERSION/))
+      expect(check.errors).to contain_exactly(a_string_matching(/carries no TEBAKO_CONTRACT_VERSION/))
     end
   end
 

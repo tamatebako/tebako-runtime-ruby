@@ -4,7 +4,8 @@ name: bump-source-pin
 # workflow after a successful release-src publish, and opens a pull
 # request bumping the DEFAULT_RELEASE pin in
 # build/lib/tebako_runtime_builder/source_fetcher.rb to the published tag.
-# The PR runs the normal build-runtime-packages matrix; nothing
+# The PR runs the dependency-tree matrix (the per-platform triggers walk
+# .github/build-graph.yaml); nothing
 # auto-merges -- a human reviews and merges.
 #
 # Idempotent: a repeated dispatch for the same tag no-ops when the pin is

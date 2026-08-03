@@ -92,6 +92,50 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     end
   end
 
+  # The per-platform manifest merge: the previous manifest's entries for
+  # OTHER platforms persist verbatim; this run's entries replace only
+  # their own platform's. A release never loses coverage because one
+  # platform republished (and the fold-by-download machinery is dead —
+  # the release IS the store: its assets persist, the manifest merges).
+  def merged_manifest_entries(new_entries)
+    covered = new_entries.map { |entry| entry[:platform] }.uniq
+    kept = previous_manifest_entries.reject { |entry| covered.include?(entry[:platform]) }
+    (kept + new_entries).sort_by { |entry| entry[:filename].to_s }
+  end
+
+  # The release's existing manifest.json, symbolized (entry[:image]
+  # included), [] when absent/unreadable (a named warning, never a
+  # crash — the completeness gate is the arbiter).
+  def previous_manifest_entries
+    @previous_manifest_entries ||= begin
+      data = read_previous_manifest
+      data.is_a?(Array) ? data.map { |entry| deep_symbolize(entry) } : []
+    rescue StandardError => e
+      puts "::warning::could not read the previous manifest.json (#{e.class}: #{e.message}) — merging nothing"
+      []
+    end
+  end
+
+  # The release's existing manifest.json as parsed JSON; nil when the tag
+  # has no release or the release carries no manifest asset.
+  def read_previous_manifest
+    release = find_release
+    asset = release && find_asset(release, "manifest.json")
+    asset && with_transient_retries { download_asset_json(asset) }
+  end
+
+  def deep_symbolize(value)
+    case value
+    when Hash then value.each_with_object({}) { |(k, v), acc| acc[k.to_sym] = deep_symbolize(v) }
+    when Array then value.map { |item| deep_symbolize(item) }
+    else value
+    end
+  end
+
+  def download_asset_json(asset)
+    JSON.parse(with_transient_retries { @client.get(asset.browser_download_url) }.to_s)
+  end
+
   def categorize_packages(filenames)
     categorize(filenames, images: false)
   end
@@ -201,6 +245,14 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
                            body: generate_release_notes(initialize_sections))
   end
 
+  # The read-only lookup (the manifest merge + the idempotent skip read the
+  # existing release): nil when the tag has no release, never creates one.
+  def find_release
+    with_transient_retries { @client.release_for_tag(RUNTIME_REPO, @tag) }
+  rescue Octokit::NotFound
+    nil
+  end
+
   def initialize_sections
     { "windows" => [], "macos" => [], "linux-gnu" => [], "linux-musl" => [] }
   end
@@ -208,14 +260,19 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   def manifest_entry(package, image = nil)
     ruby_version, platform = parse_package_filename(package.basename.to_s)
     contract = contract_sidecar(package)
+    filename = package.basename.to_s
+    sha256 = Digest::SHA256.file(package).hexdigest
+    # The idempotent upload skip reads these (same name + same sha = kept).
+    current_shas[filename] = sha256
+    current_shas[image_name_for(package)] = Digest::SHA256.file(image).hexdigest if image
     {
       tebako_version: @version,
       contract_era: contract.fetch("contract_era"),
       contract_version: @contract_version,
       ruby_version: ruby_version,
       platform: platform,
-      filename: package.basename.to_s,
-      sha256: Digest::SHA256.file(package).hexdigest,
+      filename: filename,
+      sha256: sha256,
       size_bytes: package.size,
       mount_root: contract.fetch("mount_root"),
       image_layout: contract.fetch("image_layout"),
@@ -228,6 +285,10 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
       entry[:abi] = sidecar.read.strip if sidecar.file?
       entry[:image] = image_entry(image) if image
     end
+  end
+
+  def current_shas
+    @current_shas ||= {}
   end
 
   # The package's builder-emitted contract sidecar (the era-2 release
@@ -319,17 +380,44 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   end
 
   def process_release
+    return audit_release if audit_only?
+
     release = get_or_create_release
     puts "Working with release ID: #{release.id}"
 
     packages = validate_packages_directory
     report_missing_packages(packages)
-    sections, image_sections = upload_and_categorize(release, packages)
-    upload_metadata(release, packages)
+    # Entries BEFORE uploads: the sha256s they compute feed the idempotent
+    # upload skip (same name + same sha = no re-upload), and the merged
+    # manifest keeps every other platform's entries.
+    entries = merged_manifest_entries(build_manifest_entries(packages))
+    publish_release(release, packages, entries)
+    verify_completeness(release)
+  end
+
+  # AUDIT_ONLY (the 04 audit / a publish dry run): strictly read-only —
+  # finds the release (never creates one), needs no local packages,
+  # uploads nothing, touches no notes; the release's assets are verified
+  # against the expected matrix. The release IS the truth.
+  def audit_release
+    release = find_release
+    raise "AUDIT: no release found for tag #{@tag} — nothing to audit" unless release
+
+    puts "Working with release ID: #{release.id} (AUDIT mode: no uploads, no notes)"
+    verify_completeness(release)
+    nil
+  end
+
+  def publish_release(release, packages, entries)
+    sections, image_sections = upload_and_categorize(release, packages, entries)
+    upload_metadata(release, entries)
     release_body = generate_release_notes(sections, image_sections)
     with_transient_retries { @client.update_release(release.url, body: release_body) }
     puts "Successfully updated release notes"
-    verify_completeness(release)
+  end
+
+  def audit_only?
+    ENV["AUDIT_ONLY"] == "true"
   end
 
   def report_missing_packages(packages)
@@ -439,13 +527,16 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     exit 1
   end
 
-  def upload_and_categorize(release, packages)
-    uploaded_files = packages.map { |package| upload_package(release, package) }
-    [categorize_packages(uploaded_files), categorize_images(uploaded_files)]
+  # The release notes list the MERGED set (every platform's entries), not
+  # just this run's uploads — a per-platform publish must not shrink the
+  # documented catalog.
+  def upload_and_categorize(release, packages, entries)
+    packages.each { |package| upload_package(release, package) }
+    [categorize_packages(entries.map { |entry| entry[:filename] }),
+     categorize_images(entries.filter_map { |entry| entry.dig(:image, :filename) })]
   end
 
-  def upload_metadata(release, packages)
-    entries = build_manifest_entries(packages)
+  def upload_metadata(release, entries)
     [generate_sha256sums(entries), generate_manifest(entries)].each do |file|
       puts "Uploading metadata file #{file.basename} (always overwritten)"
       force_upload(release, file)
@@ -461,17 +552,33 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     filename
   end
 
-  # An asset with the same name is kept unless FORCE_REBUILD asks for a
-  # re-upload (delete first; GitHub deletion is only eventually consistent,
-  # the upload retry absorbs the resulting 422s).
+  # An asset with the same name AND the same sha256 (the previous
+  # manifest's entry) is kept — an unchanged artifact never re-uploads.
   def skip_existing_asset?(release, filename)
     return false unless find_asset(release, filename)
+    return false if replace_existing_asset?(release, filename)
 
+    puts "Skipping upload of existing asset #{filename} (unchanged)"
+    true
+  end
+
+  # FORCE_REBUILD always replaces. Otherwise a same-named asset whose
+  # previous-manifest sha256 differs from the current content's has moved —
+  # delete it so the caller re-uploads (GitHub deletion is only eventually
+  # consistent; the upload retry absorbs the 422s). Same sha — or no
+  # previous entry at all (an unreadable manifest fails conservative) —
+  # keeps the asset.
+  def replace_existing_asset?(release, filename)
     if ENV["FORCE_REBUILD"] == "true"
       remove_existing_asset(release, filename)
-      return false
+      return true
     end
-    puts "Skipping upload of existing asset #{filename} (FORCE_REBUILD not set)"
+    previous = previous_manifest_entries.find { |entry| entry[:filename] == filename }
+    current = current_shas[filename]
+    return false unless previous && previous[:sha256] && current && previous[:sha256] != current
+
+    puts "Re-uploading #{filename}: content changed (#{previous[:sha256][0, 12]}… → #{current[0, 12]}…)"
+    remove_existing_asset(release, filename)
     true
   end
 

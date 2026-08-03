@@ -26,7 +26,7 @@ SPEC_CONTRACT = {
 # Recording octokit stand-ins: ReleaseManager accepts any client object
 # (client:), and every publish interaction becomes observable through the
 # store's public collections; transient failures are scriptable per call.
-FakeAsset = Struct.new(:id, :name)
+FakeAsset = Struct.new(:id, :name, :browser_download_url)
 
 class FakeResponse
   attr_reader :data
@@ -62,14 +62,16 @@ end
 
 class FakeAssetStore
   attr_reader :assets, :uploads, :deletes, :updates, :attempts, :upload_content_types
+  attr_accessor :manifest_json
 
   def initialize(names = [])
-    @assets = names.each_with_index.map { |name, index| FakeAsset.new(index + 1, name) }
+    @assets = names.each_with_index.map { |name, index| FakeAsset.new(index + 1, name, "https://download.test/#{name}") }
     @uploads = []
     @deletes = []
     @updates = []
     @attempts = Hash.new(0)
     @upload_content_types = {}
+    @manifest_json = nil
     @failures = Hash.new { |hash, key| hash[key] = [] }
   end
 
@@ -112,11 +114,16 @@ class FakeClient
     @store.attempt(:update)
     @store.updates << body
   end
+
+  def get(_url)
+    @store.attempt(:get)
+    @store.manifest_json or raise Octokit::NotFound
+  end
 end
 
 RSpec.describe ReleaseManager do
   around do |example|
-    old = %w[GITHUB_TOKEN TEBAKO_VERSION EXPECTED_ENV_MATRIX EXPECTED_RUBY_MATRIX FORCE_REBUILD]
+    old = %w[GITHUB_TOKEN TEBAKO_VERSION EXPECTED_ENV_MATRIX EXPECTED_RUBY_MATRIX FORCE_REBUILD AUDIT_ONLY]
           .to_h { |key| [key, ENV.fetch(key, nil)] }
     ENV["GITHUB_TOKEN"] = "test-token"
     ENV["TEBAKO_VERSION"] = SPEC_VERSION
@@ -534,6 +541,104 @@ RSpec.describe ReleaseManager do
     end
   end
 
+  # The per-platform publish: each platform leg republishes only its own
+  # packages. The manifest merge keeps the previous manifest's entries for
+  # every OTHER platform verbatim (the release never loses coverage because
+  # one platform republished), and the idempotent skip keeps an unchanged
+  # asset from re-uploading (same name + same sha256).
+  describe "per-platform manifest merge and idempotent skip" do
+    let(:store) { FakeAssetStore.new }
+    let(:release) { FakeRelease.new(store) }
+    let(:fake_manager) { described_class.new(client: client) }
+    let(:client) { FakeClient.new(store) }
+
+    def previous_manifest(entries)
+      store.manifest_json = JSON.generate(entries)
+      store.assets << FakeAsset.new(90, "manifest.json", "https://download.test/manifest.json")
+    end
+
+    def previous_entry(filename, platform, sha256, image_sha256: nil)
+      entry = { "tebako_version" => SPEC_VERSION, "filename" => filename,
+                "platform" => platform, "sha256" => sha256, "size_bytes" => 1 }
+      entry["image"] = { "filename" => "#{filename}.tfs", "sha256" => image_sha256, "size_bytes" => 1 } if image_sha256
+      entry
+    end
+
+    it "keeps other platforms' entries (image metadata intact) and replaces only this run's platform" do
+      previous_manifest([
+                          previous_entry("tebako-runtime-#{SPEC_VERSION}-3.1.6-linux-gnu-x86_64",
+                                         "linux-gnu-x86_64", "a" * 64, image_sha256: "b" * 64),
+                          previous_entry("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64",
+                                         "macos-arm64", "c" * 64),
+                          previous_entry("tebako-runtime-#{SPEC_VERSION}-4.0.6-windows-ucrt64.exe",
+                                         "windows-ucrt64", "d" * 64)
+                        ])
+      exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
+      new_entries = fake_manager.build_manifest_entries([exe])
+
+      merged = fake_manager.merged_manifest_entries(new_entries)
+
+      expect(merged.map { |entry| entry[:filename] }).to eq(
+        ["tebako-runtime-#{SPEC_VERSION}-3.1.6-linux-gnu-x86_64",
+         "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64",
+         "tebako-runtime-#{SPEC_VERSION}-4.0.6-windows-ucrt64.exe"]
+      )
+      # The replaced platform carries THIS run's sha, not the previous one
+      expect(merged.find { |entry| entry[:platform] == "macos-arm64" }[:sha256])
+        .to eq(Digest::SHA256.file(exe).hexdigest)
+      # The kept platforms survive the JSON round trip, image entry included
+      kept = merged.find { |entry| entry[:platform] == "linux-gnu-x86_64" }
+      expect(kept[:sha256]).to eq("a" * 64)
+      expect(kept[:image][:sha256]).to eq("b" * 64)
+    end
+
+    it "publishes only this run's entries when there is no previous manifest" do
+      exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
+
+      merged = fake_manager.merged_manifest_entries(fake_manager.build_manifest_entries([exe]))
+
+      expect(merged.map { |entry| entry[:filename] })
+        .to eq(["tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64"])
+    end
+
+    it "skips re-uploading an asset whose content is unchanged (same name, same sha256)" do
+      exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
+      store.assets << FakeAsset.new(7, exe.basename.to_s)
+      previous_manifest([previous_entry(exe.basename.to_s, "macos-arm64", Digest::SHA256.file(exe).hexdigest)])
+      fake_manager.build_manifest_entries([exe])
+
+      expect(fake_manager.upload_package(release, exe)).to eq(exe.basename.to_s)
+      expect(store.uploads).to be_empty
+      expect(store.deletes).to be_empty
+    end
+
+    it "re-uploads an asset whose content moved (same name, different sha256)" do
+      exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
+      store.assets << FakeAsset.new(7, exe.basename.to_s)
+      previous_manifest([previous_entry(exe.basename.to_s, "macos-arm64", "f" * 64)])
+      fake_manager.build_manifest_entries([exe])
+
+      fake_manager.upload_package(release, exe)
+
+      expect(store.deletes).to eq([7])
+      expect(store.uploads).to eq([exe.basename.to_s])
+    end
+
+    it "keeps an existing asset when the previous manifest is unreadable (fail conservative)" do
+      exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
+      store.assets << FakeAsset.new(7, exe.basename.to_s)
+      store.assets << FakeAsset.new(90, "manifest.json", "https://download.test/manifest.json")
+      store.manifest_json = "not json {"
+      fake_manager.build_manifest_entries([exe])
+
+      expect do
+        expect(fake_manager.upload_package(release, exe)).to eq(exe.basename.to_s)
+      end.to output(/could not read the previous manifest/).to_stdout
+      expect(store.uploads).to be_empty
+      expect(store.deletes).to be_empty
+    end
+  end
+
   describe "process_release completeness enforcement" do
     let(:store) { FakeAssetStore.new }
     let(:client) { FakeClient.new(store) }
@@ -571,6 +676,40 @@ RSpec.describe ReleaseManager do
           .to raise_error(/incomplete \(2 missing/)
           .and output(/::error::Missing asset: tebako-runtime-#{SPEC_VERSION}-3\.3\.7-macos-arm64/).to_stdout
       end
+    end
+
+    # AUDIT_ONLY (the 04 audit / a publish dry run): strictly read-only —
+    # no uploads, no notes, no local packages needed; the release is only
+    # verified against the expected matrix.
+    it "audit mode uploads nothing and passes when the release is complete" do
+      ENV["AUDIT_ONLY"] = "true"
+      ["tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64",
+       "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64.tfs",
+       "SHA256SUMS.txt", "manifest.json"].each_with_index do |name, index|
+        store.assets << FakeAsset.new(index + 1, name, "https://download.test/#{name}")
+      end
+
+      expect { fake_manager.process_release }.to output(/AUDIT mode/).to_stdout
+      expect(store.uploads).to be_empty
+      expect(store.updates).to be_empty
+    end
+
+    it "audit mode fails an incomplete release, still uploading nothing" do
+      ENV["AUDIT_ONLY"] = "true"
+
+      expect { fake_manager.process_release }
+        .to raise_error(/incomplete \(4 missing/)
+        .and output(/AUDIT mode/).to_stdout
+      expect(store.uploads).to be_empty
+      expect(store.updates).to be_empty
+    end
+
+    it "audit mode refuses a tag with no release (and never creates one)" do
+      ENV["AUDIT_ONLY"] = "true"
+      allow(client).to receive(:release_for_tag).and_raise(Octokit::NotFound)
+
+      expect { fake_manager.process_release }
+        .to raise_error(/no release found for tag/)
     end
   end
 end
