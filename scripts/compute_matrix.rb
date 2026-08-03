@@ -50,6 +50,9 @@ require "tebako_runtime_builder"
 #     ignore-only diffs produce no legs; validation_only diffs produce
 #     the tidy validation legs. A matrix.json change is diffed by
 #     CONTENT (which ruby sets/versions and which env entries moved).
+#     A diff that moves the source pin (PIN_FILE) rebuilds exactly the
+#     versions whose tarballs moved — the pin lands by merge, so the
+#     repository_dispatch path below is a compat route, never required.
 #   repository_dispatch ("tebako release" — a new source release pin):
 #     the pinned release's SHA256SUMS is diffed against the PREVIOUS
 #     pin's — only versions whose tarball sha moved are affected (a
@@ -64,27 +67,45 @@ require "tebako_runtime_builder"
 #       MATRIX_RUBY_FILTER (dispatch: full|tidy|catalog|a,comma,slice),
 #       MATRIX_ARCH_FILTER (optional arch within the platform),
 #       GITHUB_OUTPUT (the emitted legs/env-matrix/ruby-matrix).
-class MatrixComputer
+class MatrixComputer # rubocop:disable Metrics/ClassLength
   GRAPH = File.expand_path("../.github/build-graph.yaml", __dir__).freeze
   MATRIX_JSON = File.expand_path("../.github/matrix.json", __dir__).freeze
+  # The source pin file: a diff that moves DEFAULT_RELEASE rebuilds exactly
+  # the versions whose tarballs moved (the pin lands by merge — no external
+  # sender required), on every platform.
+  PIN_FILE = "build/lib/tebako_runtime_builder/source_fetcher.rb"
   PLATFORMS = %w[windows linux-gnu linux-musl macos].freeze
 
-  def initialize(argv, fetcher: nil, differ: nil)
+  def initialize(argv, fetcher_factory: nil, differ: nil)
     @platform = parse_platform(argv)
-    @fetcher = fetcher
+    @fetcher_factory = fetcher_factory || method(:default_fetcher)
     @differ = differ || GitDiffer.new
     @logger = Logger.new($stdout)
     @logger.formatter = proc { |severity, _, _, msg| "#{severity}: #{msg}\n" }
   end
 
-  def graph_path = ENV.fetch("BUILD_GRAPH_PATH", GRAPH)
+  # The production fetcher seam: one SourceFetcher per pinned release (the
+  # pin owns its SHA256SUMS). release nil = the repo's current pin.
+  def default_fetcher(release)
+    args = { cache_dir: Dir.mktmpdir("tfs-sums-") }
+    args[:release] = release if release
+    TebakoRuntimeBuilder::SourceFetcher.new(**args)
+  end
 
-  def matrix_json_path = ENV.fetch("MATRIX_JSON_PATH", MATRIX_JSON)
+  def graph_path
+    ENV.fetch("BUILD_GRAPH_PATH", GRAPH)
+  end
+
+  def matrix_json_path
+    ENV.fetch("MATRIX_JSON_PATH", MATRIX_JSON)
+  end
 
   # The git-diff reader, extracted for specs.
   class GitDiffer
+    ZERO_SHA = "0" * 40
+
     def changed_files(before, after)
-      raise ArgumentError, "diff needs both SHAs" if before.to_s.empty? || after.to_s.empty? || before == "0000000000000000000000000000000000000000"
+      raise ArgumentError, "diff needs both SHAs" if before.to_s.empty? || after.to_s.empty? || before == ZERO_SHA
 
       `git diff --name-only #{before}..#{after}`.split("\n")
     end
@@ -98,7 +119,8 @@ class MatrixComputer
     event = ENV.fetch("GITHUB_EVENT_NAME", "unknown")
     legs = legs_for(event)
     emit(legs)
-    @logger.info("matrix computed for #{@platform}: #{legs[:run] ? "#{legs[:rubies].size} rubies × #{legs[:env].size} env" : "no legs"}")
+    shape = legs[:run] ? "#{legs[:rubies].size} rubies × #{legs[:env].size} env" : "no legs"
+    @logger.info("matrix computed for #{@platform}: #{shape} (#{legs[:why]})")
   rescue StandardError => e
     @logger.fatal("matrix computation failed: #{e.message}")
     exit 1
@@ -152,27 +174,67 @@ class MatrixComputer
   def diff_legs(event)
     before, after = event_shas
     paths = @differ.changed_files(before, after)
-    return slice_legs([], [], "empty diff") if paths.empty?
+    return empty_legs("empty diff") if paths.empty?
 
-    graph = YAML.load_file(graph_path)
     paths = paths.reject { |p| ignored?(p, graph["ignore"]) }
-    return slice_legs([], [], "docs-only change") if paths.empty?
+    return empty_legs("docs-only change") if paths.empty?
 
-    rubies = rubies_from_matrix_diff(before, after, paths)
+    routed_legs(event, before, after, paths)
+  end
+
+  # The live-diff routing: a pin move beats validation-only beats the
+  # build-shaped walk.
+  def routed_legs(event, before, after, paths)
+    pin_legs = pin_move_legs(before, after, paths)
+    return pin_legs if pin_legs
+    return validation_legs if validation_only?(paths, graph)
+
+    build_legs_for(event, before, paths, graph)
+  end
+
+  # No legs, with the operator-facing reason the run short-circuited.
+  def empty_legs(why)
+    slice_legs([], [], why)
+  end
+
+  # The dependency tree, memoized per computation.
+  def graph
+    @graph ||= YAML.load_file(graph_path)
+  end
+
+  # The pin-move slice, or nil: a push that moves DEFAULT_RELEASE rebuilds
+  # exactly the versions whose tarballs moved — the pin lands by merge, no
+  # external sender needed. (A fetcher edit that leaves the pin alone
+  # falls through to the shared-input behavior below.)
+  def pin_move_legs(before, after, paths)
+    return nil unless paths.include?(PIN_FILE)
+
+    old_pin = pin_at(before)
+    new_pin = pin_at(after)
+    return nil if new_pin.nil? || old_pin == new_pin
+
+    moved = changed_versions(old_pin, new_pin)
+    @logger.info("source pin #{old_pin} -> #{new_pin}: changed versions #{moved.join(", ")}")
+    slice_legs(with_shas(moved), arch_filtered_env, "source pin bump to #{new_pin}")
+  end
+
+  # Validation-only changes (specs, lint config) validate on the tidy
+  # set on EVERY platform — never a build-shaped leg, never empty.
+  def validation_legs
+    slice_legs(with_shas(matrix_rubies("tidy")), arch_filtered_env, "validation-only change")
+  end
+
+  # The build-shaped walk: a matrix.json content diff decides the
+  # versions; a shared hit reaches every platform; a platform hit only
+  # this one. Any other build-input change validates on the tips.
+  def build_legs_for(event, before, paths, graph)
+    rubies = rubies_from_matrix_diff(before, paths)
     platform_hit = platform_changed?(@platform, paths, graph)
-
-    # Validation-only changes (specs, lint config) validate on the tidy
-    # set on EVERY platform — never a build-shaped leg, never empty.
-    if validation_only?(paths, graph)
-      return slice_legs(with_shas(matrix_rubies("tidy")), arch_filtered_env, "validation-only change")
-    end
-
     if paths.any? { |p| shared?(p, graph) } || matrix_json_changed?(paths)
       platform_hit = true # shared inputs reach every platform
-      rubies = with_shas(matrix_rubies("tidy")) if rubies.nil?
+      rubies ||= with_shas(matrix_rubies("tidy"))
     end
-    rubies = with_shas(matrix_rubies("tidy")) if rubies.nil? # tooling change: validate on the tips
-
+    rubies ||= with_shas(matrix_rubies("tidy")) # tooling change: validate on the tips
     return slice_legs([], [], "#{@platform} unaffected by this diff") unless platform_hit
 
     slice_legs(rubies, arch_filtered_env, "#{event} diff: #{paths.size} changed path(s)")
@@ -202,20 +264,16 @@ class MatrixComputer
     paths.include?(".github/matrix.json")
   end
 
-  def rubies_from_matrix_diff(before, after, paths)
+  # The matrix.json content diff: versions ADDED to any ruby set build
+  # (removals never rebuild). nil when matrix.json is not in the diff or
+  # no version moved — the caller's tidy default then applies.
+  def rubies_from_matrix_diff(before, paths)
     return nil unless matrix_json_changed?(paths)
 
     old_data = JSON.parse(@differ.file_at(before, ".github/matrix.json"))
-    new_data = matrix_data
-    changed = []
-    %w[tidy full catalog].each do |set|
-      old_set = old_data.dig("ruby", set) || []
-      new_set = new_data.dig("ruby", set) || []
-      changed |= (new_set - old_set) # added/NEW versions build; removals never rebuild
-    end
-    old_env = old_data["env"] || []
-    new_env = new_data["env"] || []
-    @env_changed = (old_env != new_env)
+    changed = %w[tidy full catalog].flat_map do |set|
+      (matrix_data.dig("ruby", set) || []) - (old_data.dig("ruby", set) || [])
+    end.uniq
     changed.empty? ? nil : with_shas(changed)
   end
 
@@ -240,8 +298,9 @@ class MatrixComputer
     env.select { |entry| entry["arch"] == arch_filter }
   end
 
+  # The matrix os ids ARE the platform ids (identity).
   def platform_os
-    @platform == "windows" ? "windows" : @platform.sub("linux-", "linux-") # identity; the matrix os ids are the platform ids
+    @platform
   end
 
   def ruby_filter
@@ -272,12 +331,11 @@ class MatrixComputer
 
     old_sums = sha_sums(old_pin)
     new_sums = sha_sums(new_pin)
-    new_sums.keys.select { |version| old_sums[version] != new_sums[version] }
+    new_sums.keys.reject { |version| old_sums[version] == new_sums[version] }
   end
 
   def sha_sums(pin)
-    fetcher = @fetcher || TebakoRuntimeBuilder::SourceFetcher.new(cache_dir: Dir.mktmpdir("tfs-sums-"), release: pin)
-    fetcher.sha256sums.each_with_object({}) do |(name, sha), acc|
+    @fetcher_factory.call(pin).sha256sums.each_with_object({}) do |(name, sha), acc|
       m = name.match(/\Atfs-ruby-(\d+\.\d+\.\d+)-src\.tar\.gz\z/)
       acc[m[1]] = sha if m
     end
@@ -292,15 +350,17 @@ class MatrixComputer
   end
 
   def source_fetcher
-    @source_fetcher ||= TebakoRuntimeBuilder::SourceFetcher.new(cache_dir: Dir.mktmpdir("tfs-src-sums"))
+    @source_fetcher ||= @fetcher_factory.call(nil)
   end
 
   def event_shas
     payload = JSON.parse(File.read(ENV.fetch("GITHUB_EVENT_PATH")))
     case ENV.fetch("GITHUB_EVENT_NAME")
-    when "push" then [payload.dig("before"), payload.dig("after")]
+    when "push" then [payload["before"], payload["after"]]
     when "pull_request" then [payload.dig("pull_request", "base", "sha"), payload.dig("pull_request", "head", "sha")]
-    when "repository_dispatch" then [payload.dig("client_payload", "base_sha").to_s.empty? ? "HEAD~1" : payload["client_payload"]["base_sha"], "HEAD"]
+    when "repository_dispatch" then [
+      payload.dig("client_payload", "base_sha").to_s.empty? ? "HEAD~1" : payload["client_payload"]["base_sha"], "HEAD"
+    ]
     else ["HEAD~1", "HEAD"]
     end
   end
