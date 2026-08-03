@@ -28,11 +28,30 @@ SPEC_CONTRACT = {
 # store's public collections; transient failures are scriptable per call.
 FakeAsset = Struct.new(:id, :name, :browser_download_url)
 
-class FakeResponse
+# A page of the asset listing: data plus a Sawyer-shaped rels whose
+# :next link serves the following page (the real API's shape — raw rel
+# gets are NOT auto-paginated).
+class FakePage
   attr_reader :data
 
-  def initialize(data)
+  def initialize(data, next_link)
     @data = data
+    @next_link = next_link
+  end
+
+  def rels
+    @next_link ? { next: @next_link } : {}
+  end
+end
+
+class FakePageLink
+  def initialize(store, offset)
+    @store = store
+    @offset = offset
+  end
+
+  def get
+    @store.page_at(@offset)
   end
 end
 
@@ -46,7 +65,7 @@ class FakeAssetsRel
 
   def get
     @gets += 1
-    FakeResponse.new(@store.tick_and_visible_assets)
+    @store.page_at(0)
   end
 end
 
@@ -62,7 +81,7 @@ end
 
 class FakeAssetStore
   attr_reader :assets, :uploads, :deletes, :updates, :attempts, :upload_content_types
-  attr_accessor :manifest_json, :delete_propagation
+  attr_accessor :manifest_json, :delete_propagation, :page_size
 
   def initialize(names = [])
     @assets = names.each_with_index.map { |name, index| FakeAsset.new(index + 1, name, "https://download.test/#{name}") }
@@ -81,6 +100,19 @@ class FakeAssetStore
     @deleted_assets = {}
     @pending_deletes = {}
     @failures = Hash.new { |hash, key| hash[key] = [] }
+    @page_size = 0
+  end
+
+  # Paged listing: page_size <= 0 serves everything in one page (the
+  # historical fake); a positive size slices the visible assets and links
+  # the pages, exactly like the real API's default-30 pages.
+  def page_at(offset)
+    all = tick_and_visible_assets
+    return FakePage.new(all, nil) if page_size.to_i <= 0
+
+    slice = all.drop(offset).first(page_size)
+    following = offset + page_size
+    FakePage.new(slice, (following < all.size ? FakePageLink.new(self, following) : nil))
   end
 
   def fail_next(call, error)
@@ -646,6 +678,47 @@ RSpec.describe ReleaseManager do
       fake_manager.find_asset(release, "anything")
 
       expect(release.rels[:assets].gets).to eq(1)
+    end
+  end
+
+  # Raw rel gets are NOT auto-paginated (auto_paginate covers client
+  # methods only): with 100+ assets, a first-page-only lookup silently
+  # misses — then the publish re-uploads an existing asset, and a timeout
+  # on that upload becomes the 422 cascade. all_assets walks the pages.
+  describe "asset listing pagination" do
+    let(:store) { FakeAssetStore.new }
+    let(:release) { FakeRelease.new(store) }
+    let(:fake_manager) { described_class.new(client: FakeClient.new(store)) }
+
+    it "finds an asset that only exists past page one" do
+      store.page_size = 30
+      40.times { |i| store.assets << FakeAsset.new(i + 1, "asset-#{format("%02d", i)}") }
+      store.assets << FakeAsset.new(99, "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
+
+      expect(fake_manager.find_asset(release, "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64"))
+        .not_to be_nil
+    end
+
+    it "skips re-uploading an existing asset that only exists past page one" do
+      store.page_size = 30
+      40.times { |i| store.assets << FakeAsset.new(i + 1, "asset-#{format("%02d", i)}") }
+      exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
+      store.assets << FakeAsset.new(99, exe.basename.to_s)
+
+      expect(fake_manager.upload_package(release, exe)).to eq(exe.basename.to_s)
+      expect(store.uploads).to be_empty
+    end
+
+    it "verify_completeness sees assets past page one" do
+      store.page_size = 30
+      40.times { |i| store.assets << FakeAsset.new(i + 1, "asset-#{format("%02d", i)}") }
+      ["tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64",
+       "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64.tfs",
+       "SHA256SUMS.txt", "manifest.json"].each_with_index do |name, index|
+        store.assets << FakeAsset.new(100 + index, name)
+      end
+
+      expect { fake_manager.verify_completeness(release) }.not_to raise_error
     end
   end
 
