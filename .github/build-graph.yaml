@@ -1,0 +1,53 @@
+# The build dependency tree for tebako-runtime-ruby — the single model
+# every workflow's matrix is COMPUTED from (scripts/compute_matrix.rb).
+#
+# The law: a leg runs because something it READS changed — never because
+# "the workflow fired". A change's blast radius is the set of legs whose
+# declared inputs intersect the diff (transitively). No platform re-runs
+# for another platform's change; no ruby version re-runs for another
+# version's change; no leg re-runs for docs.
+#
+# The prepare job of each per-platform workflow evaluates this file.
+version: 1
+
+# Shared inputs — TRUE dependencies of every runtime leg on every
+# platform. A change here affects the whole matrix by construction.
+shared:
+  - build/lib/**            # the builder model (Platform, SourceFetcher, MountRoot, …)
+  - build/tools/**          # build_pass.rb and friends
+  - build/CMakeLists.txt
+  - build/cmake/**
+  - tools/build_runtime
+  - scripts/**              # generate/compute/publish tooling
+  - Gemfile
+  - Gemfile.lock
+  - VERSION                 # the tebako version (artifact names)
+  - contract.yml            # the contract version (release cards)
+  - .github/matrix.json     # the version/env vocabularies
+  - .github/build-graph.yaml # this model
+
+# Per-platform inputs — a change here affects ONLY that platform's legs.
+platforms:
+  windows:
+    - ci/link-unit.sh
+    - .github/workflows/build-windows.yml
+  linux-gnu:
+    - ci/link-unit-posix.sh
+    - .github/workflows/build-linux-gnu.yml
+  linux-musl:
+    - .github/workflows/build-linux-musl.yml
+  macos:
+    - .github/workflows/build-macos.yml
+
+# Validation-only changes (specs, lint config): run the tidy validation
+# legs, never a publish-shaped build.
+validation_only:
+  - spec/**
+  - .rubocop*.yml
+
+# Never build inputs.
+ignore:
+  - docs/**
+  - "**.md"
+  - "**.adoc"
+  - .github/ISSUE_TEMPLATE/**
