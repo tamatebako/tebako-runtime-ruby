@@ -503,7 +503,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   # Windows executables may or may not carry the .exe suffix (the artifact
   # naming is still settling), so a package expectation matches both.
   def missing_assets(release, expected)
-    present = with_transient_retries { release.rels[:assets].get.data.map(&:name) }
+    present = all_assets(release).map(&:name)
     expected.reject { |name| present.include?(name) || present.include?("#{name}.exe") }
   end
 
@@ -549,13 +549,23 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     wait_for_absence(release, filename, attempts: attempts - 1)
   end
 
-  # release.assets is an embedded array capped at 30 entries; with 100+
-  # packages the target asset is often beyond it. Fetch the full asset
-  # list through the release's own assets rel (auto-paginated) — building
-  # the URL by hand from the release id produces a malformed path on
-  # octokit 7.
+  # release.assets is an embedded array capped at 30 entries, and a raw
+  # rels[:assets].get is NOT auto-paginated either (auto_paginate covers
+  # client methods, not Sawyer rel gets) — with 100+ assets most lookups
+  # silently miss. Walk the pages explicitly; a missing lookup re-uploads
+  # an existing asset, which is how a timeout becomes a 422 cascade.
+  def all_assets(release)
+    page = with_transient_retries { release.rels[:assets].get }
+    assets = page.data
+    while (nxt = page.rels[:next])
+      page = with_transient_retries { nxt.get }
+      assets += page.data
+    end
+    assets
+  end
+
   def find_asset(release, filename)
-    with_transient_retries { release.rels[:assets].get.data.find { |a| a.name == filename } }
+    all_assets(release).find { |a| a.name == filename }
   end
 
   # GET/DELETE/PUT calls other than the asset upload share the same
