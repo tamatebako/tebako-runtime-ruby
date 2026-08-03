@@ -46,7 +46,7 @@ class FakeAssetsRel
 
   def get
     @gets += 1
-    FakeResponse.new(@store.assets)
+    FakeResponse.new(@store.tick_and_visible_assets)
   end
 end
 
@@ -62,17 +62,24 @@ end
 
 class FakeAssetStore
   attr_reader :assets, :uploads, :deletes, :updates, :attempts, :upload_content_types
-  attr_accessor :manifest_json
+  attr_accessor :manifest_json, :delete_propagation
 
   def initialize(names = [])
     @assets = names.each_with_index.map { |name, index| FakeAsset.new(index + 1, name, "https://download.test/#{name}") }
+    @manifest_json = nil
+    @delete_propagation = 0
+    init_recorders
+  end
+
+  def init_recorders
     @uploads = []
     @deletes = []
     @updates = []
     @attempts = Hash.new(0)
     @upload_content_types = {}
-    @manifest_json = nil
     @contents = {}
+    @deleted_assets = {}
+    @pending_deletes = {}
     @failures = Hash.new { |hash, key| hash[key] = [] }
   end
 
@@ -95,6 +102,36 @@ class FakeAssetStore
   def set_content(url, body)
     @contents[url] = body
   end
+
+  # One listing = one propagation tick: a freshly deleted asset stays
+  # visible for delete_propagation ticks (the real API's eventual
+  # consistency), then vanishes.
+  def tick_and_visible_assets
+    @pending_deletes.each_key { |id| @pending_deletes[id] -= 1 }
+    @pending_deletes.delete_if { |_id, ttl| ttl.negative? }
+    visible_assets
+  end
+
+  def visible_assets
+    @assets + @pending_deletes.keys.filter_map { |id| @deleted_assets[id] }
+  end
+
+  def delete_asset(id)
+    asset = @assets.find { |candidate| candidate.id == id }
+    return unless asset
+
+    @assets.delete(asset)
+    return unless delete_propagation.positive?
+
+    @deleted_assets[id] = asset
+    @pending_deletes[id] = delete_propagation
+  end
+
+  # A same-name upload while the deleted predecessor is still listed
+  # 422s, exactly like the real API.
+  def assert_uploadable!(name)
+    raise Octokit::UnprocessableEntity if visible_assets.any? { |asset| asset.name == name }
+  end
 end
 
 class FakeClient
@@ -111,6 +148,7 @@ class FakeClient
 
   def upload_asset(_url, _path, content_type:, name:)
     @store.attempt(:upload)
+    @store.assert_uploadable!(name)
     @store.uploads << name
     @store.upload_content_types[name] = content_type
     @store.assets << FakeAsset.new(@store.assets.size + 100, name)
@@ -119,7 +157,7 @@ class FakeClient
   def delete_release_asset(id)
     @store.attempt(:delete)
     @store.deletes << id
-    @store.assets.reject! { |asset| asset.id == id }
+    @store.delete_asset(id)
   end
 
   def update_release(_url, body:)
@@ -532,6 +570,34 @@ RSpec.describe ReleaseManager do
       expect { fake_manager.perform_upload(release, exe, exe.basename.to_s) }
         .to raise_error(Octokit::UnprocessableEntity)
       expect(store.attempts[:upload]).to eq(4)
+    end
+
+    # A listed-but-unreadable landed asset (mid-propagation) proves
+    # nothing — back off, never crash the publish on the read.
+    it "treats an unreadable landed asset as not landed and keeps backing off" do
+      exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
+      store.assets << FakeAsset.new(7, exe.basename.to_s, "https://download.test/#{exe.basename}")
+      4.times { store.fail_next(:upload, Octokit::UnprocessableEntity.new) }
+
+      expect { fake_manager.perform_upload(release, exe, exe.basename.to_s) }
+        .to raise_error(Octokit::UnprocessableEntity)
+      expect(store.attempts[:upload]).to eq(4)
+    end
+
+    # The v0.16.1 windows publish lost SHA256SUMS.txt to this: the delete's
+    # re-upload 422'd four times inside ~20 s because the deletion had not
+    # propagated. force_upload now polls for the absence first — exactly
+    # one upload attempt, no 422 spent.
+    it "force_upload waits out deletion propagation before re-uploading" do
+      store.assets << FakeAsset.new(7, "SHA256SUMS.txt", "https://download.test/SHA256SUMS.txt")
+      store.delete_propagation = 3
+      file = @dir.join("SHA256SUMS.txt").tap { |path| path.write("new sums") }
+
+      fake_manager.force_upload(release, file)
+
+      expect(store.deletes).to eq([7])
+      expect(store.uploads).to eq(["SHA256SUMS.txt"])
+      expect(store.attempts[:upload]).to eq(1)
     end
 
     it "raises after the upload attempts are exhausted" do

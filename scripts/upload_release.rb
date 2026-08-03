@@ -379,13 +379,17 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   end
 
   # Truthful by content: the release's same-named asset's sha256 vs the
-  # local file's.
+  # local file's. An asset listed mid-propagation may not serve bytes yet —
+  # an unreadable landed asset proves nothing, so treat it as not landed
+  # and keep backing off.
   def landed_with_same_content?(release, filename, package)
     asset = find_asset(release, filename)
     return false unless asset
 
     landed = with_transient_retries { @client.get(asset.browser_download_url) }.to_s
     Digest::SHA256.hexdigest(landed) == Digest::SHA256.file(package).hexdigest
+  rescue StandardError
+    false
   end
 
   def backoff(error, filename, attempts_left)
@@ -524,7 +528,25 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   def remove_existing_asset(release, filename)
     puts "Deleting existing asset #{filename}"
     existing = find_asset(release, filename)
-    with_transient_retries { @client.delete_release_asset(existing.id) } if existing
+    return unless existing
+
+    with_transient_retries { @client.delete_release_asset(existing.id) }
+    wait_for_absence(release, filename)
+  end
+
+  # GitHub asset deletion is only eventually consistent: a same-name
+  # re-upload 422s until the delete propagates (the v0.16.1 windows
+  # publish lost SHA256SUMS.txt to exactly this — four retries inside
+  # ~20 s never saw the absence). Poll for the absence (bounded) so the
+  # following upload starts clean; if propagation outlasts the poll, the
+  # upload's 422 handler resolves by content.
+  def wait_for_absence(release, filename, attempts: 12)
+    return if find_asset(release, filename).nil?
+    return if attempts <= 1
+
+    puts "Waiting for the deletion of #{filename} to propagate..."
+    sleep 5
+    wait_for_absence(release, filename, attempts: attempts - 1)
   end
 
   # release.assets is an embedded array capped at 30 entries; with 100+
