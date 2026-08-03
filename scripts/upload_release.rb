@@ -178,19 +178,59 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
 
   # Metadata files (SHA256SUMS.txt, manifest.json) are always overwritten,
   # regardless of FORCE_REBUILD, so they never go stale on partial releases.
-  # Read-first: when the served bytes already match, no mutation at all —
-  # the delete-then-reupload pair is the release API's most race-prone
-  # operation (the deletion's propagation lag blocks the re-upload by name
-  # for an unbounded time — the 2026-08-03 publishes died on it).
+  #
+  # The metadata CONVERGENCE loop (2026-08-03, proven live): the release
+  # backend's mutation propagation flaps over minutes — a deleted name
+  # 422'd re-uploads for >25 min while replicas disagreed about the
+  # listing. Each cycle: read-first (served bytes already ours → done),
+  # delete when listed, wait for absence, upload with the short budget
+  # (422s resolve by content inside perform_upload), then verify what the
+  # edge serves. The loop repeats until the edge converges or the budget
+  # runs out — a metadata rewrite never dies on the first bad cycle.
+  METADATA_CONVERGENCE_DELAYS = [5, 15, 30, 60, 120, 240].freeze
+
   def force_upload(release, file)
     filename = file.basename.to_s
-    served = safely_served_content(filename)
-    if served && !served.empty? && Digest::SHA256.hexdigest(served) == Digest::SHA256.file(file).hexdigest
-      puts "#{filename} is already current on the release — no metadata rewrite needed"
-      return
+    sha = Digest::SHA256.file(file).hexdigest
+    converged = false
+    METADATA_CONVERGENCE_DELAYS.each do |pause|
+      converged = metadata_converged?(release, file, filename, sha)
+      break if converged
+
+      puts "#{filename} has not converged on the release yet; cycling in #{pause}s"
+      sleep pause
     end
+    raise "could not converge #{filename} on the release within the metadata budget" unless converged
+  end
+
+  # One convergence cycle: read-first (the edge already serves our bytes
+  # → done), replace when listed, upload with the short budget (422s
+  # resolve by content inside perform_upload), then verify what the edge
+  # serves. true when the release serves our bytes.
+  def metadata_converged?(release, file, filename, sha)
+    return true if served_content_matches?(filename, sha)
+
     remove_existing_asset(release, filename) if find_asset(release, filename)
-    perform_upload(release, file, filename)
+    begin
+      perform_upload(release, file, filename, delays: [5, 10, 20])
+    rescue Octokit::UnprocessableEntity
+      # the name is still taken server-side; the next cycle re-reads
+    end
+    served_content_matches?(filename, sha)
+  end
+
+  # Does the canonical download URL already serve these exact bytes?
+  # (An unreadable edge proves nothing → false → the mutation path runs.)
+  def served_content_matches?(filename, sha)
+    served = safely_served_content(filename)
+    return false if served.nil? || served.empty?
+
+    if Digest::SHA256.hexdigest(served) == sha
+      puts "#{filename} is already current on the release — no metadata rewrite needed"
+      true
+    else
+      false
+    end
   end
 
   # The canonical download URL's currently-served bytes; nil when the edge

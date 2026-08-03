@@ -135,6 +135,16 @@ class FakeAssetStore
     @contents[url] = body
   end
 
+  # A landed upload becomes servable: the edge (and the asset's own
+  # browser url) serve exactly the bytes that landed.
+  def register_upload(asset, bytes)
+    @contents[asset.browser_download_url] = bytes
+    tag = ENV.fetch("TEBAKO_VERSION", nil)
+    return unless tag
+
+    @contents["https://github.com/tamatebako/tebako-runtime-ruby/releases/download/v#{tag}/#{asset.name}"] = bytes
+  end
+
   # One listing = one propagation tick: a freshly deleted asset stays
   # visible for delete_propagation ticks (the real API's eventual
   # consistency), then vanishes.
@@ -178,12 +188,14 @@ class FakeClient
     @release
   end
 
-  def upload_asset(_url, _path, content_type:, name:)
+  def upload_asset(_url, path, content_type:, name:)
     @store.attempt(:upload)
     @store.assert_uploadable!(name)
+    asset = FakeAsset.new(@store.assets.size + 100, name, "https://download.test/#{name}")
     @store.uploads << name
     @store.upload_content_types[name] = content_type
-    @store.assets << FakeAsset.new(@store.assets.size + 100, name)
+    @store.assets << asset
+    @store.register_upload(asset, File.binread(path))
   end
 
   def delete_release_asset(id)
@@ -659,6 +671,36 @@ RSpec.describe ReleaseManager do
       expect { fake_manager.perform_upload(release, exe, exe.basename.to_s) }
         .to output(/already on the release with matching content/).to_stdout
       expect(store.attempts[:upload]).to eq(1)
+    end
+
+    # The 2026-08-03 night: a deleted name 422'd re-uploads for >25 min
+    # while replicas disagreed. The convergence loop cycles read-first →
+    # delete → upload → verify until the edge serves our bytes.
+    it "converges the metadata across a flapping backend" do
+      file = @dir.join("SHA256SUMS.txt").tap { |path| path.write("fresh sums") }
+      url = "https://github.com/tamatebako/tebako-runtime-ruby/releases/download/v#{SPEC_VERSION}/SHA256SUMS.txt"
+      store.assets << FakeAsset.new(7, "SHA256SUMS.txt", "https://download.test/SHA256SUMS.txt")
+      store.set_content(url, "stale sums")
+      store.fail_next(:upload, Octokit::UnprocessableEntity.new)
+
+      expect { fake_manager.force_upload(release, file) }
+        .to output(/already current on the release/).to_stdout
+      expect(store.uploads).to eq(["SHA256SUMS.txt"])
+    end
+
+    # …but never forever: an unconvergeable name is a named failure.
+    it "raises when the metadata never converges within the budget" do
+      file = @dir.join("SHA256SUMS.txt").tap { |path| path.write("fresh sums") }
+      store.set_content(
+        "https://github.com/tamatebako/tebako-runtime-ruby/releases/download/v#{SPEC_VERSION}/SHA256SUMS.txt",
+        "stale sums"
+      )
+      (4 * ReleaseManager::METADATA_CONVERGENCE_DELAYS.size).times do
+        store.fail_next(:upload, Octokit::UnprocessableEntity.new)
+      end
+
+      expect { fake_manager.force_upload(release, file) }
+        .to raise_error(/could not converge SHA256SUMS\.txt/)
     end
 
     it "raises after the upload attempts are exhausted" do
