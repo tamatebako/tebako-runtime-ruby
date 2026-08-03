@@ -597,11 +597,11 @@ RSpec.describe ReleaseManager do
       url = "https://download.test/#{exe.basename}"
       store.assets << FakeAsset.new(7, exe.basename.to_s, url)
       store.set_content(url, "stale bytes")
-      4.times { store.fail_next(:upload, Octokit::UnprocessableEntity.new) }
+      (ReleaseManager::UPLOAD_RETRY_DELAYS.size + 1).times { store.fail_next(:upload, Octokit::UnprocessableEntity.new) }
 
       expect { fake_manager.perform_upload(release, exe, exe.basename.to_s) }
         .to raise_error(Octokit::UnprocessableEntity)
-      expect(store.attempts[:upload]).to eq(4)
+      expect(store.attempts[:upload]).to eq(ReleaseManager::UPLOAD_RETRY_DELAYS.size + 1)
     end
 
     # A listed-but-unreadable landed asset (mid-propagation) proves
@@ -609,11 +609,11 @@ RSpec.describe ReleaseManager do
     it "treats an unreadable landed asset as not landed and keeps backing off" do
       exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
       store.assets << FakeAsset.new(7, exe.basename.to_s, "https://download.test/#{exe.basename}")
-      4.times { store.fail_next(:upload, Octokit::UnprocessableEntity.new) }
+      (ReleaseManager::UPLOAD_RETRY_DELAYS.size + 1).times { store.fail_next(:upload, Octokit::UnprocessableEntity.new) }
 
       expect { fake_manager.perform_upload(release, exe, exe.basename.to_s) }
         .to raise_error(Octokit::UnprocessableEntity)
-      expect(store.attempts[:upload]).to eq(4)
+      expect(store.attempts[:upload]).to eq(ReleaseManager::UPLOAD_RETRY_DELAYS.size + 1)
     end
 
     # The v0.16.1 windows publish lost SHA256SUMS.txt to this: the delete's
@@ -632,13 +632,42 @@ RSpec.describe ReleaseManager do
       expect(store.attempts[:upload]).to eq(1)
     end
 
+    # Read-first: the served bytes already match → no mutation at all
+    # (the delete-then-reupload pair is the API's most race-prone move).
+    it "force_upload makes no mutation when the served metadata already matches" do
+      file = @dir.join("SHA256SUMS.txt").tap { |path| path.write("sums bytes") }
+      store.set_content(
+        "https://github.com/tamatebako/tebako-runtime-ruby/releases/download/v#{SPEC_VERSION}/SHA256SUMS.txt",
+        "sums bytes"
+      )
+
+      expect { fake_manager.force_upload(release, file) }.to output(/already current/).to_stdout
+      expect(store.uploads).to be_empty
+      expect(store.deletes).to be_empty
+    end
+
+    # The listing lags behind the edge: a landed asset can be unlisted yet
+    # serving its bytes. The canonical URL fallback accepts it by content.
+    it "accepts a landed duplicate via the canonical URL when the listing misses" do
+      exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
+      store.set_content(
+        "https://github.com/tamatebako/tebako-runtime-ruby/releases/download/v#{SPEC_VERSION}/#{exe.basename}",
+        exe.read
+      )
+      store.fail_next(:upload, Octokit::UnprocessableEntity.new)
+
+      expect { fake_manager.perform_upload(release, exe, exe.basename.to_s) }
+        .to output(/already on the release with matching content/).to_stdout
+      expect(store.attempts[:upload]).to eq(1)
+    end
+
     it "raises after the upload attempts are exhausted" do
-      4.times { store.fail_next(:upload, Faraday::TimeoutError.new) }
+      (ReleaseManager::UPLOAD_RETRY_DELAYS.size + 1).times { store.fail_next(:upload, Faraday::TimeoutError.new) }
       exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
 
       expect { fake_manager.perform_upload(release, exe, exe.basename.to_s) }
         .to raise_error(Faraday::TimeoutError)
-      expect(store.attempts[:upload]).to eq(4)
+      expect(store.attempts[:upload]).to eq(ReleaseManager::UPLOAD_RETRY_DELAYS.size + 1)
     end
 
     it "retries transient timeouts on idempotent calls" do
