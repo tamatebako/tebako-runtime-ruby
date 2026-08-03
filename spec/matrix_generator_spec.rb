@@ -86,6 +86,14 @@ RSpec.describe MatrixGenerator do
       expect(generator.select_ruby_versions(matrix_data)).to eq(%w[3.3.7 4.0.6])
     end
 
+    it "lets MATRIX_RUBY_FILTER pick the catalog (the era back-catalog)" do
+      ENV["MATRIX_RUBY_FILTER"] = "catalog"
+
+      expect(generator.select_ruby_versions(
+               "ruby" => { "tidy" => %w[3.3.7], "full" => %w[3.3.7], "catalog" => %w[3.1.6 3.3.7 4.0.6] }
+             )).to eq(%w[3.1.6 3.3.7 4.0.6])
+    end
+
     it "lets MATRIX_RUBY_FILTER carry a comma-separated slice" do
       ENV["MATRIX_RUBY_FILTER"] = "3.3.7, 4.0.6"
 

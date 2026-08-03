@@ -109,12 +109,17 @@ class MatrixGenerator
     arch.nil? || arch.empty? || entry["arch"] == arch
   end
 
-  # MATRIX_RUBY_FILTER: "full"/"tidy" select the named matrix.json set; a
-  # comma-separated version list ("3.3.7,3.4.2") overrides for slice
-  # dispatches; empty falls back to the event-based default
+  # MATRIX_RUBY_FILTER: "full"/"tidy"/"catalog" select the named
+  # matrix.json set; a comma-separated version list ("3.3.7,3.4.2")
+  # overrides for slice dispatches; empty falls back to the event-based
+  # default. The sets: tidy = push/PR validation; full = the line TIPS
+  # (resolution serves the newest compatible runtime — the tips are the
+  # steady state, ~35 legs not ~154); catalog = the era back-catalog,
+  # published once per era (exact-version pins resolve against those
+  # persisted assets; niche patchlevels beyond it are on-demand slices).
   def select_ruby_versions(data)
     filter = ENV.fetch("MATRIX_RUBY_FILTER", "")
-    return get_ruby_versions(data, filter) if %w[full tidy].include?(filter)
+    return get_ruby_versions(data, filter) if %w[full tidy catalog].include?(filter)
     return filter.split(",").map(&:strip).reject(&:empty?) unless filter.empty?
 
     suffix = determine_ruby_suffix
