@@ -187,7 +187,13 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   # (422s resolve by content inside perform_upload), then verify what the
   # edge serves. The loop repeats until the edge converges or the budget
   # runs out — a metadata rewrite never dies on the first bad cycle.
-  METADATA_CONVERGENCE_DELAYS = [5, 15, 30, 60, 120, 240].freeze
+  # The convergence cycle sleeps, ~46 min of patience. Tonight's backend
+  # (2026-08-03) blocked a deleted name's re-upload for 4.5+ HOURS; the
+  # per-platform merge rewrites the shared metadata once per platform, so
+  # platforms 2-4 always ride the rewrite path — a healthy-night budget
+  # is not enough for an incident night. The publishes serialize globally
+  # anyway; grinding here never blocks another platform's build.
+  METADATA_CONVERGENCE_DELAYS = [5, 15, 30, 60, 120, 240, 480, 600, 600, 600].freeze
 
   def force_upload(release, file)
     filename = file.basename.to_s
