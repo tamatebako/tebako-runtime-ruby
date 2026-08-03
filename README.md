@@ -125,9 +125,14 @@ version → semantics changelog table is spec 06's.
   tooling in `lib/` + `tools/build_pass.rb`.
 - `tools/build_runtime` — the build entry point (fetch → verify → build →
   package).
-- `.github/workflows/build-runtime-packages.yml` — the version × platform
-  matrix CI; `scripts/` holds the matrix generator and the hardened release
-  assembly (`upload_release.rb`).
+- `.github/workflows/` — the multi-staged hierarchy: `_build-platform.yml`
+  (the one per-platform build/publish unit), the four thin platform
+  triggers (`build-<platform>.yml`), and `publish.yml` (the release
+  coordinator — one version everywhere / one platform all versions / one
+  version on one platform, via workflow dispatch). `scripts/` holds the
+  dependency-tree matrix computer (`compute_matrix.rb`, walking
+  `.github/build-graph.yaml`) and the hardened per-platform release
+  assembly (`upload_release.rb` — manifest merge, idempotent skip, audit).
 - `Brewfile` — macOS host build dependencies (CI).
 
 ## Specs
@@ -159,4 +164,4 @@ TEBAKO_RUNTIME_ROOT=runtime-packages bundle exec rspec --tag boot_smoke
 
 Without the variable the class skips in a plain run and fails loudly when
 targeted explicitly. CI runs the tag against each freshly built runtime
-before the artifact upload (`.github/workflows/build-runtime-packages.yml`).
+before the artifact upload (`.github/workflows/_build-platform.yml`).

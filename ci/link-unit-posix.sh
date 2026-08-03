@@ -10,7 +10,7 @@
 # the serialized sqfs pre-install, and the container wraps. Never copy
 # staging logic out of tebako-rs.
 #
-# Usage (from build-runtime-packages.yml):
+# Usage (from _build-platform.yml):
 #   sh ci/link-unit-posix.sh <os> <arch>        host entry
 #   sh ci/link-unit-posix.sh --inner <flavor> <arch>   container re-exec
 #

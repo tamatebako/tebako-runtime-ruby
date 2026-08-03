@@ -380,6 +380,8 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   end
 
   def process_release
+    return audit_release if audit_only?
+
     release = get_or_create_release
     puts "Working with release ID: #{release.id}"
 
@@ -389,16 +391,19 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     # upload skip (same name + same sha = no re-upload), and the merged
     # manifest keeps every other platform's entries.
     entries = merged_manifest_entries(build_manifest_entries(packages))
-    return audit_release(release) if audit_only?
-
     publish_release(release, packages, entries)
     verify_completeness(release)
   end
 
-  # AUDIT_ONLY (the 04 audit / a publish dry run): no uploads, no notes —
-  # the release is only verified against the expected matrix.
-  def audit_release(release)
-    puts "AUDIT mode: no uploads — verifying the release against the expected matrix only"
+  # AUDIT_ONLY (the 04 audit / a publish dry run): strictly read-only —
+  # finds the release (never creates one), needs no local packages,
+  # uploads nothing, touches no notes; the release's assets are verified
+  # against the expected matrix. The release IS the truth.
+  def audit_release
+    release = find_release
+    raise "AUDIT: no release found for tag #{@tag} — nothing to audit" unless release
+
+    puts "Working with release ID: #{release.id} (AUDIT mode: no uploads, no notes)"
     verify_completeness(release)
     nil
   end

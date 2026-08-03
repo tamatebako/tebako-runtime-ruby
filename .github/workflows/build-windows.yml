@@ -1,0 +1,74 @@
+# Copyright (c) 2025-2026 [Ribose Inc](https://www.ribose.com).
+# All rights reserved.
+# This file is a part of tamatebako
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions
+# are met:
+# 1. Redistributions of source code must retain the above copyright
+#    notice, this list of conditions and the following disclaimer.
+# 2. Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+# ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
+# TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+# PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS
+# BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
+
+# The windows trigger — deliberately thin. Every event hands the change
+# set to _build-platform.yml, whose compute stage walks
+# .github/build-graph.yaml and decides whether ANY windows leg runs
+# (a docs-only push computes `run=false` in seconds; a linux-only change
+# never builds windows). Triggers stay broad so the dependency tree —
+# not a duplicated paths list — is the single source of truth.
+
+name: build-windows
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      ruby_filter:
+        description: 'Rubies: "full", "tidy", "catalog", or comma-separated versions'
+        type: string
+        default: 'full'
+      arch_filter:
+        description: 'Arch slice: "all" or an arch (e.g. "x86_64")'
+        type: string
+        default: 'all'
+      publish:
+        description: 'Publish this run''s packages to the release'
+        type: boolean
+        default: true
+      force_rebuild:
+        description: 'Re-upload even unchanged assets'
+        type: boolean
+        default: false
+      audit:
+        description: 'Audit only: verify the release against the expected matrix, no builds/uploads'
+        type: boolean
+        default: false
+
+jobs:
+  windows:
+    uses: ./.github/workflows/_build-platform.yml
+    with:
+      platform: windows
+      ruby_filter: ${{ inputs.ruby_filter || '' }}
+      arch_filter: ${{ inputs.arch_filter || '' }}
+      # Pushes to main publish (the retired monolith's behavior); pull
+      # requests never touch the production release; dispatches choose.
+      publish: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish) || github.event_name == 'push' }}
+      force_rebuild: ${{ inputs.force_rebuild || false }}
+      audit: ${{ inputs.audit || false }}
+    secrets: inherit

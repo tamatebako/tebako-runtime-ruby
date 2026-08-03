@@ -678,41 +678,38 @@ RSpec.describe ReleaseManager do
       end
     end
 
-    # AUDIT_ONLY (the 04 audit / a publish dry run): no uploads, no notes
-    # update — the release is only verified against the expected matrix.
+    # AUDIT_ONLY (the 04 audit / a publish dry run): strictly read-only —
+    # no uploads, no notes, no local packages needed; the release is only
+    # verified against the expected matrix.
     it "audit mode uploads nothing and passes when the release is complete" do
       ENV["AUDIT_ONLY"] = "true"
-      stage_packages("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64",
-                     "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64.tfs")
-      store.manifest_json = JSON.generate(
-        [{ "filename" => "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64",
-           "platform" => "macos-arm64", "sha256" => "a" * 64 }]
-      )
       ["tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64",
        "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64.tfs",
        "SHA256SUMS.txt", "manifest.json"].each_with_index do |name, index|
         store.assets << FakeAsset.new(index + 1, name, "https://download.test/#{name}")
       end
 
-      with_packages do
-        expect { fake_manager.process_release }.to output(/AUDIT mode/).to_stdout
-      end
+      expect { fake_manager.process_release }.to output(/AUDIT mode/).to_stdout
       expect(store.uploads).to be_empty
       expect(store.updates).to be_empty
     end
 
     it "audit mode fails an incomplete release, still uploading nothing" do
       ENV["AUDIT_ONLY"] = "true"
-      stage_packages("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64",
-                     "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64.tfs")
 
-      with_packages do
-        expect { fake_manager.process_release }
-          .to raise_error(/incomplete \(4 missing/)
-          .and output(/AUDIT mode/).to_stdout
-      end
+      expect { fake_manager.process_release }
+        .to raise_error(/incomplete \(4 missing/)
+        .and output(/AUDIT mode/).to_stdout
       expect(store.uploads).to be_empty
       expect(store.updates).to be_empty
+    end
+
+    it "audit mode refuses a tag with no release (and never creates one)" do
+      ENV["AUDIT_ONLY"] = "true"
+      allow(client).to receive(:release_for_tag).and_raise(Octokit::NotFound)
+
+      expect { fake_manager.process_release }
+        .to raise_error(/no release found for tag/)
     end
   end
 end

@@ -23,50 +23,51 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-name: build-runtime-packages
+# The ONE per-platform build workflow (the multi-staged hierarchy's unit).
+# Called by the four thin platform triggers (build-<platform>.yml) and by
+# the publish.yml coordinator — never dispatched directly.
+#
+# Stage 1 (compute): scripts/compute_matrix.rb walks .github/build-graph.yaml
+#   against the event's change set and emits THIS platform's legs only —
+#   a leg runs because something it reads changed, never because "the
+#   workflow fired". An unaffected platform computes `run=false` and the
+#   build/publish stages skip (seconds, not a build).
+# Stage 2 (build): the matrix legs, exactly the retired monolith's steps.
+# Stage 3 (publish): uploads THIS platform's packages; the manifest merge
+#   (scripts/upload_release.rb) keeps every other platform's entries, so
+#   platforms publish independently. A globally serialized concurrency
+#   group makes two simultaneous publishes impossible (the merge is
+#   read-modify-write).
+
+name: build-platform (reusable)
 
 on:
-  push:
-    branches: [ main ]
-    paths-ignore:
-      - 'docs/**'
-      - '**.adoc'
-      - '**.md'
-  pull_request:
-    paths-ignore:
-      - 'docs/**'
-      - '**.adoc'
-      - '**.md'
-  repository_dispatch:
-    types: [ 'tebako release' ]
-  workflow_dispatch:
+  workflow_call:
     inputs:
-      force_rebuild:
-        description: 'Force rebuild and overwrite existing runtime packages'
-        type: boolean
-        default: false
-      env_filter:
-        description: 'Platform slice: "all" or "<os>/<arch>" (e.g. "linux-musl/arm64")'
+      platform:
+        description: 'windows | linux-gnu | linux-musl | macos'
+        required: true
         type: string
-        default: 'all'
       ruby_filter:
-        description: 'Rubies: "full", "tidy", or comma-separated versions (e.g. "3.3.7,3.4.2")'
-        type: string
-        default: 'full'
-      publish:
-        description: 'Run the release job (add this run''s packages to the release)'
-        type: boolean
-        default: true
-      artifact_run_ids:
-        description: 'Extra run IDs (comma-separated) whose runtime-packages-* artifacts join the release'
+        description: 'Dispatch grammar: full | tidy | catalog | comma-separated versions. Empty = the event decides.'
         type: string
         default: ''
-
-concurrency:
-  # Slice dispatches (env/ruby filters) get their own group so a debugging
-  # slice never cancels the full build (or another slice) on the same ref
-  group: '${{ github.workflow }}-${{ github.job }}-${{ github.head_ref || github.ref_name }}${{ github.event_name == ''workflow_dispatch'' && format(''-{0}-{1}'', inputs.env_filter, inputs.ruby_filter) || '''' }}'
-  cancel-in-progress: true
+      arch_filter:
+        description: 'Optional arch slice within the platform (x86_64 | arm64).'
+        type: string
+        default: ''
+      publish:
+        description: 'Publish this platform''s packages to the release'
+        type: boolean
+        default: false
+      force_rebuild:
+        description: 'Re-upload even unchanged assets'
+        type: boolean
+        default: false
+      audit:
+        description: 'Audit only: no builds, no uploads — verify the release against the expected matrix'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -77,18 +78,31 @@ env:
   VERBOSE: no
   RUNTIME_REPO: tamatebako/tebako-runtime-ruby
 
+# One run per (platform, ref, slice): a re-push cancels the stale run of
+# the SAME slice; different slices (a debugging dispatch vs the push legs)
+# never cancel each other. The publish stage serializes globally below.
+concurrency:
+  group: "platform-${{ inputs.platform }}-${{ github.head_ref || github.ref_name }}-${{ inputs.ruby_filter || 'auto' }}-${{ inputs.arch_filter || 'all' }}"
+  cancel-in-progress: true
+
 jobs:
-  prepare:
-    name: Prepare build matrix
+  compute:
+    name: Compute ${{ inputs.platform }} matrix
     runs-on: ubuntu-latest
     outputs:
+      run: ${{ steps.matrix.outputs.run }}
+      why: ${{ steps.matrix.outputs.why }}
+      env-matrix: ${{ steps.matrix.outputs.env-matrix }}
+      ruby-matrix: ${{ steps.matrix.outputs.ruby-matrix }}
       tebako-version: ${{ steps.get-version.outputs.version }}
       source-pin: ${{ steps.get-source-pin.outputs.pin }}
-      env-matrix: ${{ steps.set-matrix.outputs.env-matrix }}
-      ruby-matrix: ${{ steps.set-matrix.outputs.ruby-matrix }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The dependency-tree walk git-diffs the event's before..after —
+          # full history, never the depth-1 default.
+          fetch-depth: 0
 
       - name: Setup Ruby
         uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
@@ -104,11 +118,10 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       # The tamatebako/ruby source release pin the runtimes build from,
-      # echoed for traceability. The build job's .build cache no longer
-      # keys on the pin itself: generate_matrix.rb reads the pinned
-      # release's SHA256SUMS and emits each version's OWN tarball sha into
-      # the ruby matrix (src_sha256), and the Cache step keys on that (see
-      # below) -- a per-line source change re-spends only that line's legs.
+      # echoed for traceability. The build job's .build cache keys on each
+      # version's OWN tarball sha256 (src_sha256, emitted into the ruby
+      # matrix by compute_matrix.rb from the pinned release's SHA256SUMS):
+      # a per-line source change re-spends only that line's legs.
       - name: Get tamatebako/ruby source pin
         id: get-source-pin
         run: |
@@ -137,24 +150,25 @@ jobs:
         run: |
           ./scripts/check_contract_version.rb
 
-      - name: Generate build matrix
-        id: set-matrix
+      - name: Compute the platform matrix from the dependency tree
+        id: matrix
         env:
-          GITHUB_EVENT_NAME: ${{ github.event_name }}
-          MATRIX_ENV_FILTER: ${{ inputs.env_filter || '' }}
-          MATRIX_RUBY_FILTER: ${{ inputs.ruby_filter || '' }}
+          MATRIX_RUBY_FILTER: ${{ inputs.ruby_filter }}
+          MATRIX_ARCH_FILTER: ${{ inputs.arch_filter }}
         run: |
-          ./scripts/generate_matrix.rb
+          ./scripts/compute_matrix.rb --platform ${{ inputs.platform }}
 
   build:
     name: Build runtime package for ${{ matrix.env.os }} / ${{ matrix.env.arch }} / Ruby ${{ matrix.ruby.version }}
-    needs: prepare
+    needs: compute
+    # Audit runs publish-shaped verification without spending a build.
+    if: ${{ needs.compute.outputs.run == 'true' && !inputs.audit }}
     runs-on: ${{ matrix.env.host }}
     strategy:
       fail-fast: false
       matrix:
-        env: ${{fromJson(needs.prepare.outputs.env-matrix)}}
-        ruby: ${{fromJson(needs.prepare.outputs.ruby-matrix)}}
+        env: ${{fromJson(needs.compute.outputs.env-matrix)}}
+        ruby: ${{fromJson(needs.compute.outputs.ruby-matrix)}}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -196,7 +210,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .build
-          key: tebako-runtime-${{ matrix.env.os }}-${{ matrix.env.arch }}-${{ matrix.ruby.version }}-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby.src_sha256 }}-v${{ env.CACHE_VER }}
+          key: tebako-runtime-${{ matrix.env.os }}-${{ matrix.env.arch }}-${{ matrix.ruby.version }}-${{ needs.compute.outputs.tebako-version }}-${{ matrix.ruby.src_sha256 }}-v${{ env.CACHE_VER }}
           save-always: true
 
       # The v2 link unit (image era), POSIX legs: tebako-driver + scoped tfs
@@ -287,9 +301,9 @@ jobs:
             arm64)  arch_suffix=arm64 ;;
             *) echo "::error::no container arch suffix for '${{ matrix.env.arch }}'"; exit 1 ;;
           esac
-          container="ghcr.io/tamatebako/tebako-${{ matrix.env.container }}:${{ needs.prepare.outputs.tebako-version }}-${arch_suffix}"
+          container="ghcr.io/tamatebako/tebako-${{ matrix.env.container }}:${{ needs.compute.outputs.tebako-version }}-${arch_suffix}"
           echo "Building runtime for Ruby ${{ matrix.ruby.version }} on ${{ matrix.env.os }}/${{ matrix.env.arch }}"
-          runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
+          runtime="tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
           # TEBAKO_RUST_LIBDIR: the staged v2 link unit (see the POSIX
           # link-unit steps above) — the builder's rust_driver? switch then
           # links the scoped Rust staticlibs instead of the C++ driver.
@@ -437,7 +451,7 @@ jobs:
           TEBAKO_RUST_LIBDIR: ${{ github.workspace }}/.build/link-unit
         run: |
           echo "Building runtime for Ruby ${{ matrix.ruby.version }} on ${{ matrix.env.os }}/${{ matrix.env.arch }}"
-          runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
+          runtime="tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
           tools/build_runtime --ruby "${{ matrix.ruby.version }}" --output "runtime-packages/$runtime" --prefix .build
 
       - name: Build runtime on Windows
@@ -448,7 +462,7 @@ jobs:
         run: |
           git config --global core.longpaths true
           echo "Building runtime for Ruby ${{ matrix.ruby.version }} on ${{ matrix.env.os }}/${{ matrix.env.arch }}"
-          runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
+          runtime="tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
           tools/build_runtime --ruby "${{ matrix.ruby.version }}" --output "runtime-packages/$runtime" --prefix .build
 
       # Diagnostics for tamatebako/tebako#345: on failure, surface the
@@ -479,7 +493,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
+          runtime="tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
           exe="runtime-packages/$runtime"
           # The windows artifact name (.exe suffix or not) is still settling
           # (no windows assets shipped yet) -- accept either spelling.
@@ -516,7 +530,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          runtime="tebako-runtime-${{ needs.prepare.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
+          runtime="tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
           args=(--exe "runtime-packages/$runtime")
           if [ "${{ matrix.env.container == null }}" = "true" ]; then
             args+=(--stub-archive .build/deps/lib/libtebako-fs.a --real-archive .build/o/libtebako-fs.a)
@@ -597,19 +611,23 @@ jobs:
           path: runtime-packages
           retention-days: 1
 
-  release:
-    name: Update release packages
-    needs: [prepare, build]
+  publish:
+    name: Publish ${{ inputs.platform }} packages
+    needs: [compute, build]
     runs-on: ubuntu-latest
-    # Never touch the production release from a pull request; otherwise run
-    # whenever the run was not cancelled, even if some build matrix legs
-    # failed (upload whatever artifacts exist; scripts/upload_release.rb
-    # then verifies the release against the full expected matrix and FAILS
-    # the run when any package, filesystem image, or metadata file is
-    # missing -- a gap never ships as a silently incomplete release).
-    # Slice dispatches may opt out of publishing (publish=false) for pure
-    # debugging runs.
-    if: ${{ always() && !cancelled() && github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.publish) }}
+    # The manifest merge is read-modify-write against the ONE release:
+    # publishes serialize GLOBALLY (across platforms and slices), never
+    # cancel — a queued publish re-reads the manifest the previous one
+    # just wrote, so no platform's entries are ever lost.
+    concurrency:
+      group: publish-runtime-packages
+      cancel-in-progress: false
+    # Runs when legs ran and publishing was asked for (a push, a
+    # publishing dispatch, or an audit). always(): packages from failed
+    # matrix legs simply never land, and the completeness gate in
+    # upload_release.rb fails the run loudly when its platform's expected
+    # set is incomplete — a gap never ships silently.
+    if: ${{ always() && !cancelled() && needs.compute.outputs.run == 'true' && (inputs.publish || inputs.audit) }}
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
@@ -619,29 +637,16 @@ jobs:
           fetch-depth: 1
           submodules: true
 
-      - name: Download all runtime packages
+      # This platform's artifacts only — the merge in upload_release.rb
+      # keeps every other platform's manifest entries, and the idempotent
+      # skip keeps unchanged assets from re-uploading.
+      - name: Download this platform's runtime packages
+        if: ${{ !inputs.audit }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
+          pattern: runtime-packages-${{ inputs.platform }}-*
           path: runtime-packages
           merge-multiple: true
-
-      # Fold in artifacts produced by earlier runs (e.g. a cancelled full
-      # build) so a slice run can complete a release without rebuilding
-      # platforms it does not touch. Current-run packages win on name
-      # collisions (cp -n).
-      - name: Download runtime packages from additional runs
-        if: inputs.artifact_run_ids != ''
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RUN_IDS: ${{ inputs.artifact_run_ids }}
-        run: |
-          set -euo pipefail
-          for rid in ${RUN_IDS//,/ }; do
-            echo "Fetching runtime-packages-* artifacts from run $rid"
-            gh run download "$rid" --repo tamatebako/tebako-runtime-ruby \
-              -p 'runtime-packages-*' -D "runtime-packages-runs/$rid"
-          done
-          find runtime-packages-runs -type f -exec cp -n {} runtime-packages/ \;
 
       - name: Setup Ruby gems
         uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
@@ -651,9 +656,10 @@ jobs:
 
       - name: Update release using Ruby script
         env:
-          TEBAKO_VERSION: ${{ needs.prepare.outputs.tebako-version }}
-          EXPECTED_ENV_MATRIX: ${{ needs.prepare.outputs.env-matrix }}
-          EXPECTED_RUBY_MATRIX: ${{ needs.prepare.outputs.ruby-matrix }}
-          FORCE_REBUILD: ${{ github.event.inputs.force_rebuild == 'true' }}
+          TEBAKO_VERSION: ${{ needs.compute.outputs.tebako-version }}
+          EXPECTED_ENV_MATRIX: ${{ needs.compute.outputs.env-matrix }}
+          EXPECTED_RUBY_MATRIX: ${{ needs.compute.outputs.ruby-matrix }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild }}
+          AUDIT_ONLY: ${{ inputs.audit }}
         run: |
           ./scripts/upload_release.rb
