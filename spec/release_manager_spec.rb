@@ -72,6 +72,7 @@ class FakeAssetStore
     @attempts = Hash.new(0)
     @upload_content_types = {}
     @manifest_json = nil
+    @contents = {}
     @failures = Hash.new { |hash, key| hash[key] = [] }
   end
 
@@ -82,6 +83,17 @@ class FakeAssetStore
   def attempt(call)
     @attempts[call] += 1
     raise @failures[call].shift unless @failures[call].empty?
+  end
+
+  # Per-url asset bytes for the download path; an unstubbed url falls
+  # back to the manifest body (the manifest merge reads it through the
+  # same client get).
+  def content_for(url)
+    @contents.fetch(url) { @manifest_json }
+  end
+
+  def set_content(url, body)
+    @contents[url] = body
   end
 end
 
@@ -115,9 +127,9 @@ class FakeClient
     @store.updates << body
   end
 
-  def get(_url)
+  def get(url)
     @store.attempt(:get)
-    @store.manifest_json or raise Octokit::NotFound
+    @store.content_for(url) or raise Octokit::NotFound
   end
 end
 
@@ -490,6 +502,36 @@ RSpec.describe ReleaseManager do
 
       expect(store.attempts[:upload]).to eq(3)
       expect(store.uploads).to eq([exe.basename.to_s])
+    end
+
+    # The v0.16.1 publish died on this: a POST timed out but landed
+    # server-side; every retry then 422'd until the attempts ran out.
+    # The content check short-circuits the first 422.
+    it "treats a 422 as done when the timed-out attempt landed the same content" do
+      exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
+      url = "https://download.test/#{exe.basename}"
+      store.assets << FakeAsset.new(7, exe.basename.to_s, url)
+      store.set_content(url, exe.read)
+      store.fail_next(:upload, Octokit::UnprocessableEntity.new)
+
+      expect { fake_manager.perform_upload(release, exe, exe.basename.to_s) }
+        .to output(/already on the release with matching content/).to_stdout
+      expect(store.attempts[:upload]).to eq(1)
+      expect(store.uploads).to be_empty
+    end
+
+    # The same 422 with DIFFERENT landed bytes is the delete race (the
+    # stale asset is still listed) — keep retrying, never accept it.
+    it "keeps retrying a 422 whose landed asset carries different content" do
+      exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
+      url = "https://download.test/#{exe.basename}"
+      store.assets << FakeAsset.new(7, exe.basename.to_s, url)
+      store.set_content(url, "stale bytes")
+      4.times { store.fail_next(:upload, Octokit::UnprocessableEntity.new) }
+
+      expect { fake_manager.perform_upload(release, exe, exe.basename.to_s) }
+        .to raise_error(Octokit::UnprocessableEntity)
+      expect(store.attempts[:upload]).to eq(4)
     end
 
     it "raises after the upload attempts are exhausted" do

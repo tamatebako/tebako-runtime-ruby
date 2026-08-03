@@ -352,15 +352,45 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     upload_once(release, package, filename)
   rescue Octokit::UnprocessableEntity, Net::WriteTimeout, Net::ReadTimeout,
          Faraday::TimeoutError, Faraday::ConnectionFailed => e
+    # A 422 means the asset name is taken. Two distinct causes: the
+    # eventual-consistency race after a same-name delete (the
+    # FORCE_REBUILD / content-changed path), or a previous attempt's POST
+    # that timed out but LANDED server-side — the retry then 422s (the
+    # v0.16.1 publish died on exactly this). Resolve by content, first:
+    # a name-only check would misread the delete-race, where the STALE
+    # asset is still listed.
+    return if landed_duplicate?(release, filename, package, e)
+
     attempts -= 1
     raise if attempts <= 0
 
-    # GitHub asset deletion is only eventually consistent (same-name
-    # re-upload right after a delete can 422), and multi-MB asset streams
-    # hit transient network timeouts. Back off and retry.
-    puts "#{e.class} uploading #{filename}; retrying in 5s (#{attempts} attempt(s) left)"
-    sleep 5
+    backoff(e, filename, attempts)
     retry
+  end
+
+  # Did an earlier attempt's POST land despite the error? Accepts (loudly)
+  # only when the landed asset's content matches ours byte-for-byte.
+  def landed_duplicate?(release, filename, package, error)
+    return false unless error.is_a?(Octokit::UnprocessableEntity)
+    return false unless landed_with_same_content?(release, filename, package)
+
+    puts "#{filename} is already on the release with matching content (a timed-out attempt landed it)"
+    true
+  end
+
+  # Truthful by content: the release's same-named asset's sha256 vs the
+  # local file's.
+  def landed_with_same_content?(release, filename, package)
+    asset = find_asset(release, filename)
+    return false unless asset
+
+    landed = with_transient_retries { @client.get(asset.browser_download_url) }.to_s
+    Digest::SHA256.hexdigest(landed) == Digest::SHA256.file(package).hexdigest
+  end
+
+  def backoff(error, filename, attempts_left)
+    puts "#{error.class} uploading #{filename}; retrying in 5s (#{attempts_left} attempt(s) left)"
+    sleep 5
   end
 
   def upload_once(release, package, filename)
