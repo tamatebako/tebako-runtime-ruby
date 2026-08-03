@@ -109,19 +109,27 @@ module TebakoRuntimeBuilder
       )
     end
 
+    # The pinned release's full SHA256SUMS as {asset_name => sha256}
+    # (downloaded once into the cache). The matrix computer diffs two
+    # pins' per-version shas through this — a per-line source change
+    # moves only that line's entries.
+    def sha256sums
+      sums = File.join(@cache_dir, @release, "SHA256SUMS")
+      download("#{@base_url}/SHA256SUMS", sums) unless File.file?(sums)
+      File.foreach(sums).each_with_object({}) do |line, acc|
+        sha256, file = line.strip.split(/\s+/, 2)
+        acc[file.sub(/\A\*/, "")] = sha256.downcase if file && sha256 =~ /\A[0-9a-f]{64}\z/i
+      end
+    end
+
     private
 
     def expected_sha256(name)
-      sums = File.join(@cache_dir, @release, "SHA256SUMS")
-      download("#{@base_url}/SHA256SUMS", sums) unless File.file?(sums)
-      File.foreach(sums) do |line|
-        sha256, file = line.strip.split(/\s+/, 2)
-        return sha256.downcase if file&.sub(/\A\*/, "") == name && sha256 =~ /\A[0-9a-f]{64}\z/i
-      end
-      raise TebakoRuntimeBuilder::Error.new(
-        "#{name} not found in the SHA256SUMS of tamatebako/ruby release #{@release} " \
-        "(#{@base_url}/SHA256SUMS)", 122
-      )
+      sha256sums[name] ||
+        (raise TebakoRuntimeBuilder::Error.new(
+          "#{name} not found in the SHA256SUMS of tamatebako/ruby release #{@release} " \
+          "(#{@base_url}/SHA256SUMS)", 122
+        ))
     end
 
     def download(url, dest)
