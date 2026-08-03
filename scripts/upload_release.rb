@@ -379,7 +379,13 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     [match[1], match[2]]
   end
 
-  def perform_upload(release, package, filename, attempts: 4)
+  # The upload retry budget: escalating delays, ~4.5 minutes of patience.
+  # Flat 5 s retries cannot ride out the release backend's propagation
+  # lag (observed 2026-08-03: the upload validator 422d a name for
+  # minutes after the delete committed on the primary).
+  UPLOAD_RETRY_DELAYS = [5, 10, 20, 40, 80, 120].freeze
+
+  def perform_upload(release, package, filename, delays: UPLOAD_RETRY_DELAYS.dup)
     puts "Uploading #{filename}"
     upload_once(release, package, filename)
   rescue Octokit::UnprocessableEntity, Net::WriteTimeout, Net::ReadTimeout,
@@ -393,10 +399,10 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     # asset is still listed.
     return if landed_duplicate?(release, filename, package, e)
 
-    attempts -= 1
-    raise if attempts <= 0
+    delay = delays.shift
+    raise if delay.nil?
 
-    backoff(e, filename, attempts)
+    backoff(e, filename, delay)
     retry
   end
 
@@ -433,9 +439,9 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     served_content(filename)
   end
 
-  def backoff(error, filename, attempts_left)
-    puts "#{error.class} uploading #{filename}; retrying in 5s (#{attempts_left} attempt(s) left)"
-    sleep 5
+  def backoff(error, filename, delay)
+    puts "#{error.class} uploading #{filename}; retrying in #{delay}s"
+    sleep delay
   end
 
   def upload_once(release, package, filename)

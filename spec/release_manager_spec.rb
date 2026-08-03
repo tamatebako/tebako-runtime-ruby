@@ -597,11 +597,11 @@ RSpec.describe ReleaseManager do
       url = "https://download.test/#{exe.basename}"
       store.assets << FakeAsset.new(7, exe.basename.to_s, url)
       store.set_content(url, "stale bytes")
-      4.times { store.fail_next(:upload, Octokit::UnprocessableEntity.new) }
+      (ReleaseManager::UPLOAD_RETRY_DELAYS.size + 1).times { store.fail_next(:upload, Octokit::UnprocessableEntity.new) }
 
       expect { fake_manager.perform_upload(release, exe, exe.basename.to_s) }
         .to raise_error(Octokit::UnprocessableEntity)
-      expect(store.attempts[:upload]).to eq(4)
+      expect(store.attempts[:upload]).to eq(ReleaseManager::UPLOAD_RETRY_DELAYS.size + 1)
     end
 
     # A listed-but-unreadable landed asset (mid-propagation) proves
@@ -609,11 +609,11 @@ RSpec.describe ReleaseManager do
     it "treats an unreadable landed asset as not landed and keeps backing off" do
       exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
       store.assets << FakeAsset.new(7, exe.basename.to_s, "https://download.test/#{exe.basename}")
-      4.times { store.fail_next(:upload, Octokit::UnprocessableEntity.new) }
+      (ReleaseManager::UPLOAD_RETRY_DELAYS.size + 1).times { store.fail_next(:upload, Octokit::UnprocessableEntity.new) }
 
       expect { fake_manager.perform_upload(release, exe, exe.basename.to_s) }
         .to raise_error(Octokit::UnprocessableEntity)
-      expect(store.attempts[:upload]).to eq(4)
+      expect(store.attempts[:upload]).to eq(ReleaseManager::UPLOAD_RETRY_DELAYS.size + 1)
     end
 
     # The v0.16.1 windows publish lost SHA256SUMS.txt to this: the delete's
@@ -662,12 +662,12 @@ RSpec.describe ReleaseManager do
     end
 
     it "raises after the upload attempts are exhausted" do
-      4.times { store.fail_next(:upload, Faraday::TimeoutError.new) }
+      (ReleaseManager::UPLOAD_RETRY_DELAYS.size + 1).times { store.fail_next(:upload, Faraday::TimeoutError.new) }
       exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
 
       expect { fake_manager.perform_upload(release, exe, exe.basename.to_s) }
         .to raise_error(Faraday::TimeoutError)
-      expect(store.attempts[:upload]).to eq(4)
+      expect(store.attempts[:upload]).to eq(ReleaseManager::UPLOAD_RETRY_DELAYS.size + 1)
     end
 
     it "retries transient timeouts on idempotent calls" do
