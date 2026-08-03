@@ -60,7 +60,7 @@ on:
         default: false
 
 jobs:
-  windows:
+  linux-musl:
     uses: ./.github/workflows/_build-platform.yml
     with:
       platform: linux-musl

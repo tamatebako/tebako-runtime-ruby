@@ -60,7 +60,7 @@ on:
         default: false
 
 jobs:
-  windows:
+  macos:
     uses: ./.github/workflows/_build-platform.yml
     with:
       platform: macos
