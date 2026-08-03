@@ -178,10 +178,42 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
 
   # Metadata files (SHA256SUMS.txt, manifest.json) are always overwritten,
   # regardless of FORCE_REBUILD, so they never go stale on partial releases.
+  # Read-first: when the served bytes already match, no mutation at all —
+  # the delete-then-reupload pair is the release API's most race-prone
+  # operation (the deletion's propagation lag blocks the re-upload by name
+  # for an unbounded time — the 2026-08-03 publishes died on it).
   def force_upload(release, file)
     filename = file.basename.to_s
+    served = safely_served_content(filename)
+    if served && !served.empty? && Digest::SHA256.hexdigest(served) == Digest::SHA256.file(file).hexdigest
+      puts "#{filename} is already current on the release — no metadata rewrite needed"
+      return
+    end
     remove_existing_asset(release, filename) if find_asset(release, filename)
     perform_upload(release, file, filename)
+  end
+
+  # The canonical download URL's currently-served bytes; nil when the edge
+  # has no such asset. The download edge lags behind the API on mutations,
+  # so this is a hint, never an authority — matching bytes are always a
+  # correct accept (content is content); absent/stale bytes only mean
+  # "take the mutation path".
+  def served_content(filename)
+    with_transient_retries { @client.get(download_url(filename)) }.to_s
+  rescue Octokit::NotFound
+    nil
+  end
+
+  # served_content that never raises: an unreadable edge just means the
+  # mutation path runs.
+  def safely_served_content(filename)
+    served_content(filename)
+  rescue StandardError
+    nil
+  end
+
+  def download_url(filename)
+    "https://github.com/#{RUNTIME_REPO}/releases/download/#{@tag}/#{filename}"
   end
 
   def generate_manifest(entries)
@@ -378,18 +410,27 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     true
   end
 
-  # Truthful by content: the release's same-named asset's sha256 vs the
-  # local file's. An asset listed mid-propagation may not serve bytes yet —
-  # an unreadable landed asset proves nothing, so treat it as not landed
-  # and keep backing off.
+  # Truthful by content: the landed asset's sha256 vs the local file's.
+  # Reads the listing's asset URL first, then the canonical download URL
+  # (the listing lags behind the edge on mutations — an asset can serve
+  # bytes while unlisted, and vice versa). Anything unreadable proves
+  # nothing: treat as not landed and keep backing off.
   def landed_with_same_content?(release, filename, package)
-    asset = find_asset(release, filename)
-    return false unless asset
+    landed = landed_content(release, filename)
+    return false if landed.nil? || landed.empty?
 
-    landed = with_transient_retries { @client.get(asset.browser_download_url) }.to_s
     Digest::SHA256.hexdigest(landed) == Digest::SHA256.file(package).hexdigest
   rescue StandardError
     false
+  end
+
+  def landed_content(release, filename)
+    asset = find_asset(release, filename)
+    return with_transient_retries { @client.get(asset.browser_download_url) }.to_s if asset
+
+    served_content(filename)
+  rescue Octokit::NotFound
+    served_content(filename)
   end
 
   def backoff(error, filename, attempts_left)
