@@ -80,6 +80,38 @@ the ruby executable and the bin shims are stripped from the layout; the
 interpreter is the outer driver executable that mounts the image, exactly
 like the packaged-app path).
 
+## The windows ruby DLL (issue 40)
+
+The windows-ucrt64 runtime is `--enable-shared` (the standard ruby-mingw
+shape; every other platform stays `--disable-shared`): the ruby core and
+the tebako closure link into `x64-ucrt-ruby<ABI>.dll`, and the runtime
+executable imports it — a `--disable-shared` exe exports zero symbols and
+ships no DLL, so no dynamically linked native extension could ever bind.
+The memfs mount table exists exactly once per process, in the DLL; the
+exe's driver reaches it through the DLL's `tebako_fs_*` exports.
+
+The DLL is the third artifact of a windows package:
+
+- it is built as `x64-ucrt-ruby<ABI>.dll` in the ruby tree and staged as
+  `<runtime>.dll` (the package name — two same-ABI legs share the PE name
+  and would collide in the merged release workspace);
+- the store entry holds it next to the exe **under the PE name**
+  (`x64-ucrt-ruby<ABI>.dll`): the PE loader resolves the exe's imports
+  against the exe's own directory first, so interpreter and extensions
+  bind without PATH games. The manifest's additive `dll` key flows the
+  mapping (`filename` = the asset, `install_as` = the PE name, plus
+  `sha256`/`size_bytes`; consumers ignoring the key keep working, same
+  rule as `image`), and `SHA256SUMS.txt` carries the line;
+- the env image does NOT carry the DLL (`bin/` is stripped from the
+  layout — a DLL inside the read-only memfs would be dead weight: PE
+  imports never resolve against it).
+
+The leg proves the wiring before the artifacts leave CI: the windows
+boot smoke materializes the PE-named copy next to the exe (the store
+entry's shape) and loads racc's `cparse.so` from the image — a real
+`LoadLibrary` bind of an in-image PE extension against the DLL
+(`spec/boot_smoke_spec.rb`, the `native_ext` scenario).
+
 ## Bootstrap ↔ runtime contract version (roadmap 45)
 
 The bootstrap (released from tamatebako/tebako) and the runtime images

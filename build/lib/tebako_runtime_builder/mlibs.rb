@@ -33,6 +33,15 @@ module TebakoRuntimeBuilder
   # '@TEBAKO_MLIBS@' in template/Makefile.in (and the deferred config.status
   # MAINLIBS patch); the list is computed dynamically per packaging host,
   # which is exactly why it stays a consumer-side substitution.
+  #
+  # msys is the shared build (issue #40): TWO lists, one per PE module.
+  # MAINLIBS (the exe/miniruby side) carries the driver, the import library
+  # of x64-ucrt-ruby<ABI>.dll and the static-ext/system deps -- never the
+  # libtfs closure. compute_solibs (the DLL side, substituted into SOLIBS)
+  # carries the closure: the memfs mount table exists exactly once per
+  # process, in the DLL, and the exe's driver reaches it through the DLL's
+  # exports (two static copies would hand driver and ruby separate mount
+  # tables -- mounts invisible to the interpreter).
   class Mlibs # rubocop:disable Metrics/ClassLength
     # rubocop:disable Style/WordArray
     DARWIN_BREW_LIBS = [
@@ -115,6 +124,28 @@ module TebakoRuntimeBuilder
     # style) to stay independent of the tag drift
     MSYS_BOOST_LIBS = %w[boost_filesystem boost_chrono].freeze
 
+    # The DLL side's system libraries and runtimes (msys shared build,
+    # issue #40): ruby's win32 layer (the MSYS_MAINLIBS_LINE default set in
+    # build_passes.rb) plus the Rust/dwarfs closure's references (proven by
+    # the mingw-ld link probes: RtlNtStatusToDosError → ntdll,
+    # GetUserProfileDirectoryW → userenv, GetProcessMemoryInfo → psapi) and
+    # the C++ runtime, statically — several mingw installs on a runner make
+    # DLL resolution nondeterministic otherwise.
+    MSYS_DLL_LIBRARIES = [
+      "-l:libstdc++.a",          "-static-libgcc",            "-static-libstdc++",       "-l:libwinpthread.a",
+      "-lshell32",               "-lws2_32",                  "-lwsock32",               "-liphlpapi",
+      "-limagehlp",              "-lshlwapi",                 "-lbcrypt",                "-lcrypt32",
+      "-ladvapi32",              "-luser32",                  "-lole32",                 "-loleaut32",
+      "-luuid",                  "-lpsapi",                   "-lntdll",                 "-luserenv"
+    ].freeze
+
+    # The pacman-provided archives rust_link_libraries_msys dedupes OUT of
+    # the closure (they ride the exe's MSYS_LIBRARIES): the DLL link shares
+    # no libraries with the exe link, so the closure's own zlib/lzma/openssl
+    # references need the pacman copies here. Static archives cost nothing
+    # when unreferenced (no members get pulled).
+    MSYS_DLL_PACMAN_PROVIDERS = ["-l:libz.a", "-l:liblzma.a", "-l:libssl.a", "-l:libcrypto.a"].freeze
+
     # prefix_resolver maps a Homebrew package name to its prefix (darwin);
     # injectable so the list computation is spec-able off macOS
     def initialize(platform, deps_lib_dir, prefix_resolver: nil)
@@ -136,6 +167,20 @@ module TebakoRuntimeBuilder
       else
         linux_gnu_libraries(ruby_ver, with_compression)
       end
+    end
+
+    # SOLIBS of the msys shared build (issue #40): the DLL side, substituted
+    # into config.status by build_pass.rb postconfigure (x64-ucrt-ruby<ABI>.dll
+    # links core objects + the libtfs closure + the system set). The driver
+    # stays OUT (it is exe code); the export surface comes from the mkexports
+    # .def plus the tebako_* fragment build_pass.rb prepare appends.
+    def compute_solibs(ruby_ver)
+      libraries = ["-Wl,--start-group"] +
+                  msys_closure_libraries +
+                  ["-Wl,--end-group"] +
+                  MSYS_DLL_PACMAN_PROVIDERS +
+                  MSYS_DLL_LIBRARIES
+      linux_libraries(libraries, ruby_ver, false)
     end
 
     private
@@ -195,44 +240,58 @@ module TebakoRuntimeBuilder
       libraries.join(" ")
     end
 
+    # MAINLIBS of the msys shared build (issue #40): the exe side. The
+    # driver (libtebako-fs.a whole-archive + the scoped libtebako_driver.a
+    # in the v2 link) and the import library of the ruby DLL -- the exe's
+    # tebako_fs_* and ruby-API references bind to the DLL at load time.
+    # The import library is a bare relative operand (resolved against the
+    # link's cwd, the ruby build dir), not a -l: search ref. The libtfs
+    # closure is NOT here: it rides the DLL (compute_solibs) so the process
+    # holds exactly one mount table.
     def msys_libraries(ruby_ver, with_compression)
-      if rust_libdir
-        # The v2 link (image era), msys flavor: whole-archive libtebako-fs.a
-        # (the fs TU: mount point + the tebako_main shim forwarding the
-        # exe's own root to the driver) + the scoped staticlibs + the
-        # mingw closure inside a group (GNU ld's single-pass scan needs it
-        # for the circular member refs), with the pacman-covered deps
-        # deduped — ruby statically links openssl/zlib/lzma from pacman,
-        # and the vcpkg closure's copies of those must not collide with
-        # them (same ABI line; the group's own references resolve against
-        # the pacman set that follows).
-        libraries = with_compression ? ["-Wl,-Bstatic"] : []
-        libraries += ["-Wl,--start-group",
-                      "-Wl,--push-state,--whole-archive -l:libtebako-fs.a -Wl,--pop-state"] +
-                     rust_link_libraries_msys +
-                     ["-Wl,--end-group"] +
-                     MSYS_LIBRARIES +
-                     # Rust std's Windows references the dwarfs closure
-                     # does not cover (proven by the mingw-ld link probe):
-                     # RtlNtStatusToDosError (ntdll) and
-                     # GetUserProfileDirectoryW (userenv).
-                     ["-lntdll", "-luserenv"]
-        return linux_libraries(libraries, ruby_ver, with_compression)
-      end
-
       libraries = with_compression ? ["-Wl,-Bstatic"] : []
-      # The dwarfs reader set + codecs go inside a group: miniruby.exe links
-      # with a bare $(MAINLIBS) rule (no group of its own), and GNU ld's
-      # single-pass scan needs it to resolve the circular member refs
-      # (decompressor_registry -> compression registrar in libdwarfs_common).
-      # COMMON_ARCHIEVE_LIBRARIES adds bz2 (libzip) and the codec set; psapi
-      # covers GetProcessMemoryInfo (libdwarfs_common util.cpp).
-      libraries += ["-Wl,--start-group"] +
-                   COMMON_LINUX_LIBRARIES.map { |lib| msys_boost_reference(lib) } +
-                   COMMON_ARCHIEVE_LIBRARIES +
+      libraries += ["-Wl,--start-group",
+                    "-Wl,--push-state,--whole-archive -l:libtebako-fs.a -Wl,--pop-state"] +
+                   msys_driver_libraries +
+                   [ruby_ver.msys_implib_name] +
                    ["-Wl,--end-group"] +
-                   MSYS_LIBRARIES
+                   MSYS_LIBRARIES +
+                   # Rust std's Windows references the dwarfs closure
+                   # does not cover (proven by the mingw-ld link probe):
+                   # RtlNtStatusToDosError (ntdll) and
+                   # GetUserProfileDirectoryW (userenv).
+                   ["-lntdll", "-luserenv"]
       linux_libraries(libraries, ruby_ver, with_compression)
+    end
+
+    # The exe-side driver archives: the scoped libtebako_driver.a in the v2
+    # (Rust driver) link, nothing extra in the v1 (C++ driver) one.
+    def msys_driver_libraries
+      return [] unless rust_libdir
+
+      [File.join(rust_libdir, "libtebako_driver.a")].tap do |libs|
+        libs.each do |path|
+          raise TebakoRuntimeBuilder::Error.new(
+            "missing v2 link input: #{path} — run tebako-arscope (tebako-rs) and stage the scoped staticlibs",
+            112
+          ) unless File.file?(path)
+        end
+      end
+    end
+
+    # The closure archives that ride the DLL: the v2 scoped libtfs.a +
+    # closure/*.a minus the exe's driver and minus the pacman-covered set
+    # (re-added from pacman below); the v1 C++ libtfs + vcpkg set when no
+    # Rust link unit is staged.
+    def msys_closure_libraries
+      return msys_solibs_rust if rust_libdir
+
+      COMMON_LINUX_LIBRARIES.drop(1).map { |lib| msys_boost_reference(lib) } +
+        COMMON_ARCHIEVE_LIBRARIES
+    end
+
+    def msys_solibs_rust
+      rust_link_libraries_msys.reject { |lib| File.basename(lib) == "libtebako_driver.a" }
     end
 
     # The link unit minus the libraries pacman already covers for ruby:

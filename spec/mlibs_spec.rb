@@ -100,17 +100,31 @@ RSpec.describe TebakoRuntimeBuilder::Mlibs do
       described_class.new(TebakoRuntimeBuilder::Platform.new("x64-mingw-ucrt", "x86_64"), "/deps/lib")
     end
 
-    it "prepends -Wl,-Bstatic only with compression and group-wraps the dwarfs set" do
+    it "prepends -Wl,-Bstatic only with compression and group-wraps the driver + import lib" do
       expect(mlibs.compute(ruby_ver,
                            with_compression: true)).to start_with("-Wl,-Bstatic -Wl,--start-group -Wl,--push-state")
       expect(mlibs.compute(ruby_ver, with_compression: false)).to start_with("-Wl,--start-group -Wl,--push-state")
       expect(mlibs.compute(ruby_ver)).to include("-Wl,--end-group")
     end
 
-    it "carries the windows system libs incl. psapi and bz2" do
-      expect(mlibs.compute(ruby_ver)).to include("-lws2_32")
-      expect(mlibs.compute(ruby_ver)).to include("-lpsapi")
-      expect(mlibs.compute(ruby_ver)).to include("-l:libbz2.a")
+    it "keeps the libtfs closure OUT of MAINLIBS (the exe side, issue 40) and carries the import lib" do
+      result = mlibs.compute(ruby_ver)
+      expect(result).to include("libx64-ucrt-ruby330.dll.a")
+      expect(result).to include("-lws2_32")
+      expect(result).to include("-lpsapi")
+      expect(result).to include("-lntdll")
+      expect(result).not_to include("-l:libtfs.a")
+      expect(result).not_to include("-l:libbz2.a")
+    end
+
+    it "carries the closure and the windows system libs in SOLIBS (the DLL side, issue 40)" do
+      result = mlibs.compute_solibs(ruby_ver)
+      expect(result).to start_with("-Wl,--start-group -l:libtfs.a")
+      expect(result).to include("-l:libbz2.a")
+      expect(result).to include("-l:libz.a")
+      expect(result).to include("-lshell32")
+      expect(result).to include("-lntdll")
+      expect(result).not_to include("libtebako-fs.a")
     end
 
     context "with tagged boost archives in the vcpkg triplet" do
@@ -133,9 +147,9 @@ RSpec.describe TebakoRuntimeBuilder::Mlibs do
         FileUtils.remove_entry(root)
       end
 
-      it "resolves the boost references to the tagged archives by full path" do
+      it "resolves the boost references to the tagged archives by full path (in the DLL's SOLIBS)" do
         triplet_lib = File.join(root, "deps", "vcpkg_installed", "x64-mingw-static", "lib")
-        result = mlibs.compute(ruby_ver)
+        result = mlibs.compute_solibs(ruby_ver)
         expect(result).to include("#{triplet_lib}/libboost_filesystem-gcc16-mt-x64-1_90.a")
         expect(result).to include("#{triplet_lib}/libboost_chrono-gcc16-mt-x64-1_90.a")
         expect(result).not_to include("-l:libboost_filesystem.a")
@@ -163,7 +177,7 @@ RSpec.describe TebakoRuntimeBuilder::Mlibs do
         FileUtils.remove_entry(root)
       end
 
-      it "whole-archives libtebako-fs.a ahead of the scoped staticlibs (the fs TU carries the tebako_main shim)" do
+      it "whole-archives libtebako-fs.a ahead of the scoped driver (the fs TU carries the tebako_main shim)" do
         result = mlibs.compute(ruby_ver)
         expect(result).to start_with(
           "-Wl,-Bstatic -Wl,--start-group " \
@@ -171,9 +185,21 @@ RSpec.describe TebakoRuntimeBuilder::Mlibs do
         )
       end
 
-      it "dedupes the pacman-covered closure archives" do
+      it "keeps the scoped libtfs.a + closure in the DLL's SOLIBS, never the exe's MAINLIBS" do
+        solibs = mlibs.compute_solibs(ruby_ver)
+        expect(solibs).to include("#{root}/libtfs.a")
+        expect(solibs).to include("#{root}/closure/libfmt.a")
+        expect(solibs).not_to include("libtebako_driver.a")
+        mainlibs = mlibs.compute(ruby_ver)
+        expect(mainlibs).not_to include("#{root}/libtfs.a")
+        expect(mainlibs).not_to include("#{root}/closure/libfmt.a")
+      end
+
+      it "dedupes the pacman-covered closure archives (re-provided from pacman in the DLL link)" do
         FileUtils.touch(File.join(root, "closure", "libssl.a"))
-        expect(mlibs.compute(ruby_ver)).not_to include("closure/libssl.a")
+        solibs = mlibs.compute_solibs(ruby_ver)
+        expect(solibs).not_to include("closure/libssl.a")
+        expect(solibs).to include("-l:libssl.a")
       end
     end
   end

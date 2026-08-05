@@ -21,12 +21,30 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
   # An msys ruby source tree fixture carrying the anchors the prepare
   # hot-patches act on (dir.c: the glob hint; io.c: the fd_is_text block —
   # the stat wire-layout hot-patch is gone: the released source carries
-  # the pinned tebako_stat ABI from tamatebako/ruby v0.2.13)
+  # the pinned tebako_stat ABI from tamatebako/ruby v0.2.13), plus the
+  # shared-build set (issue 40): the mkexports rule in cygwin/GNUmakefile.in
+  # and the miniruby dependency line in common.mk.
   def write_msys_source_fixtures(dir)
     glob = TebakoRuntimeBuilder::BuildPasses::MSYS_GLOB_OPENDIR_ANCHOR
     fd_text = TebakoRuntimeBuilder::BuildPasses::MSYS_FD_IS_TEXT_ANCHOR
     File.write(File.join(dir, "dir.c"), "#{glob}\n")
     File.write(File.join(dir, "io.c"), "tfs_close\n#{fd_text}\n")
+    FileUtils.mkdir_p(File.join(dir, "cygwin"))
+    File.write(File.join(dir, "cygwin", "GNUmakefile.in"),
+               "rule-a\n#{TebakoRuntimeBuilder::BuildPasses::MSYS_DLL_EXPORTS_ANCHOR}rule-b\n")
+    File.write(File.join(dir, "common.mk"),
+               "line-a\n#{TebakoRuntimeBuilder::BuildPasses::MSYS_MINIRUBY_DEP_ANCHOR}line-b\n")
+  end
+
+  # A libtfs.a the DLL export fragment derives from (issue 40): one defined
+  # tebako_* function, one data symbol (nm runs for real, as on the legs).
+  def write_libtfs_fixture(dir)
+    FileUtils.mkdir_p(dir)
+    src = File.join(dir, "fixture.c")
+    obj = File.join(dir, "fixture.o")
+    File.write(src, "int tebako_fs_mount(void) { return 0; }\nint tebako_fs_state;\n")
+    TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["cc", "-c", src, "-o", obj])
+    TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["ar", "rcs", File.join(dir, "libtfs.a"), obj])
   end
 
   describe ".prepare" do
@@ -74,11 +92,66 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
     it "skips the template substitution on msys (MAINLIBS comes via config.status there)" do
       File.write(File.join(ruby_src, "template", "Makefile.in"), "MAINLIBS = @MAINLIBS@\n")
       write_msys_source_fixtures(ruby_src)
+      write_libtfs_fixture(deps_lib_dir)
       expect do
         described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc")
       end.not_to raise_error
       expect(File.read(File.join(ruby_src, "template", "Makefile.in"))).to eq("MAINLIBS = @MAINLIBS@\n")
       expect(File.file?(File.join(deps_lib_dir, "libtebako-fs.a"))).to be(true)
+    end
+  end
+
+  describe ".prepare msys shared build (issue 40)" do
+    before do
+      write_msys_source_fixtures(ruby_src)
+      write_libtfs_fixture(deps_lib_dir)
+      described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc")
+    end
+
+    it "writes the DLL export fragment from the libtfs archive (functions bare, data marked)" do
+      fragment = File.read(File.join(ruby_src, "tebako-dll-exports.def"))
+      expect(fragment).to include("tebako_fs_mount\n")
+      expect(fragment).to include("tebako_fs_state DATA\n")
+    end
+
+    it "appends the fragment to the mkexports rule in cygwin/GNUmakefile.in" do
+      gnu_makefile_in = File.read(File.join(ruby_src, "cygwin", "GNUmakefile.in"))
+      expect(gnu_makefile_in).to include("cat tebako-dll-exports.def >> $@ # tebako patched (issue 40)")
+    end
+
+    it "makes miniruby depend on the DLL import library in common.mk" do
+      common_mk = File.read(File.join(ruby_src, "common.mk"))
+      expect(common_mk).to include("$(ALLOBJS) $(ARCHFILE) $(LIBRUBY) # tebako patched (issue 40)")
+    end
+
+    it "anchors the ruby 4.0 spelled-out miniruby line too" do
+      File.write(File.join(ruby_src, "common.mk"),
+                 "miniruby$(EXEEXT): config.status $(NORMALMAINOBJ) $(MINIOBJS) $(COMMONOBJS) $(ARCHFILE)\n")
+      described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "4.0.6", "A:/t", "cc")
+      common_mk = File.read(File.join(ruby_src, "common.mk"))
+      expect(common_mk).to include("$(COMMONOBJS) $(ARCHFILE) $(LIBRUBY) # tebako patched (issue 40)")
+    end
+
+    it "is idempotent across the msys pass-2 overlay prepare re-run" do
+      expect do
+        described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc")
+      end.not_to raise_error
+      gnu_makefile_in = File.read(File.join(ruby_src, "cygwin", "GNUmakefile.in"))
+      expect(gnu_makefile_in.scan("tebako-dll-exports.def").length).to eq(1)
+      common_mk = File.read(File.join(ruby_src, "common.mk"))
+      expect(common_mk.scan("$(LIBRUBY)").length).to eq(1)
+    end
+
+    it "fails loudly when the mkexports anchor drifted" do
+      File.write(File.join(ruby_src, "cygwin", "GNUmakefile.in"), "no mkexports rule here\n")
+      expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc") }
+        .to raise_error(TebakoRuntimeBuilder::Error, /mkexports rule anchor/)
+    end
+
+    it "fails loudly when the libtfs archive defines no tebako_* symbols" do
+      FileUtils.rm(File.join(deps_lib_dir, "libtfs.a"))
+      expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc") }
+        .to raise_error(TebakoRuntimeBuilder::Error, /no libtfs.a to derive the DLL export fragment/)
     end
   end
 
@@ -88,6 +161,7 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
 
     before do
       write_msys_source_fixtures(ruby_src)
+      write_libtfs_fixture(deps_lib_dir)
     end
 
     it "guards the nfiles capacity hint against libtfs dir handles" do
@@ -152,6 +226,30 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
       expect do
         described_class.postconfigure("x86_64-linux-gnu", ruby_src, deps_lib_dir, "3.3.7")
       end.to output(/Warning: no config.status MAINLIBS pattern matched/).to_stdout
+    end
+
+    it "substitutes MAINLIBS (exe side) and SOLIBS (the DLL closure) on msys (issue 40)" do
+      File.write(config_status,
+                 "S[\"MAINLIBS\"]=\"#{described_class::MSYS_MAINLIBS_LINE}\"\n" \
+                 "S[\"SOLIBS\"]=\"$(MAINLIBS)\"\n")
+      described_class.postconfigure("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7")
+      contents = File.read(config_status)
+      # the exe side: driver + import library + system libs, never the closure
+      expect(contents).to include("libx64-ucrt-ruby330.dll.a")
+      expect(contents).not_to include("S[\"MAINLIBS\"]=\"#{described_class::MSYS_MAINLIBS_LINE}\"")
+      # the DLL side: the closure replaces the $(MAINLIBS) reference
+      expect(contents).to include("S[\"SOLIBS\"]=\"-Wl,--start-group -l:libtfs.a")
+      expect(contents).not_to include("S[\"SOLIBS\"]=\"$(MAINLIBS)\"")
+    end
+
+    it "is idempotent for the msys MAINLIBS+SOLIBS pair" do
+      File.write(config_status,
+                 "S[\"MAINLIBS\"]=\"#{described_class::MSYS_MAINLIBS_LINE} \"\n" \
+                 "S[\"SOLIBS\"]=\"$(MAINLIBS)\"\n")
+      described_class.postconfigure("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7")
+      expect do
+        described_class.postconfigure("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7")
+      end.not_to output(/Warning/).to_stdout
     end
   end
 

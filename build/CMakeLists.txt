@@ -518,10 +518,26 @@ else(IS_DARWIN)
   endif()
 endif(IS_DARWIN)
 
+# The msys runtime is --enable-shared (issue #40): native extensions bind
+# through the shared libruby -- x64-ucrt-ruby<ABI>.dll carries the ruby core
+# (and the tebako closure, via the SOLIBS substitution in build_passes.rb)
+# and rides next to the runtime exe, whose PE imports resolve against it. A
+# --disable-shared exe exports zero symbols and ships no DLL, so no dynamic
+# extension .so can ever bind (the exe cannot serve PE imports under any
+# name). POSIX legs stay --disable-shared: their exe exports the dynamic
+# symbol table dlopen'd extensions bind to. --with-static-linked-ext stays
+# everywhere: the env image's stdlib exts keep baking into the exe.
+if(IS_MSYS)
+  set(RUBY_SHARED_OPTION "--enable-shared")
+else(IS_MSYS)
+  set(RUBY_SHARED_OPTION "--disable-shared")
+endif(IS_MSYS)
+
 message(STATUS "Ruby build ${C_FLAGS_DEST}='${RUBY_C_FLAGS}'")
 message(STATUS "Ruby build LDFLAGS='${RUBY_L_FLAGS}'")
 message(STATUS "openssl Ruby option='${OPENSSL_RUBY_OPTION}'")
 message(STATUS "libyaml Ruby option='${LIBYAML_RUBY_OPTION}'")
+message(STATUS "shared Ruby option='${RUBY_SHARED_OPTION}'")
 
 # The build-pass tooling (build/tools/build_pass.rb over build/lib) runs the
 # consumer-side steps the pre-patched source tree expects:
@@ -557,7 +573,7 @@ ExternalProject_Add(${RUBY_PRJ}
                                                         --without-gmp                         \
                                                         --disable-dtrace                      \
                                                         --disable-debug-env                   \
-                                                        --disable-shared                      \
+                                                        ${RUBY_SHARED_OPTION}                 \
                                                         --disable-install-doc                 \
                                                         --with-static-linked-ext              \
                                                         --with-out-ext=${RUBY_WITHOUT_EXT}    \
@@ -589,7 +605,7 @@ set(CMAKE_CXX_EXTENSIONS   OFF)
 # Packaged filesystem
 
 add_custom_target(packaged_filesystem
-  COMMAND ${RUBY_INTERP} ${CMAKE_SOURCE_DIR}/tools/build_pass.rb deploy ${RUBY_VER} ${RUBY_STASH_DIR} ${DATA_SRC_DIR} ${DATA_PRE_DIR} ${DATA_BIN_FILE} ${GEN_DIR}/local ${DEPS_BIN_DIR} ${RUBY_SOURCE_DIR} ${RUNTIME_NAME} $<BOOL:${TEBAKO_EMBED_IMAGE}> "${FS_MOUNT_POINT}"
+  COMMAND ${RUBY_INTERP} ${CMAKE_SOURCE_DIR}/tools/build_pass.rb deploy ${RUBY_VER} ${RUBY_STASH_DIR} ${DATA_SRC_DIR} ${DATA_PRE_DIR} ${DATA_BIN_FILE} ${GEN_DIR}/local ${DEPS_BIN_DIR} $<BOOL:${TEBAKO_EMBED_IMAGE}> "${FS_MOUNT_POINT}"
   DEPENDS setup
 )
 # The deploy pass writes ${DATA_BIN_FILE} (mkdwarfs) only for the embedded

@@ -86,6 +86,13 @@ module TebakoRuntimeBuilder
 
       def strip_fi(platform, src_dir)
         files = get_files(platform).map { |f| "#{src_dir}/bin/#{f}" }
+        # The msys shared build (issue #40) installs x64-ucrt-ruby<ABI>.dll
+        # into bin/: dead weight in the env image -- PE imports resolve
+        # against the runtime exe's host directory (the store entry holds
+        # the DLL next to the exe), never against the memfs. The import
+        # library under lib/ is a *.a and joins the other build artifacts
+        # strip_li deletes.
+        files += Dir.glob("#{src_dir}/bin/x64-*-ruby*.dll") if platform.msys?
         FileUtils.rm(files, force: true)
       end
 

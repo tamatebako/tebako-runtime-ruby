@@ -43,7 +43,7 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
       end
     end
 
-    it "ignores the sidecar markers (abi facet + era-2 contract card + sha256/origin trust markers)" do
+    it "ignores the sidecar markers (abi facet + era-2 contract card + sha256/origin trust markers + the package-named ruby DLL)" do
       Dir.mktmpdir do |dir|
         exe = File.join(dir, "tebako-runtime-0.15.9-3.1.6-windows-ucrt64")
         FileUtils.touch(exe)
@@ -52,6 +52,7 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
         FileUtils.touch("#{exe}.contract.yaml")
         FileUtils.touch("#{exe}.sha256")
         FileUtils.touch("#{exe}.origin")
+        FileUtils.touch("#{exe}.dll")
         expect(described_class.new(dir).executable).to eq(exe)
       end
     end
@@ -223,6 +224,27 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
         expect(run).to be_booted, boot_failure(run)
         expect(run.state("flock_writable")).to eq("ok"),
                                                "probe flock_writable detail: #{run.detail("flock_writable")}"
+      end
+    end
+
+    describe "native extensions" do
+      let(:run) { smoke.run("native_ext") }
+
+      it "loads a dynamic native extension from the image (issue 40)" do
+        # The windows runtime binds PE extensions against
+        # x64-ucrt-ruby<ABI>.dll next to the exe (the store-entry shape):
+        # racc's cparse.so extracts from the memfs and LoadLibrarys against
+        # the DLL. Elsewhere the runtime's own exts are static and the
+        # probe reports unsupported -- there is nothing to bind.
+        expect(run).to be_booted, boot_failure(run)
+        state = run.state("load_native_extension")
+        if smoke.platform.msys?
+          expect(state).to eq("ok"), "probe load_native_extension detail: #{run.detail("load_native_extension")}"
+          expect(run.detail("load_native_extension")).to end_with("cparse.so")
+        else
+          expect(state).to eq("unsupported"),
+                           "probe load_native_extension detail: #{run.detail("load_native_extension")}"
+        end
       end
     end
   end
