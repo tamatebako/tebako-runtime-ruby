@@ -147,8 +147,13 @@ module TebakoRuntimeBuilder
     # shared build, so its link must wait for $(LIBRUBY) (the import
     # library is a byproduct of the DLL link). Upstream never needed the
     # dependency (a plain miniruby references nothing from the DLL).
+    # ruby 4.0's common.mk spells ALLOBJS out; both spellings anchor.
     MSYS_MINIRUBY_DEP_ANCHOR = "miniruby$(EXEEXT): config.status $(ALLOBJS) $(ARCHFILE)\n"
-    MSYS_MINIRUBY_DEP_PATCHED = "miniruby$(EXEEXT): config.status $(ALLOBJS) $(ARCHFILE) $(LIBRUBY) # tebako patched (issue 40)\n"
+    MSYS_MINIRUBY_DEP_ANCHORS = [
+      MSYS_MINIRUBY_DEP_ANCHOR,
+      "miniruby$(EXEEXT): config.status $(NORMALMAINOBJ) $(MINIOBJS) $(COMMONOBJS) $(ARCHFILE)\n"
+    ].freeze
+    MSYS_MINIRUBY_DEP_MARKER = " $(LIBRUBY) # tebako patched (issue 40)"
 
     class << self # rubocop:disable Metrics/ClassLength
       def prepare(ostype, ruby_source_dir, deps_lib_dir, ruby_ver, mount_point, cc = "cc") # rubocop:disable Metrics/ParameterLists
@@ -510,27 +515,29 @@ module TebakoRuntimeBuilder
       # above): in the shared build miniruby binds tebako_fs_* from the
       # DLL's import library, a byproduct of the DLL link -- without the
       # dependency a parallel make can link miniruby first. Idempotent,
-      # anchored, loud on drift (same contract as the other hot-patches;
-      # common.mk is identical in both pass trees, so the pass-2 overlay
-      # leaves the patch in place and the re-run is a no-op).
+      # anchored (both the 3.x ALLOBJS and the 4.0 spelled-out spellings),
+      # loud on drift (same contract as the other hot-patches; common.mk is
+      # identical in both pass trees, so the pass-2 overlay leaves the
+      # patch in place and the re-run is a no-op).
       def hotfix_msys_miniruby_dep!(common_mk) # rubocop:disable Metrics/MethodLength
         unless File.exist?(common_mk)
           raise TebakoRuntimeBuilder::Error.new("Could not patch #{common_mk} because it does not exist.", 107)
         end
 
         contents = File.read(common_mk)
-        return if contents.include?(MSYS_MINIRUBY_DEP_PATCHED)
+        return if contents.include?(MSYS_MINIRUBY_DEP_MARKER)
 
-        anchor_count = contents.scan(MSYS_MINIRUBY_DEP_ANCHOR).length
-        unless anchor_count == 1
+        anchor = MSYS_MINIRUBY_DEP_ANCHORS.find { |candidate| contents.scan(candidate).length == 1 }
+        unless anchor
+          count = MSYS_MINIRUBY_DEP_ANCHORS.sum { |candidate| contents.scan(candidate).length }
           raise TebakoRuntimeBuilder::Error.new(
-            "#{common_mk}: expected exactly one miniruby dependency anchor, found #{anchor_count} -- " \
+            "#{common_mk}: expected exactly one miniruby dependency anchor, found #{count} -- " \
             "the pre-patched common.mk changed; revisit the msys miniruby dependency hot-patch (issue 40)", 130
           )
         end
 
         puts "   ... making miniruby depend on the ruby DLL import library (msys, issue 40)"
-        File.write(common_mk, contents.sub(MSYS_MINIRUBY_DEP_ANCHOR, MSYS_MINIRUBY_DEP_PATCHED))
+        File.write(common_mk, contents.sub(anchor, "#{anchor.chomp}#{MSYS_MINIRUBY_DEP_MARKER}\n"))
       end
 
       def substitute_config_status!(config_status, platform, mlibs, solibs = nil) # rubocop:disable Metrics/MethodLength

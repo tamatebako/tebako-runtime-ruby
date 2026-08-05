@@ -124,6 +124,14 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
       expect(common_mk).to include("$(ALLOBJS) $(ARCHFILE) $(LIBRUBY) # tebako patched (issue 40)")
     end
 
+    it "anchors the ruby 4.0 spelled-out miniruby line too" do
+      File.write(File.join(ruby_src, "common.mk"),
+                 "miniruby$(EXEEXT): config.status $(NORMALMAINOBJ) $(MINIOBJS) $(COMMONOBJS) $(ARCHFILE)\n")
+      described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "4.0.6", "A:/t", "cc")
+      common_mk = File.read(File.join(ruby_src, "common.mk"))
+      expect(common_mk).to include("$(COMMONOBJS) $(ARCHFILE) $(LIBRUBY) # tebako patched (issue 40)")
+    end
+
     it "is idempotent across the msys pass-2 overlay prepare re-run" do
       expect do
         described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc")
