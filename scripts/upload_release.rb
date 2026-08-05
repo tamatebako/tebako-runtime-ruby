@@ -190,10 +190,88 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
 
   # Metadata files (SHA256SUMS.txt, manifest.json) are always overwritten,
   # regardless of FORCE_REBUILD, so they never go stale on partial releases.
+  #
+  # The metadata CONVERGENCE loop (2026-08-03, proven live): the release
+  # backend's mutation propagation flaps over minutes — a deleted name
+  # 422'd re-uploads for >25 min while replicas disagreed about the
+  # listing. Each cycle: read-first (served bytes already ours → done),
+  # delete when listed, wait for absence, upload with the short budget
+  # (422s resolve by content inside perform_upload), then verify what the
+  # edge serves. The loop repeats until the edge converges or the budget
+  # runs out — a metadata rewrite never dies on the first bad cycle.
+  # The convergence cycle sleeps, ~46 min of patience. Tonight's backend
+  # (2026-08-03) blocked a deleted name's re-upload for 4.5+ HOURS; the
+  # per-platform merge rewrites the shared metadata once per platform, so
+  # platforms 2-4 always ride the rewrite path — a healthy-night budget
+  # is not enough for an incident night. The publishes serialize globally
+  # anyway; grinding here never blocks another platform's build.
+  METADATA_CONVERGENCE_DELAYS = [5, 15, 30, 60, 120, 240, 480, 600, 600, 600].freeze
+
   def force_upload(release, file)
     filename = file.basename.to_s
+    sha = Digest::SHA256.file(file).hexdigest
+    converged = false
+    METADATA_CONVERGENCE_DELAYS.each do |pause|
+      converged = metadata_converged?(release, file, filename, sha)
+      break if converged
+
+      puts "#{filename} has not converged on the release yet; cycling in #{pause}s"
+      sleep pause
+    end
+    raise "could not converge #{filename} on the release within the metadata budget" unless converged
+  end
+
+  # One convergence cycle: read-first (the edge already serves our bytes
+  # → done), replace when listed, upload with the short budget (422s
+  # resolve by content inside perform_upload), then verify what the edge
+  # serves. true when the release serves our bytes.
+  def metadata_converged?(release, file, filename, sha)
+    return true if served_content_matches?(filename, sha)
+
     remove_existing_asset(release, filename) if find_asset(release, filename)
-    perform_upload(release, file, filename)
+    begin
+      perform_upload(release, file, filename, delays: [5, 10, 20])
+    rescue Octokit::UnprocessableEntity
+      # the name is still taken server-side; the next cycle re-reads
+    end
+    served_content_matches?(filename, sha)
+  end
+
+  # Does the canonical download URL already serve these exact bytes?
+  # (An unreadable edge proves nothing → false → the mutation path runs.)
+  def served_content_matches?(filename, sha)
+    served = safely_served_content(filename)
+    return false if served.nil? || served.empty?
+
+    if Digest::SHA256.hexdigest(served) == sha
+      puts "#{filename} is already current on the release — no metadata rewrite needed"
+      true
+    else
+      false
+    end
+  end
+
+  # The canonical download URL's currently-served bytes; nil when the edge
+  # has no such asset. The download edge lags behind the API on mutations,
+  # so this is a hint, never an authority — matching bytes are always a
+  # correct accept (content is content); absent/stale bytes only mean
+  # "take the mutation path".
+  def served_content(filename)
+    with_transient_retries { @client.get(download_url(filename)) }.to_s
+  rescue Octokit::NotFound
+    nil
+  end
+
+  # served_content that never raises: an unreadable edge just means the
+  # mutation path runs.
+  def safely_served_content(filename)
+    served_content(filename)
+  rescue StandardError
+    nil
+  end
+
+  def download_url(filename)
+    "https://github.com/#{RUNTIME_REPO}/releases/download/#{@tag}/#{filename}"
   end
 
   def generate_manifest(entries)
@@ -385,7 +463,13 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     [match[1], match[2]]
   end
 
-  def perform_upload(release, package, filename, attempts: 4)
+  # The upload retry budget: escalating delays, ~4.5 minutes of patience.
+  # Flat 5 s retries cannot ride out the release backend's propagation
+  # lag (observed 2026-08-03: the upload validator 422d a name for
+  # minutes after the delete committed on the primary).
+  UPLOAD_RETRY_DELAYS = [5, 10, 20, 40, 80, 120].freeze
+
+  def perform_upload(release, package, filename, delays: UPLOAD_RETRY_DELAYS.dup)
     puts "Uploading #{filename}"
     upload_once(release, package, filename)
   rescue Octokit::UnprocessableEntity, Net::WriteTimeout, Net::ReadTimeout,
@@ -399,10 +483,10 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     # asset is still listed.
     return if landed_duplicate?(release, filename, package, e)
 
-    attempts -= 1
-    raise if attempts <= 0
+    delay = delays.shift
+    raise if delay.nil?
 
-    backoff(e, filename, attempts)
+    backoff(e, filename, delay)
     retry
   end
 
@@ -416,23 +500,32 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     true
   end
 
-  # Truthful by content: the release's same-named asset's sha256 vs the
-  # local file's. An asset listed mid-propagation may not serve bytes yet —
-  # an unreadable landed asset proves nothing, so treat it as not landed
-  # and keep backing off.
+  # Truthful by content: the landed asset's sha256 vs the local file's.
+  # Reads the listing's asset URL first, then the canonical download URL
+  # (the listing lags behind the edge on mutations — an asset can serve
+  # bytes while unlisted, and vice versa). Anything unreadable proves
+  # nothing: treat as not landed and keep backing off.
   def landed_with_same_content?(release, filename, package)
-    asset = find_asset(release, filename)
-    return false unless asset
+    landed = landed_content(release, filename)
+    return false if landed.nil? || landed.empty?
 
-    landed = with_transient_retries { @client.get(asset.browser_download_url) }.to_s
     Digest::SHA256.hexdigest(landed) == Digest::SHA256.file(package).hexdigest
   rescue StandardError
     false
   end
 
-  def backoff(error, filename, attempts_left)
-    puts "#{error.class} uploading #{filename}; retrying in 5s (#{attempts_left} attempt(s) left)"
-    sleep 5
+  def landed_content(release, filename)
+    asset = find_asset(release, filename)
+    return with_transient_retries { @client.get(asset.browser_download_url) }.to_s if asset
+
+    served_content(filename)
+  rescue Octokit::NotFound
+    served_content(filename)
+  end
+
+  def backoff(error, filename, delay)
+    puts "#{error.class} uploading #{filename}; retrying in #{delay}s"
+    sleep delay
   end
 
   def upload_once(release, package, filename)
