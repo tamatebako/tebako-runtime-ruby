@@ -25,6 +25,7 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
 # THE POSSIBILITY OF SUCH DAMAGE.
 
+require "fileutils"
 require "open3"
 require "timeout"
 require "tmpdir"
@@ -46,14 +47,15 @@ module TebakoRuntimeBuilder
     autoload :Artifact, File.expand_path("boot_smoke/artifact", __dir__)
     autoload :Run,      File.expand_path("boot_smoke/run", __dir__)
 
-    SCENARIOS = %w[boot stat io bundler locks].freeze
+    SCENARIOS = %w[boot stat io bundler locks native_ext].freeze
     BOOT_TIMEOUT = 60
     IMAGE_SUFFIXES = %w[.tfs .dwarfs].freeze
     # Sidecar markers the artifact set carries next to the executable (the
     # factory's abi facet + era-2 contract card (.contract.yaml) + the
-    # store-layout sha256/origin trust markers): metadata, never the
-    # interpreter.
-    MARKER_SUFFIXES = %w[.abi .sha256 .origin .yaml].freeze
+    # store-layout sha256/origin trust markers + the msys shared build's
+    # <runtime>.dll, the ruby DLL under its unique package name): support
+    # files, never the interpreter.
+    MARKER_SUFFIXES = %w[.abi .sha256 .origin .yaml .dll].freeze
     NON_EXECUTABLE_SUFFIXES = (IMAGE_SUFFIXES + MARKER_SUFFIXES).freeze
     # The child env is REPLACED, not inherited: RUBYOPT carries only the
     # probe and the rubygems/gem variables a host ruby setup would
@@ -95,11 +97,30 @@ module TebakoRuntimeBuilder
         )
       end
 
+      materialize_ruby_dll
       out, err, status = boot(scenario)
       Run.new(scenario: scenario, stdout: out, stderr: err, status: status)
     end
 
     private
+
+    # The msys shared build (issue #40): the exe's PE imports resolve
+    # x64-ucrt-ruby<ABI>.dll in the exe's own directory, but the package
+    # dir holds the DLL under the unique package name (<runtime>.dll --
+    # two same-ABI legs would collide on the PE name). Materialize the
+    # PE-named copy next to the exe before booting, mirroring the store
+    # entry the product's install assembles (exe + image + DLL under the
+    # manifest's install_as name).
+    def materialize_ruby_dll
+      return unless @platform.msys?
+
+      source = "#{executable.sub(/\.exe\z/, "")}.dll"
+      return unless File.file?(source)
+
+      dest = File.join(File.dirname(executable),
+                       TebakoRuntimeBuilder::RubyVersion.new(artifact.ruby_version).msys_dll_name)
+      FileUtils.cp(source, dest) unless File.file?(dest)
+    end
 
     def resolve_executable
       root = @runtime_root.to_s

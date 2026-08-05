@@ -225,7 +225,7 @@ RSpec.describe ReleaseManager do
   def package(name, contents = name)
     @dir.join(name).tap do |path|
       path.write(contents)
-      write_contract_sidecar(path) unless name.end_with?(".tfs", ".abi", ReleaseManager::CONTRACT_SIDECAR_SUFFIX)
+      write_contract_sidecar(path) unless name.end_with?(".tfs", ".dll", ".abi", ReleaseManager::CONTRACT_SIDECAR_SUFFIX)
     end
   end
 
@@ -262,6 +262,51 @@ RSpec.describe ReleaseManager do
 
     expect(entries.size).to eq(1)
     expect(entries.first).not_to have_key(:image)
+  end
+
+  it "folds the sibling .dll into the windows package entry as an additive dll key (issue 40)" do
+    exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-windows-ucrt64.exe")
+    img = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-windows-ucrt64.tfs")
+    dll = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-windows-ucrt64.dll")
+
+    entries = manager.build_manifest_entries([exe, img, dll])
+
+    expect(entries.size).to eq(1)
+    entry = entries.first
+    expect(entry[:filename]).to eq("tebako-runtime-#{SPEC_VERSION}-3.3.7-windows-ucrt64.exe")
+    expect(entry[:dll]).to eq(
+      filename: "tebako-runtime-#{SPEC_VERSION}-3.3.7-windows-ucrt64.dll",
+      install_as: "x64-ucrt-ruby330.dll",
+      sha256: Digest::SHA256.file(dll).hexdigest,
+      size_bytes: dll.size
+    )
+  end
+
+  it "checksummes the windows ruby DLL after its package and image" do
+    exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-windows-ucrt64")
+    img = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-windows-ucrt64.tfs")
+    dll = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-windows-ucrt64.dll")
+    entries = manager.build_manifest_entries([exe, img, dll])
+
+    with_packages do
+      sums = manager.generate_sha256sums(entries).read.lines.map(&:chomp)
+      expect(sums).to eq(
+        [
+          "#{Digest::SHA256.file(exe).hexdigest}  #{exe.basename}",
+          "#{Digest::SHA256.file(img).hexdigest}  #{img.basename}",
+          "#{Digest::SHA256.file(dll).hexdigest}  #{dll.basename}"
+        ]
+      )
+    end
+  end
+
+  it "warns when a windows package lacks its ruby DLL and when a DLL is orphaned" do
+    exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-windows-ucrt64.exe")
+    orphan = package("tebako-runtime-#{SPEC_VERSION}-4.0.6-windows-ucrt64.dll")
+
+    expect { manager.report_missing_packages([exe, orphan]) }
+      .to output(/3\.3\.7-windows-ucrt64 has no ruby DLL.*4\.0\.6-windows-ucrt64\.dll has no matching runtime package/m)
+      .to_stdout
   end
 
   it "keeps pre-image manifest consumers working (existing keys unchanged)" do
@@ -541,10 +586,23 @@ RSpec.describe ReleaseManager do
       ENV["EXPECTED_ENV_MATRIX"] = '[{"host":"windows-2022","container":null,"os":"windows","arch":"x86_64"}]'
       store.assets << FakeAsset.new(1, "tebako-runtime-#{SPEC_VERSION}-3.3.7-windows-ucrt64.exe")
       store.assets << FakeAsset.new(2, "tebako-runtime-#{SPEC_VERSION}-3.3.7-windows-ucrt64.tfs")
+      store.assets << FakeAsset.new(3, "tebako-runtime-#{SPEC_VERSION}-3.3.7-windows-ucrt64.dll")
+      store.assets << FakeAsset.new(4, "SHA256SUMS.txt")
+      store.assets << FakeAsset.new(5, "manifest.json")
+
+      expect { fake_manager.verify_completeness(release) }.not_to raise_error
+    end
+
+    it "fails loud when the windows ruby DLL is missing (issue 40)" do
+      ENV["EXPECTED_ENV_MATRIX"] = '[{"host":"windows-2022","container":null,"os":"windows","arch":"x86_64"}]'
+      store.assets << FakeAsset.new(1, "tebako-runtime-#{SPEC_VERSION}-3.3.7-windows-ucrt64.exe")
+      store.assets << FakeAsset.new(2, "tebako-runtime-#{SPEC_VERSION}-3.3.7-windows-ucrt64.tfs")
       store.assets << FakeAsset.new(3, "SHA256SUMS.txt")
       store.assets << FakeAsset.new(4, "manifest.json")
 
-      expect { fake_manager.verify_completeness(release) }.not_to raise_error
+      expect { fake_manager.verify_completeness(release) }
+        .to raise_error(/incomplete.*1 missing/)
+        .and output(/Missing asset: tebako-runtime-#{SPEC_VERSION}-3\.3\.7-windows-ucrt64\.dll/).to_stdout
     end
 
     it "warns and passes when no expected matrix is available" do

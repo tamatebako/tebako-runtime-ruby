@@ -105,6 +105,10 @@ module BootSmokeProbe
     report("flock_writable") { flock_check }
   end
 
+  def self.native_ext
+    report("load_native_extension") { native_extension_check }
+  end
+
   def self.run
     case ENV.fetch("TEBAKO_BOOT_PROBE", "")
     when "boot" then boot
@@ -112,6 +116,7 @@ module BootSmokeProbe
     when "io" then io
     when "bundler" then bundler
     when "locks" then locks
+    when "native_ext" then native_ext
     else exit 2
     end
     exit 0
@@ -257,6 +262,30 @@ module BootSmokeProbe
       end
     end
     "ex/un"
+  end
+
+  # The image's own dynamic native extension (issue #40, msys): racc's
+  # cparse.so rides the env image as a PE module importing the ruby DLL.
+  # The require extracts the .so to a host path (tebako_fs_dlmap2file) and
+  # LoadLibrary binds its imports against x64-ucrt-ruby<ABI>.dll found
+  # next to the running exe -- the same binding path precompiled gems
+  # take. A pure-ruby fallback would mask an unbindable .so, so the check
+  # asserts the .so itself landed in $LOADED_FEATURES. Off-msys the
+  # runtime's own exts are static and there is nothing to bind.
+  def self.native_extension_check
+    host_os = RbConfig::CONFIG["host_os"]
+    unless host_os =~ /mswin|mingw/
+      raise NotImplementedError, "dynamic extension binding is a windows-runtime check (host_os=#{host_os})"
+    end
+
+    require "racc/cparse"
+    feature = $LOADED_FEATURES.find { |loaded| loaded.end_with?("cparse.so") }
+    unless feature
+      raise "racc/cparse required but no cparse.so in $LOADED_FEATURES " \
+            "(the pure-ruby fallback masked an unbindable extension)"
+    end
+
+    feature
   end
 end
 

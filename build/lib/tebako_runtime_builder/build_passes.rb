@@ -129,6 +129,27 @@ module TebakoRuntimeBuilder
 
     MSYS_FD_IS_TEXT_MARKER = "tfs_fd_is_text"
 
+    # msys shared build (issue #40) ------------------------------------------
+    #
+    # The ruby DLL's export surface: mkexports.rb generates
+    # x64-ucrt-ruby<ABI>.def from libruby-static.a -- the ruby API only.
+    # x64-ucrt-ruby<ABI>.dll also carries the libtfs closure (the SOLIBS
+    # substitution, postconfigure), and the exe's driver binds its
+    # tebako_fs_* calls to the DLL, so the closure's tebako_* definitions
+    # must join the .def. The fragment is derived from the link unit's own
+    # libtfs.a (nm) at prepare time -- never a hand-maintained symbol list.
+    MSYS_DLL_EXPORTS_FRAGMENT = "tebako-dll-exports.def"
+    MSYS_DLL_EXPORTS_ANCHOR = "\t$(Q) $(BOOTSTRAPRUBY_COMMAND) $(srcdir)/win32/mkexports.rb -output=$@ $(LIBRUBY_A)\n"
+    MSYS_DLL_EXPORTS_PATCHED =
+      "#{MSYS_DLL_EXPORTS_ANCHOR}\t$(Q) cat #{MSYS_DLL_EXPORTS_FRAGMENT} >> $@ # tebako patched (issue 40)\n"
+
+    # miniruby resolves tebako_fs_* from the DLL's import library in the
+    # shared build, so its link must wait for $(LIBRUBY) (the import
+    # library is a byproduct of the DLL link). Upstream never needed the
+    # dependency (a plain miniruby references nothing from the DLL).
+    MSYS_MINIRUBY_DEP_ANCHOR = "miniruby$(EXEEXT): config.status $(ALLOBJS) $(ARCHFILE)\n"
+    MSYS_MINIRUBY_DEP_PATCHED = "miniruby$(EXEEXT): config.status $(ALLOBJS) $(ARCHFILE) $(LIBRUBY) # tebako patched (issue 40)\n"
+
     class << self # rubocop:disable Metrics/ClassLength
       def prepare(ostype, ruby_source_dir, deps_lib_dir, ruby_ver, mount_point, cc = "cc") # rubocop:disable Metrics/ParameterLists
         puts "-- Running prepare script"
@@ -148,8 +169,11 @@ module TebakoRuntimeBuilder
         # fills through the wire layout they were written in, and dispatch
         # rb_w32_fd_is_text for libtfs token fds (the constants above:
         # dir.c/file.c/io.c for the io layer, prism_compile.c for the ruby
-        # 3.4+ parser, io.c for the CRLF fd-is-text probe)
-        hotfix_msys!(ruby_source_dir) if platform.msys?
+        # 3.4+ parser, io.c for the CRLF fd-is-text probe). The shared
+        # build (issue #40) adds its own set: the DLL export fragment, the
+        # mkexports rule appending it, and the miniruby import-lib
+        # dependency.
+        hotfix_msys!(ruby_source_dir, deps_lib_dir) if platform.msys?
         build_toolchain_stub(platform, deps_lib_dir, mount_point, cc, rv)
       end
 
@@ -162,8 +186,13 @@ module TebakoRuntimeBuilder
         # (Pass2NonMSysPatch); msys always substitutes (Pass2MSysPatch)
         return unless platform.msys? || rv.ruby33?
 
-        mlibs = TebakoRuntimeBuilder::Mlibs.new(platform, deps_lib_dir).compute(rv, with_compression: false)
-        substitute_config_status!(File.join(ruby_source_dir, "config.status"), platform, mlibs)
+        mlibs_model = TebakoRuntimeBuilder::Mlibs.new(platform, deps_lib_dir)
+        mlibs = mlibs_model.compute(rv, with_compression: false)
+        # The msys shared build (issue #40) substitutes a second list:
+        # SOLIBS feeds the ruby DLL's link (core objects + the libtfs
+        # closure), MAINLIBS the exe/miniruby side.
+        solibs = mlibs_model.compute_solibs(rv) if platform.msys?
+        substitute_config_status!(File.join(ruby_source_dir, "config.status"), platform, mlibs, solibs)
       end
 
       def toolchain(ruby_source_dir, data_src_dir, stash_dir, deps_lib_dir) # rubocop:disable Metrics/AbcSize,Metrics/MethodLength
@@ -255,13 +284,12 @@ module TebakoRuntimeBuilder
       end
 
       def deploy(ruby_ver, stash_dir, data_src_dir, data_pre_dir, data_bin_file, stub_dir, deps_bin_dir, # rubocop:disable Metrics/ParameterLists
-                 ruby_source_dir = nil, runtime_name = nil, mount_point:, embed: true)
+                 mount_point:, embed: true)
         rv = TebakoRuntimeBuilder::RubyVersion.new(ruby_ver)
         platform = TebakoRuntimeBuilder::Platform.new
         TebakoRuntimeBuilder::ImageBuilder.new(platform, rv, stash_dir, data_src_dir, data_pre_dir,
                                                data_bin_file, deps_bin_dir, mount_point: mount_point,
                                                embed: embed).build(stub_dir)
-        create_implib(ruby_source_dir, data_src_dir, runtime_name, rv) if platform.msys?
       end
 
       def finalize(ostype, ruby_source_dir, output, ruby_ver, deps_lib_dir, patchelf = nil) # rubocop:disable Metrics/AbcSize,Metrics/MethodLength,Metrics/ParameterLists
@@ -292,6 +320,7 @@ module TebakoRuntimeBuilder
         run_patchelf(src_name, patchelf)
         TebakoRuntimeBuilder::Stripper.strip_file(src_name, output)
         puts "Created tebako runtime package at \"#{output}\""
+        stage_ruby_dll(rv, ruby_source_dir, output) if platform.msys?
       end
 
       private
@@ -326,13 +355,19 @@ module TebakoRuntimeBuilder
       end
 
       # The msys hot-patch set the prepare pass applies (the constants
-      # above): the dir.c glob_opendir guard and the io.c rb_w32_fd_is_text
-      # dispatch. (The struct stat wire-layout reads are GONE: the released
-      # source carries the pinned tebako_stat ABI — stat64 layout — from
-      # tamatebako/ruby v0.2.13, so there is nothing left to re-read.)
-      def hotfix_msys!(ruby_source_dir)
+      # above): the dir.c glob_opendir guard, the io.c rb_w32_fd_is_text
+      # dispatch, and the shared-build set (issue #40) -- the DLL export
+      # fragment, the mkexports rule appending it, and the miniruby
+      # import-lib dependency. (The struct stat wire-layout reads are GONE:
+      # the released source carries the pinned tebako_stat ABI — stat64
+      # layout — from tamatebako/ruby v0.2.13, so there is nothing left to
+      # re-read.)
+      def hotfix_msys!(ruby_source_dir, deps_lib_dir)
         hotfix_msys_glob_opendir!(File.join(ruby_source_dir, "dir.c"))
         hotfix_msys_fd_is_text!(File.join(ruby_source_dir, "io.c"))
+        write_dll_exports_fragment!(ruby_source_dir, deps_lib_dir)
+        hotfix_msys_dll_exports!(File.join(ruby_source_dir, "cygwin", "GNUmakefile.in"))
+        hotfix_msys_miniruby_dep!(File.join(ruby_source_dir, "common.mk"))
       end
 
       # Guard the dir.c glob_opendir() capacity hint against libtfs dir
@@ -391,7 +426,114 @@ module TebakoRuntimeBuilder
         File.write(io_c, contents.sub(MSYS_FD_IS_TEXT_ANCHOR, MSYS_FD_IS_TEXT_REPLACEMENT))
       end
 
-      def substitute_config_status!(config_status, platform, mlibs) # rubocop:disable Metrics/MethodLength
+      # The DLL export fragment (issue #40): the tebako_* definitions of the
+      # libtfs archive the DLL links (the scoped Rust libtfs.a of the staged
+      # link unit, else the C++ libtfs of the deps provisioning), written as
+      # a .def fragment the mkexports rule appends to the generated
+      # x64-ucrt-ruby<ABI>.def. Derived by nm at prepare time -- a hand list
+      # would drift against the link unit silently. Functions go bare, data
+      # symbols with the DATA keyword (PE imports of data need it).
+      def write_dll_exports_fragment!(ruby_source_dir, deps_lib_dir) # rubocop:disable Metrics/MethodLength
+        archive = dll_export_source_archive(deps_lib_dir)
+        out = TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["nm", "-g", "--defined-only", archive])
+        lines = out.lines.filter_map do |line|
+          fields = line.split
+          next unless fields.length >= 3
+
+          type = fields[-2]
+          # COFF x64 names carry no prefix; the leading underscore is the
+          # i386 PE (and mach-O) decoration -- normalize before matching
+          name = fields[-1].delete_prefix("_")
+          next unless name.start_with?("tebako_")
+
+          case type.upcase
+          when "T", "W" then name
+          when "D", "B", "C", "R", "S", "V" then "#{name} DATA"
+          end
+        end.uniq.sort
+        if lines.empty?
+          raise TebakoRuntimeBuilder::Error.new(
+            "#{archive} defines no tebako_* symbols -- the link unit drifted; " \
+            "the ruby DLL would export no tebako_fs_* surface (issue 40)", 130
+          )
+        end
+
+        path = File.join(ruby_source_dir, MSYS_DLL_EXPORTS_FRAGMENT)
+        puts "   ... writing the DLL export fragment (#{lines.length} tebako_* symbols from #{File.basename(archive)})"
+        File.write(path, "#{lines.join("\n")}\n")
+      end
+
+      # The libtfs archive whose tebako_* surface the DLL exports: the
+      # staged Rust link unit's (TEBAKO_RUST_LIBDIR, normalized like
+      # Mlibs#rust_libdir -- the workflow passes a Windows-form path), else
+      # the deps provisioning's C++ libtfs.a (the v1 link).
+      def dll_export_source_archive(deps_lib_dir)
+        rust_libdir = ENV.fetch("TEBAKO_RUST_LIBDIR", nil)&.tr('\\', "/")
+        candidates = []
+        candidates << File.join(rust_libdir, "libtfs.a") if rust_libdir && !rust_libdir.empty?
+        candidates << File.join(deps_lib_dir, "libtfs.a")
+        archive = candidates.find { |path| File.file?(path) }
+        return archive if archive
+
+        raise TebakoRuntimeBuilder::Error.new(
+          "no libtfs.a to derive the DLL export fragment from (tried: #{candidates.join(", ")}) -- " \
+          "stage the link unit (TEBAKO_RUST_LIBDIR) or let the libtfs provisioning deploy", 112
+        )
+      end
+
+      # Append the fragment to the mkexports .def generation rule in
+      # cygwin/GNUmakefile.in (MSYS_DLL_EXPORTS_* above). Same shape as the
+      # other msys hot-patches: idempotent on re-run (the pass-2 overlay
+      # replaces GNUmakefile.in and prepare re-runs), loud when the anchor
+      # drifts (the released pre-patched source changed).
+      def hotfix_msys_dll_exports!(gnu_makefile_in) # rubocop:disable Metrics/MethodLength
+        unless File.exist?(gnu_makefile_in)
+          raise TebakoRuntimeBuilder::Error.new("Could not patch #{gnu_makefile_in} because it does not exist.", 107)
+        end
+
+        contents = File.read(gnu_makefile_in)
+        return if contents.include?(MSYS_DLL_EXPORTS_FRAGMENT)
+
+        anchor_count = contents.scan(MSYS_DLL_EXPORTS_ANCHOR).length
+        unless anchor_count == 1
+          raise TebakoRuntimeBuilder::Error.new(
+            "#{gnu_makefile_in}: expected exactly one mkexports rule anchor, found #{anchor_count} -- " \
+            "the pre-patched GNUmakefile.in changed; revisit the msys DLL exports hot-patch (issue 40)", 130
+          )
+        end
+
+        puts "   ... appending the tebako_* export fragment to the mkexports rule (msys, issue 40)"
+        File.write(gnu_makefile_in, contents.sub(MSYS_DLL_EXPORTS_ANCHOR, MSYS_DLL_EXPORTS_PATCHED))
+      end
+
+      # Make miniruby's link depend on $(LIBRUBY) (MSYS_MINIRUBY_DEP_*
+      # above): in the shared build miniruby binds tebako_fs_* from the
+      # DLL's import library, a byproduct of the DLL link -- without the
+      # dependency a parallel make can link miniruby first. Idempotent,
+      # anchored, loud on drift (same contract as the other hot-patches;
+      # common.mk is identical in both pass trees, so the pass-2 overlay
+      # leaves the patch in place and the re-run is a no-op).
+      def hotfix_msys_miniruby_dep!(common_mk) # rubocop:disable Metrics/MethodLength
+        unless File.exist?(common_mk)
+          raise TebakoRuntimeBuilder::Error.new("Could not patch #{common_mk} because it does not exist.", 107)
+        end
+
+        contents = File.read(common_mk)
+        return if contents.include?(MSYS_MINIRUBY_DEP_PATCHED)
+
+        anchor_count = contents.scan(MSYS_MINIRUBY_DEP_ANCHOR).length
+        unless anchor_count == 1
+          raise TebakoRuntimeBuilder::Error.new(
+            "#{common_mk}: expected exactly one miniruby dependency anchor, found #{anchor_count} -- " \
+            "the pre-patched common.mk changed; revisit the msys miniruby dependency hot-patch (issue 40)", 130
+          )
+        end
+
+        puts "   ... making miniruby depend on the ruby DLL import library (msys, issue 40)"
+        File.write(common_mk, contents.sub(MSYS_MINIRUBY_DEP_ANCHOR, MSYS_MINIRUBY_DEP_PATCHED))
+      end
+
+      def substitute_config_status!(config_status, platform, mlibs, solibs = nil) # rubocop:disable Metrics/MethodLength
         unless File.exist?(config_status)
           raise TebakoRuntimeBuilder::Error.new("Could not patch #{config_status} because it does not exist.",
                                                 107)
@@ -408,10 +550,22 @@ module TebakoRuntimeBuilder
         substituted = contents.include?(subst) || config_status_patterns(platform).any? do |pattern|
           !contents.sub!(pattern, subst).nil?
         end
-        File.write(config_status, contents)
-        return if substituted
+        puts "Warning: no config.status MAINLIBS pattern matched; the substitution did not happen" unless substituted
 
-        puts "Warning: no config.status MAINLIBS pattern matched; the substitution did not happen"
+        # The msys shared build (issue #40): SOLIBS feeds the ruby DLL's
+        # link. configure writes S["SOLIBS"]="$(MAINLIBS)"; the substitution
+        # rewrites the line wholesale (key-anchored, idempotent) so the
+        # closure never lands in the exe side's MAINLIBS by reference.
+        substitute_solibs!(contents, solibs) if solibs
+        File.write(config_status, contents)
+        nil
+      end
+
+      def substitute_solibs!(contents, solibs)
+        puts "   ... substituting SOLIBS (the ruby DLL closure, issue 40)"
+        subst = "S[\"SOLIBS\"]=\"#{solibs}\""
+        done = contents.include?(subst) || !contents.sub!(%r{^S\["SOLIBS"\]=.*$}, subst).nil?
+        puts "Warning: no config.status SOLIBS line matched; the DLL closure substitution did not happen" unless done
       end
 
       def config_status_patterns(platform)
@@ -499,28 +653,32 @@ module TebakoRuntimeBuilder
         replaced
       end
 
-      # msys only: the import library the packaged mkmf-driven gem extensions
-      # link against (gem Packager.create_implib). tebako.def was generated
-      # by the pass-1 build's dlltool exp rule; the DllMain entry is dropped
-      # from the per-package def file.
-      def create_implib(src_dir, data_src_dir, app_name, ruby_ver)
-        a_name = File.basename(app_name, ".*")
-        puts "   ... creating Windows import library for #{a_name}.exe"
-        def_file = create_def(src_dir, a_name)
-        params = ["dlltool", "-d", def_file, "-D", "#{a_name}.exe", "--output-lib",
-                  File.join(data_src_dir, "lib", "libx64-ucrt-ruby#{ruby_ver.lib_version}.a")]
-        TebakoRuntimeBuilder::BuildHelpers.run_with_capture(params)
-      end
-
-      def create_def(src_dir, app_name)
-        def_file = File.join(src_dir, "#{app_name}.def")
-        File.open(def_file, "w") do |file|
-          file.puts "LIBRARY #{app_name}.exe"
-          File.readlines(File.join(src_dir, "tebako.def")).each do |line|
-            file.puts line unless line.include?("DllMain")
-          end
+      # msys only (issue #40): stage the ruby DLL the shared build just
+      # linked next to the runtime executable, under the PACKAGE's name
+      # (<runtime>.dll -- unique per leg: two same-ABI legs share the PE
+      # name x64-ucrt-ruby<ABI>.dll and would collide in the merged release
+      # workspace). The PE-named file the exe's imports resolve is
+      # materialized next to the exe by whoever runs it (the boot smoke
+      # does it in-leg; the store entry does it at install time -- the
+      # manifest's dll.install_as flows the name). Exactly one DLL must
+      # exist in the build tree -- none means the --enable-shared build
+      # regressed, several means a stale tree; a differently named one
+      # means ruby configure's RUBY_SO_NAME moved (update
+      # RubyVersion#msys_dll_name, its single owner in the factory).
+      def stage_ruby_dll(ruby_ver, ruby_source_dir, output) # rubocop:disable Metrics/MethodLength
+        candidates = Dir.glob(File.join(ruby_source_dir, "x64-*-ruby*.dll"))
+        expected = ruby_ver.msys_dll_name
+        unless candidates.length == 1 && File.basename(candidates.first) == expected
+          raise TebakoRuntimeBuilder::Error.new(
+            "expected the shared build's #{expected} under #{ruby_source_dir}, found " \
+            "#{candidates.map { |p| File.basename(p) }.join(", ").then { |s| s.empty? ? "no ruby DLL" : s }} " \
+            "(issue 40)", 130
+          )
         end
-        def_file
+
+        dest = "#{output.sub(/\.exe\z/, "")}.dll"
+        TebakoRuntimeBuilder::Stripper.strip_file(candidates.first, dest)
+        puts "Created tebako runtime ruby DLL at \"#{dest}\" (installs as #{expected})"
       end
 
       # With the common.mk exts.mk/extinit.c dependency present from the

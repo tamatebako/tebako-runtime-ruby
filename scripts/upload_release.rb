@@ -83,13 +83,25 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   # one-per-package so existing consumers (which match on ruby_version /
   # platform / filename) are unaffected, and a .tfs file never becomes
   # a top-level entry of its own. The additive `contract_version` key
-  # (roadmap 45) follows the same compat rule.
+  # (roadmap 45) follows the same compat rule, and so does the windows
+  # ruby DLL (<package>.dll, issue 40) folded as `dll` with the PE name
+  # the store entry materializes (`install_as`).
   def build_manifest_entries(packages)
-    executables, images = packages.partition { |package| !image_file?(package) }
+    executables, images, dlls = partition_packages(packages)
     executables.sort_by { |package| package.basename.to_s }.map do |package|
       image = images.find { |candidate| candidate.basename.to_s == image_name_for(package) }
-      manifest_entry(package, image)
+      dll = dlls.find { |candidate| candidate.basename.to_s == dll_name_for(package) }
+      manifest_entry(package, image, dll)
     end
+  end
+
+  # Three-way split: executables (manifest entries of their own), the
+  # .tfs filesystem images and the windows ruby DLLs (both facets of their
+  # package's entry). A DLL never parses as an executable.
+  def partition_packages(packages)
+    dlls, rest = packages.partition { |package| dll_file?(package) }
+    images, executables = rest.partition { |package| image_file?(package) }
+    [executables, images, dlls]
   end
 
   # The per-platform manifest merge: the previous manifest's entries for
@@ -218,8 +230,8 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     section
   end
 
-  # Both the executable and its filesystem image are checksummed; each image
-  # line directly follows its package's line.
+  # The executable, its filesystem image and (windows) its ruby DLL are
+  # checksummed; each facet line directly follows its package's line.
   def generate_sha256sums(entries)
     path = Pathname.new("SHA256SUMS.txt")
     path.write("#{sha256sum_lines(entries).join("\n")}\n")
@@ -231,6 +243,8 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
       lines = ["#{entry[:sha256]}  #{entry[:filename]}"]
       image = entry[:image]
       lines << "#{image[:sha256]}  #{image[:filename]}" if image
+      dll = entry[:dll]
+      lines << "#{dll[:sha256]}  #{dll[:filename]}" if dll
       lines
     end
   end
@@ -257,7 +271,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     { "windows" => [], "macos" => [], "linux-gnu" => [], "linux-musl" => [] }
   end
 
-  def manifest_entry(package, image = nil)
+  def manifest_entry(package, image = nil, dll = nil)
     ruby_version, platform = parse_package_filename(package.basename.to_s)
     contract = contract_sidecar(package)
     filename = package.basename.to_s
@@ -265,6 +279,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     # The idempotent upload skip reads these (same name + same sha = kept).
     current_shas[filename] = sha256
     current_shas[image_name_for(package)] = Digest::SHA256.file(image).hexdigest if image
+    current_shas[dll_name_for(package)] = Digest::SHA256.file(dll).hexdigest if dll
     {
       tebako_version: @version,
       contract_era: contract.fetch("contract_era"),
@@ -284,6 +299,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
       sidecar = Pathname.new("#{package.sub(%r{\.exe\z}, '')}.abi")
       entry[:abi] = sidecar.read.strip if sidecar.file?
       entry[:image] = image_entry(image) if image
+      entry[:dll] = dll_entry(dll, ruby_version) if dll
     end
   end
 
@@ -329,12 +345,34 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     }
   end
 
+  # The additive ruby-DLL metadata (issue 40, windows): the asset rides
+  # under the package's unique name; `install_as` is the PE name the store
+  # entry materializes next to the exe so the exe's imports resolve (the
+  # single owner of that name is RubyVersion#msys_dll_name -- consumers
+  # ignore the `dll` key in the compat window).
+  def dll_entry(dll, ruby_version)
+    {
+      filename: dll.basename.to_s,
+      install_as: TebakoRuntimeBuilder::RubyVersion.new(ruby_version).msys_dll_name,
+      sha256: Digest::SHA256.file(dll).hexdigest,
+      size_bytes: dll.size
+    }
+  end
+
   def image_file?(package)
     package.basename.to_s.end_with?(".tfs")
   end
 
+  def dll_file?(package)
+    package.basename.to_s.end_with?(".dll")
+  end
+
   def image_name_for(package)
     "#{package.basename.to_s.sub(/\.exe\z/, "")}.tfs"
+  end
+
+  def dll_name_for(package)
+    "#{package.basename.to_s.sub(/\.exe\z/, "")}.dll"
   end
 
   def parse_package_filename(filename)
@@ -455,16 +493,18 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   end
 
   def report_missing_packages(packages)
-    executables, images = package_names(packages)
+    executables, images, dlls = package_names(packages)
     report_missing_executables(executables)
     report_image_gaps(executables, images)
+    report_dll_gaps(executables, dlls)
   end
 
   def package_names(packages)
-    executables, images = packages.partition { |package| !image_file?(package) }
+    executables, images, dlls = partition_packages(packages)
     [
       executables.map { |package| package.basename.to_s.sub(/\.exe\z/, "") },
-      images.map { |package| package.basename.to_s.sub(/\.tfs\z/, "") }
+      images.map { |package| package.basename.to_s.sub(/\.tfs\z/, "") },
+      dlls.map { |package| package.basename.to_s.sub(/\.dll\z/, "") }
     ]
   end
 
@@ -511,7 +551,24 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     packages = expected_package_names
     return [] if packages.empty?
 
-    packages + packages.map { |name| "#{name}.tfs" } + %w[SHA256SUMS.txt manifest.json]
+    packages + packages.map { |name| "#{name}.tfs" } +
+      packages.select { |name| name.include?("windows") }.map { |name| "#{name}.dll" } +
+      %w[SHA256SUMS.txt manifest.json]
+  end
+
+  # The windows legs ship the ruby DLL as a third artifact (issue 40): a
+  # windows executable without its DLL cannot load any native extension,
+  # and an unowned DLL means a leg's upload never landed.
+  def report_dll_gaps(executables, dlls)
+    windows = executables.select { |name| name.include?("windows") }
+    (windows - dlls).sort.each do |name|
+      puts "::warning::Runtime package #{name} has no ruby DLL (#{name}.dll); " \
+           "the windows runtime cannot load native extensions without it (issue 40)"
+    end
+    (dlls - executables).sort.each do |name|
+      puts "::warning::Ruby DLL #{name}.dll has no matching runtime package; " \
+           "it is uploaded but carries no manifest entry"
+    end
   end
 
   def report_image_gaps(executables, images)

@@ -74,7 +74,11 @@ permissions:
   packages: write
 
 env:
-  CACHE_VER: 2
+  # The .build prefix cache's manual escape hatch: bump when the build
+  # recipe changes shape under an unchanged source tarball (the key carries
+  # only the tarball's sha256). 3: the msys --enable-shared rearrangement
+  # (issue 40) — a stamp-restored tree would keep the static configuration.
+  CACHE_VER: 3
   VERBOSE: no
   RUNTIME_REPO: tamatebako/tebako-runtime-ruby
 
@@ -487,8 +491,10 @@ jobs:
 
       # The build emits TWO artifacts per leg since item 30: the runtime
       # executable and its filesystem image (<runtime>.tfs, the layout
-      # tree in DwarFS form, writer defaults). Fail the leg loudly when
-      # either is missing rather than discovering it at release assembly.
+      # tree in DwarFS form, writer defaults) -- THREE on windows since
+      # issue 40 (<runtime>.dll, the shared libruby the exe imports).
+      # Fail the leg loudly when either is missing rather than discovering
+      # it at release assembly.
       - name: Verify runtime packages
         shell: bash
         run: |
@@ -502,6 +508,26 @@ jobs:
           img="runtime-packages/$runtime.tfs"
           test -s "$img" || { echo "::error::missing runtime filesystem image $img"; exit 1; }
           ls -l "$exe" "$img"
+
+      # Issue 40: the shared-build artifact set -- the exe must import the
+      # ruby DLL by its PE name and the DLL must export the tebako_fs_*
+      # surface (the mkexports def plus the appended tebako_* fragment),
+      # the two facts the --disable-shared build failed.
+      - name: Verify the ruby DLL artifact (windows)
+        if: matrix.env.os == 'windows'
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          runtime="tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
+          exe="runtime-packages/$runtime"
+          [ -s "$exe" ] || exe="$exe.exe"
+          dll="runtime-packages/$runtime.dll"
+          test -s "$dll" || { echo "::error::missing ruby DLL $dll (the --enable-shared msys build, issue 40)"; exit 1; }
+          objdump -p "$exe" | grep -F "DLL Name: x64-ucrt-ruby" \
+            || { echo "::error::$exe imports no x64-ucrt-ruby*.dll (issue 40)"; exit 1; }
+          objdump -p "$dll" | grep -F "tebako_fs_mount" \
+            || { echo "::error::$dll exports no tebako_fs_* surface (the export fragment did not land, issue 40)"; exit 1; }
+          echo "ruby DLL wired: $(basename "$exe") imports it, it exports tebako_fs_*"
 
       # Spec 18 S51 (C4): the nm provenance assert — the exe's tebako_main
       # must resolve from the fs TU (the CMake-built libtebako-fs.a),
@@ -608,7 +634,14 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: runtime-packages-${{ matrix.env.os }}-${{ matrix.env.arch }}-${{ matrix.ruby.version }}
-          path: runtime-packages
+          # The boot smoke materializes the PE-named ruby DLL copy
+          # (x64-ucrt-ruby<ABI>.dll) next to the exe; it never leaves the
+          # leg -- the release carries the DLL under the unique package
+          # name (<runtime>.dll), so two same-ABI legs never collide in
+          # the merged publish workspace (issue 40).
+          path: |
+            runtime-packages
+            !runtime-packages/x64-*-ruby*.dll
           retention-days: 1
 
   publish:
