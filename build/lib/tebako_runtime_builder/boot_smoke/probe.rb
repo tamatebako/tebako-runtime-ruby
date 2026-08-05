@@ -66,6 +66,7 @@ module BootSmokeProbe
 
   def self.boot
     report("ruby_version") { RUBY_VERSION }
+    report("contract_version") { contract_version_check }
   end
 
   def self.stat
@@ -81,10 +82,8 @@ module BootSmokeProbe
   def self.io
     report("read_image_file") { File.open(STUB) { |io| io.readline.strip } }
     report("read_stdlib_files") { read_stdlib_check }
-    report("load_path_default_gem") do
-      require "fileutils"
-      defined?(FileUtils::VERSION) ? FileUtils::VERSION : "loaded"
-    end
+    report("load_path_default_gem") { load_path_default_gem_check }
+    report("copy_stream") { copy_stream_check }
     report("layout_yaml") { layout_yaml_check }
   end
 
@@ -106,6 +105,7 @@ module BootSmokeProbe
   end
 
   def self.native_ext
+    report("require_openssl") { openssl_check }
     report("load_native_extension") { native_extension_check }
   end
 
@@ -120,6 +120,34 @@ module BootSmokeProbe
     else exit 2
     end
     exit 0
+  end
+
+  # The runtime is authoritative for the bootstrap<->runtime contract it
+  # speaks (roadmap 45): the fs-TU's tebako_main shim exports the linked
+  # driver's compiled-in tebako_driver_contract_version() into the
+  # environment at boot. The release pipeline emits contract.yml's value
+  # into the manifest entry -- the spec pins the two to agreement, so a
+  # stale link unit carrying an older driver can never ship under a
+  # mis-declared contract_version (the corrupt-manifest incident class).
+  # An unset variable also exposes a shadowed tebako_main link (the S51
+  # provenance class): the toolchain stub exports nothing.
+  def self.contract_version_check
+    ENV.fetch("TEBAKO_CONTRACT_VERSION") do
+      raise "TEBAKO_CONTRACT_VERSION is unset inside the runtime -- the fs-TU tebako_main shim did not " \
+            "export it (a pre-roadmap-45 factory build, or a shadowed tebako_main link)"
+    end
+  end
+
+  # A native extension must load on EVERY leg (owner directive): openssl
+  # rides the runtime's static extension set on POSIX, so the require
+  # binds there today; on windows the same require is the issue-#40
+  # canary -- it binds against the shipped ruby DLL once the shared
+  # build lands. The probe only senses (ok/fail); the spec compares the
+  # state against the leg's recorded expectation
+  # (TEBAKO_SMOKE_EXPECT_OPENSSL) and fails on any drift, either way.
+  def self.openssl_check
+    require "openssl"
+    OpenSSL::OPENSSL_VERSION
   end
 
   def self.stat_check
@@ -155,6 +183,42 @@ module BootSmokeProbe
   def self.stdlib_file_read_size(api, name)
     path = File.join(MOUNT_POINT, "lib", "ruby", api, name)
     [File.size(path), File.binread(path).bytesize, File.binread(path, 16).unpack1("H*")]
+  end
+
+  # The spec-17 smoke form's core assertion: the interpreter EXECUTES
+  # code from the mount. The require resolves through $LOAD_PATH entries
+  # inside the memfs and runs the file it finds there -- the detail is
+  # the resolved feature path, which the spec asserts lives under the
+  # mount point (a host-resolved stdlib would prove nothing about the
+  # image).
+  def self.load_path_default_gem_check
+    require "fileutils"
+    feature = $LOADED_FEATURES.find { |loaded| loaded.end_with?("/fileutils.rb") }
+    raise "fileutils required but no fileutils.rb in $LOADED_FEATURES" unless feature
+
+    feature
+  end
+
+  # The deploy direction (image -> host): ruby's io.c zero-copy path
+  # (copy_file_range on linux, fcopyfile on macOS) must degrade to plain
+  # read/write on a memfs fd. The unguarded EBADF escapes only in a real
+  # run -- the 0.16.2 deploy-time incident; the zero-copy guard landed in
+  # tamatebako/ruby v0.2.15. A byte-exact copy is the only acceptable
+  # outcome.
+  def self.copy_stream_check
+    require "tmpdir"
+    Dir.mktmpdir do |dir|
+      dst = File.join(dir, "copy-stream.out")
+      IO.copy_stream(STUB, dst)
+      expected = File.binread(STUB)
+      copied = File.binread(dst)
+      unless copied.bytesize == expected.bytesize
+        raise "copy_stream copied #{copied.bytesize} of #{expected.bytesize} bytes"
+      end
+      raise "copy_stream content mismatch (deploy would ship corrupt files)" unless copied == expected
+
+      "bytes=#{copied.bytesize}"
+    end
   end
 
   # The env image's own contract declaration (spec 18 C3/S17): the image

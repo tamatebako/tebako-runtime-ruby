@@ -36,4 +36,31 @@ RSpec.describe "build-platform reusable workflow" do
     download = publish.fetch("steps").find { |step| step["name"] == "Download this platform's runtime packages" }
     expect(download.dig("with", "pattern")).to eq("runtime-packages-${{ inputs.platform }}-*")
   end
+
+  # The boot smoke gates the upload (owner directive: a broken runtime
+  # fails its own pipeline, never ships): every leg runs a boot-smoke step
+  # AFTER its build and BEFORE the artifact upload, and a red step skips
+  # the upload. Locked structurally so a workflow edit can never silently
+  # un-gate the upload.
+  it "gates the artifact upload behind a boot-smoke step on every leg" do
+    steps = workflow.fetch("jobs").fetch("build").fetch("steps")
+    names = steps.map { |step| step["name"].to_s }
+    smoke_indexes = names.each_index.select { |i| names[i].start_with?("Boot-smoke the fresh runtime") }
+    upload_index = names.index("Upload runtime package")
+    expect(smoke_indexes).not_to be_empty
+    expect(upload_index).not_to be_nil
+    expect(smoke_indexes.max).to be < upload_index
+  end
+
+  # The openssl native-extension canary compares the probed state against
+  # the expectation recorded per leg (issue 40 tripwire): every boot-smoke
+  # step must carry the record.
+  it "records the openssl canary expectation on every boot-smoke step" do
+    steps = workflow.fetch("jobs").fetch("build").fetch("steps")
+    smoke_steps = steps.select { |step| step["name"].to_s.start_with?("Boot-smoke the fresh runtime") }
+    expect(smoke_steps).not_to be_empty
+    smoke_steps.each do |step|
+      expect(step.dig("env", "TEBAKO_SMOKE_EXPECT_OPENSSL")).to(satisfy { |value| %w[ok fail].include?(value) })
+    end
+  end
 end
