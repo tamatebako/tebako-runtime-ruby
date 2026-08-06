@@ -308,7 +308,7 @@ set (TGD ${DATA_SRC_DIR}/lib/ruby/gems/${RUBY_API_VER})
 # keep it equal to the current patch literals.
 if(NOT DEFINED FS_MOUNT_POINT)
   if(${IS_MSYS})
-    set(FS_MOUNT_POINT "A:/t")
+    set(FS_MOUNT_POINT "A:/__tfs__")
   else(${IS_MSYS})
     set(FS_MOUNT_POINT "/__tfs__")
   endif(${IS_MSYS})

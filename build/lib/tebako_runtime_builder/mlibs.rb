@@ -205,13 +205,16 @@ module TebakoRuntimeBuilder
     # the DLL's objects: a miniruby -> DLL edge would be a dependency
     # cycle).
     #
-    # The v2 (Rust driver) list carries NO libtebako-fs.a at all: the
-    # driver archive is linked DIRECTLY -- its own tebako_main carries the
-    # miniruby argv0 pass-through by design (ffi.rs), and any stub member
-    # collides with the driver's own definitions (the ld multiple-definition
+    # The v2 (Rust driver) stub entry is the whole-archive MINIMAL stub:
+    # main.c references tebako_main and the driver's own tebako_main is NOT
+    # a C export (ffi.rs: no #[no_mangle] -- "NOT a C export ... the symbol
+    # belongs to the runtime factory's generated fs TU", so the archive
+    # holds only the mangled name and C code cannot bind it). The minimal
+    # stub provides exactly that one symbol and nothing else, so nothing in
+    # it can collide with the driver archive (the ld multiple-definition
     # failures: first the compat getters, then tebako_mount_point). The v1
-    # (C++ driver) list keeps the whole-archive stub (its tebako_main +
-    # compat getters are the only definitions in that link).
+    # (C++ driver) list's whole-archive stub is the FULL (weak) one -- the
+    # only tebako definitions in that link.
     def compute_minilibs(ruby_ver)
       libraries = ["-Wl,--start-group"] +
                   msys_miniruby_stub +
@@ -294,7 +297,7 @@ module TebakoRuntimeBuilder
     # context only when driver and libtfs.a share one link (the static
     # exe's shape); split across two PE modules the driver mounts into the
     # exe-side context while ruby's io routing reads the DLL's empty one
-    # -- A:/t falls through to the host and touching the unmapped A: drive
+    # -- A:/__tfs__ falls through to the host and touching the unmapped A: drive
     # hangs the process silently (proven on the 3.3.12/4.0.6 legs).
     def msys_libraries(ruby_ver, with_compression)
       libraries = with_compression ? ["-Wl,-Bstatic"] : []
@@ -327,12 +330,15 @@ module TebakoRuntimeBuilder
       end
     end
 
-    # miniruby's stub entry: the whole-archive stub in the v1 link (the
-    # only tebako definitions there), NOTHING in the v2 one -- miniruby
-    # links the driver archive directly (its tebako_main carries the
-    # miniruby pass-through; a stub member would duplicate it).
+    # miniruby's stub entry: the whole-archive stub in BOTH links -- the
+    # FULL (weak) one in the v1 (C++ driver) link, the MINIMAL one
+    # (tebako_main only) in the v2 (Rust driver) link. The driver's own
+    # tebako_main is not a C export (no #[no_mangle] in ffi.rs), so the
+    # stub is the only C-visible provider of it; the minimal content (v2)
+    # is what keeps the stub's pull collision-free against the driver
+    # archive.
     def msys_miniruby_stub
-      rust_libdir ? [] : ["-Wl,--push-state,--whole-archive -l:libtebako-fs.a -Wl,--pop-state"]
+      ["-Wl,--push-state,--whole-archive -l:libtebako-fs.a -Wl,--pop-state"]
     end
 
     # The closure archives that ride the DLL: the v2 scoped libtfs.a +

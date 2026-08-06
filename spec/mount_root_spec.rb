@@ -32,7 +32,7 @@ RSpec.describe TebakoRuntimeBuilder::MountRoot do
   end
 
   it "passes the msys drive-letter root form through unchanged" do
-    expect(described_class.new(make_tarball(manifest: "A:/t\n")).read).to eq("A:/t")
+    expect(described_class.new(make_tarball(manifest: "A:/__tfs__\n")).read).to eq("A:/__tfs__")
   end
 
   it "refuses a tarball without the manifest by name, with exit 132" do

@@ -96,7 +96,7 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
       write_msys_source_fixtures(ruby_src)
       write_libtfs_fixture(deps_lib_dir)
       expect do
-        described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc")
+        described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tfs__", "cc")
       end.not_to raise_error
       makefile_in = File.read(File.join(ruby_src, "template", "Makefile.in"))
       expect(makefile_in).to include("MAINLIBS = @MAINLIBS@")
@@ -109,7 +109,7 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
     before do
       write_msys_source_fixtures(ruby_src)
       write_libtfs_fixture(deps_lib_dir)
-      described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc")
+      described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tfs__", "cc")
     end
 
     it "writes the DLL export fragment from the libtfs archive (functions bare, data marked)" do
@@ -133,7 +133,7 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
 
     it "is idempotent across the msys pass-2 overlay prepare re-run" do
       expect do
-        described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc")
+        described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tfs__", "cc")
       end.not_to raise_error
       gnu_makefile_in = File.read(File.join(ruby_src, "cygwin", "GNUmakefile.in"))
       expect(gnu_makefile_in.scan("tebako-dll-exports.def").length).to eq(1)
@@ -143,19 +143,19 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
 
     it "fails loudly when the mkexports anchor drifted" do
       File.write(File.join(ruby_src, "cygwin", "GNUmakefile.in"), "no mkexports rule here\n")
-      expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc") }
+      expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tfs__", "cc") }
         .to raise_error(TebakoRuntimeBuilder::Error, /mkexports rule anchor/)
     end
 
     it "fails loudly when the miniruby recipe anchor drifted" do
       File.write(File.join(ruby_src, "template", "Makefile.in"), "no miniruby recipe here\n")
-      expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc") }
+      expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tfs__", "cc") }
         .to raise_error(TebakoRuntimeBuilder::Error, /miniruby recipe anchor/)
     end
 
     it "fails loudly when the libtfs archive defines no tebako_* symbols" do
       FileUtils.rm(File.join(deps_lib_dir, "libtfs.a"))
-      expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc") }
+      expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tfs__", "cc") }
         .to raise_error(TebakoRuntimeBuilder::Error, /no libtfs\/driver archive to derive the DLL export fragment/)
     end
 
@@ -174,7 +174,7 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
         prev = ENV.fetch("TEBAKO_RUST_LIBDIR", nil)
         ENV["TEBAKO_RUST_LIBDIR"] = link_unit
         begin
-          described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc")
+          described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tfs__", "cc")
         ensure
           prev.nil? ? ENV.delete("TEBAKO_RUST_LIBDIR") : ENV["TEBAKO_RUST_LIBDIR"] = prev
         end
@@ -206,7 +206,7 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
     end
 
     it "guards the nfiles capacity hint against libtfs dir handles" do
-      described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc")
+      described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tfs__", "cc")
 
       contents = File.read(dir_c)
       expect(contents).to include("!tebako_fs_dir_is_embedded((tebako_dir_t) dirp) /* tebako patch */ && " \
@@ -215,22 +215,22 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
     end
 
     it "is idempotent across the msys pass-2 overlay prepare re-run" do
-      described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc")
+      described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tfs__", "cc")
       expect do
-        described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc")
+        described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tfs__", "cc")
       end.not_to raise_error
       expect(File.read(dir_c).scan("dirp->nfiles").length).to eq(1)
     end
 
     it "fails loudly when the anchor is absent (the pre-patched tree changed)" do
       File.write(dir_c, "#ifdef _WIN32\n        if ((capacity = 16) > 0) {\n#endif\n")
-      expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc") }
+      expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tfs__", "cc") }
         .to raise_error(TebakoRuntimeBuilder::Error, /capacity-hint anchor/)
     end
 
     it "fails when dir.c does not exist" do
       FileUtils.rm(dir_c)
-      expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc") }
+      expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tfs__", "cc") }
         .to raise_error(TebakoRuntimeBuilder::Error, /does not exist/)
     end
   end
