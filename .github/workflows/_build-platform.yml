@@ -256,6 +256,22 @@ jobs:
           repository: tamatebako/dwarfs-rs
           path: dwarfs-rs
           submodules: recursive
+      # The product repo's contract tests dev-depend on limnifs-write via a
+      # sibling path (spec 20, tebako-rs tests/contract ->
+      # ../../../../limnifs/limnifs/limnifs-write): EVERY cargo invocation
+      # on the tebako-rs workspace (the rust-cache metadata probe included)
+      # fails without it. The expected location is a "limnifs" directory
+      # holding the limnifs/limnifs repo beside the workspace (the musl
+      # container's /mnt maps to the same host dir). Clone it until
+      # tebako-rs ships its own answer (a release pin or an in-repo dep).
+      - name: Checkout limnifs (contract-tests sibling path dep)
+        shell: bash
+        run: |
+          set -euo pipefail
+          sibling="$(pwd)/../limnifs"
+          mkdir -p "$sibling"
+          [ -d "$sibling/limnifs/.git" ] || git clone --quiet --depth 1 https://github.com/limnifs/limnifs "$sibling/limnifs"
+          test -f "$sibling/limnifs/limnifs-write/Cargo.toml"
       - uses: dtolnay/rust-toolchain@e43eeffd51aefeea929f4ea14e09fd077153e788 # 1.94.1
         if: matrix.env.os == 'macos'
       # The warmers below key on (os, arch[, the vcpkg closure hash]) and
@@ -480,6 +496,22 @@ jobs:
           repository: tamatebako/dwarfs-rs
           path: dwarfs-rs
           submodules: recursive
+      # The product repo's contract tests dev-depend on limnifs-write via a
+      # sibling path (spec 20, tebako-rs tests/contract ->
+      # ../../../../limnifs/limnifs/limnifs-write): EVERY cargo invocation
+      # on the tebako-rs workspace (the rust-cache metadata probe included)
+      # fails without it. The expected location is a "limnifs" directory
+      # holding the limnifs/limnifs repo beside the workspace. Clone it
+      # until tebako-rs ships its own answer (a release pin or an in-repo dep).
+      - name: Checkout limnifs (contract-tests sibling path dep)
+        if: matrix.env.os == 'windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sibling="$(pwd)/../limnifs"
+          mkdir -p "$sibling"
+          [ -d "$sibling/limnifs/.git" ] || git clone --quiet --depth 1 https://github.com/limnifs/limnifs "$sibling/limnifs"
+          test -f "$sibling/limnifs/limnifs-write/Cargo.toml"
       - uses: dtolnay/rust-toolchain@e43eeffd51aefeea929f4ea14e09fd077153e788 # 1.94.1
         if: matrix.env.os == 'windows'
         with:
