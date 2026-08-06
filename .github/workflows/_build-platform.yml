@@ -621,6 +621,37 @@ jobs:
             echo "=== $f (tail) ==="; tail -60 "$f" || true
           done
 
+      # Issue 40 boot diagnostics (windows): the shared build's boot hangs
+      # are silent (the boot-smoke probe exits the process when it runs, so
+      # a timeout means the hang is at load, in the driver, or in ruby
+      # init). Print the PE import tables and boot the exe three ways with
+      # stdin closed and a hard timeout: bare (exe+DLL load), image-mounted
+      # with the smoke's probe (the exact smoke case), image-mounted bare
+      # (driver dispatch without the probe). Runs BEFORE the boot smoke so
+      # the evidence is in the same leg; never fails by itself.
+      - name: Boot diagnostics (windows)
+        if: matrix.env.os == 'windows'
+        shell: msys2 {0}
+        run: |
+          runtime="tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
+          exe="runtime-packages/$runtime"
+          [ -s "$exe" ] || exe="$exe.exe"
+          probe="$PWD/build/lib/tebako_runtime_builder/boot_smoke/probe.rb"
+          echo "== runtime-packages:"; ls -la runtime-packages/ || true
+          echo "== exe imports:"; objdump -p "$exe" | grep -i "DLL Name" || true
+          pe=$(ls runtime-packages/x64-*-ruby*.dll 2>/dev/null | head -1 || true)
+          echo "== PE-named dll in place: ${pe:-NONE (boot smoke materializes it)}"
+          pkgdll="${exe%.exe}.dll"
+          [ -f "$pkgdll" ] && { echo "== package dll imports:"; objdump -p "$pkgdll" | grep -i "DLL Name" || true; }
+          echo "== bare boot (no image), stdin closed, 25s:"
+          timeout --preserve-status 25 "$exe" < /dev/null 2>&1 | tail -15; echo "bare exit: ${PIPESTATUS[0]}"
+          echo "== probe boot (smoke case), stdin closed, 25s:"
+          TEBAKO_RUNTIME_IMAGE="$exe.tfs" RUBYOPT="-r$probe" TEBAKO_BOOT_PROBE=boot TEBAKO_BOOT_MOUNT_POINT=A:/t \
+            timeout --preserve-status 25 "$exe" < /dev/null 2>&1 | tail -15; echo "probe exit: ${PIPESTATUS[0]}"
+          echo "== image boot (no probe), stdin closed, 25s:"
+          TEBAKO_RUNTIME_IMAGE="$exe.tfs" timeout --preserve-status 25 "$exe" < /dev/null 2>&1 | tail -15; echo "image exit: ${PIPESTATUS[0]}"
+          exit 0
+
       # The build emits TWO artifacts per leg since item 30: the runtime
       # executable and its filesystem image (<runtime>.tfs, the layout
       # tree in DwarFS form, writer defaults) -- THREE on windows since

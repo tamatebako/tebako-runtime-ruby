@@ -36,7 +36,9 @@
 #    performed by build/tools/build_pass.rb (over build/lib):
 #      * '@TEBAKO_MLIBS@' in template/Makefile.in  -> the platform
 #        static library list (gem: PatchLibraries.mlibs)
-#      * S["MAINLIBS"] in the generated config.status (post-configure)
+#      * S["MAINLIBS"] in the generated config.status (post-configure);
+#        on msys also S["SOLIBS"] -- the shared build's exe/DLL library
+#        split (issue #40, see the RUBY_SHARED_OPTION note below)
 #  - the entry driver is the modern tebako_fs_* C API one
 #    (src/tebako-main.cpp, vendored from the gem)
 #  - a stub libtebako-fs.a (tools/runtime entry symbols only) lets the

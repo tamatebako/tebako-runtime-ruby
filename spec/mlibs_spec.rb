@@ -107,14 +107,24 @@ RSpec.describe TebakoRuntimeBuilder::Mlibs do
       expect(mlibs.compute(ruby_ver)).to include("-Wl,--end-group")
     end
 
-    it "keeps the libtfs closure OUT of MAINLIBS (the exe side, issue 40) and carries the import lib" do
+    it "keeps the driver and the closure OUT of MAINLIBS (the exe side: fs TU + import lib, issue 40)" do
       result = mlibs.compute(ruby_ver)
+      expect(result).to include("-Wl,--push-state,--whole-archive -l:libtebako-fs.a -Wl,--pop-state")
       expect(result).to include("libx64-ucrt-ruby330.dll.a")
       expect(result).to include("-lws2_32")
       expect(result).to include("-lpsapi")
       expect(result).to include("-lntdll")
       expect(result).not_to include("-l:libtfs.a")
       expect(result).not_to include("-l:libbz2.a")
+    end
+
+    it "computes miniruby's FULL static set (driver + closure + system libs, issue 40)" do
+      result = mlibs.compute_minilibs(ruby_ver)
+      expect(result).to start_with("-Wl,--start-group -Wl,--push-state,--whole-archive -l:libtebako-fs.a")
+      expect(result).to include("-l:libtfs.a")
+      expect(result).to include("-l:libbz2.a")
+      expect(result).to include("-lws2_32")
+      expect(result).to include("-lntdll")
     end
 
     it "carries the closure and the windows system libs in SOLIBS (the DLL side, issue 40)" do
@@ -177,20 +187,21 @@ RSpec.describe TebakoRuntimeBuilder::Mlibs do
         FileUtils.remove_entry(root)
       end
 
-      it "whole-archives libtebako-fs.a ahead of the scoped driver (the fs TU carries the tebako_main shim)" do
+      it "whole-archives libtebako-fs.a ahead of the import library (the fs TU carries the tebako_main shim)" do
         result = mlibs.compute(ruby_ver)
         expect(result).to start_with(
           "-Wl,-Bstatic -Wl,--start-group " \
-          "-Wl,--push-state,--whole-archive -l:libtebako-fs.a -Wl,--pop-state #{root}/libtebako_driver.a"
+          "-Wl,--push-state,--whole-archive -l:libtebako-fs.a -Wl,--pop-state libx64-ucrt-ruby330.dll.a"
         )
       end
 
-      it "keeps the scoped libtfs.a + closure in the DLL's SOLIBS, never the exe's MAINLIBS" do
+      it "rides the scoped driver + libtfs.a + closure in the DLL's SOLIBS, never the exe's MAINLIBS" do
         solibs = mlibs.compute_solibs(ruby_ver)
+        expect(solibs).to include("#{root}/libtebako_driver.a")
         expect(solibs).to include("#{root}/libtfs.a")
         expect(solibs).to include("#{root}/closure/libfmt.a")
-        expect(solibs).not_to include("libtebako_driver.a")
         mainlibs = mlibs.compute(ruby_ver)
+        expect(mainlibs).not_to include("#{root}/libtebako_driver.a")
         expect(mainlibs).not_to include("#{root}/libtfs.a")
         expect(mainlibs).not_to include("#{root}/closure/libfmt.a")
       end

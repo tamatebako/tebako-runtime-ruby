@@ -23,7 +23,7 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
   # the stat wire-layout hot-patch is gone: the released source carries
   # the pinned tebako_stat ABI from tamatebako/ruby v0.2.13), plus the
   # shared-build set (issue 40): the mkexports rule in cygwin/GNUmakefile.in
-  # and the miniruby dependency line in common.mk.
+  # and the miniruby recipe in template/Makefile.in.
   def write_msys_source_fixtures(dir)
     glob = TebakoRuntimeBuilder::BuildPasses::MSYS_GLOB_OPENDIR_ANCHOR
     fd_text = TebakoRuntimeBuilder::BuildPasses::MSYS_FD_IS_TEXT_ANCHOR
@@ -32,8 +32,11 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
     FileUtils.mkdir_p(File.join(dir, "cygwin"))
     File.write(File.join(dir, "cygwin", "GNUmakefile.in"),
                "rule-a\n#{TebakoRuntimeBuilder::BuildPasses::MSYS_DLL_EXPORTS_ANCHOR}rule-b\n")
-    File.write(File.join(dir, "common.mk"),
-               "line-a\n#{TebakoRuntimeBuilder::BuildPasses::MSYS_MINIRUBY_DEP_ANCHOR}line-b\n")
+    miniruby_recipe = TebakoRuntimeBuilder::BuildPasses::MSYS_MINIRUBY_LIBS_ANCHOR
+    File.write(File.join(dir, "template", "Makefile.in"),
+               "MAINLIBS = @MAINLIBS@\n" \
+               "miniruby$(EXEEXT):\n" \
+               "\t$(Q) $(PURIFY) $(CC) $(EXE_LDFLAGS) $(XLDFLAGS) #{miniruby_recipe} $(OUTFLAG)$@\n")
   end
 
   # A libtfs.a the DLL export fragment derives from (issue 40): one defined
@@ -89,14 +92,15 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
         .to raise_error(TebakoRuntimeBuilder::Error, /does not exist/)
     end
 
-    it "skips the template substitution on msys (MAINLIBS comes via config.status there)" do
-      File.write(File.join(ruby_src, "template", "Makefile.in"), "MAINLIBS = @MAINLIBS@\n")
+    it "skips the @TEBAKO_MLIBS@ substitution on msys (MAINLIBS comes via config.status there)" do
       write_msys_source_fixtures(ruby_src)
       write_libtfs_fixture(deps_lib_dir)
       expect do
         described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc")
       end.not_to raise_error
-      expect(File.read(File.join(ruby_src, "template", "Makefile.in"))).to eq("MAINLIBS = @MAINLIBS@\n")
+      makefile_in = File.read(File.join(ruby_src, "template", "Makefile.in"))
+      expect(makefile_in).to include("MAINLIBS = @MAINLIBS@")
+      expect(makefile_in).not_to include("@TEBAKO_MLIBS@")
       expect(File.file?(File.join(deps_lib_dir, "libtebako-fs.a"))).to be(true)
     end
   end
@@ -119,17 +123,12 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
       expect(gnu_makefile_in).to include("cat tebako-dll-exports.def >> $@ # tebako patched (issue 40)")
     end
 
-    it "makes miniruby depend on the DLL import library in common.mk" do
-      common_mk = File.read(File.join(ruby_src, "common.mk"))
-      expect(common_mk).to include("$(ALLOBJS) $(ARCHFILE) $(LIBRUBY) # tebako patched (issue 40)")
-    end
-
-    it "anchors the ruby 4.0 spelled-out miniruby line too" do
-      File.write(File.join(ruby_src, "common.mk"),
-                 "miniruby$(EXEEXT): config.status $(NORMALMAINOBJ) $(MINIOBJS) $(COMMONOBJS) $(ARCHFILE)\n")
-      described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "4.0.6", "A:/t", "cc")
-      common_mk = File.read(File.join(ruby_src, "common.mk"))
-      expect(common_mk).to include("$(COMMONOBJS) $(ARCHFILE) $(LIBRUBY) # tebako patched (issue 40)")
+    it "links miniruby with the full static TEBAKO_MINILIBS in template/Makefile.in" do
+      makefile_in = File.read(File.join(ruby_src, "template", "Makefile.in"))
+      expect(makefile_in).to include("$(NORMALMAINOBJ) $(MINIOBJS) $(COMMONOBJS) $(TEBAKO_MINILIBS)")
+      expect(makefile_in.scan(/^TEBAKO_MINILIBS = /).length).to eq(1)
+      expect(makefile_in).to include("-l:libtfs.a")
+      expect(makefile_in).to include("-l:libtebako-fs.a")
     end
 
     it "is idempotent across the msys pass-2 overlay prepare re-run" do
@@ -138,8 +137,8 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
       end.not_to raise_error
       gnu_makefile_in = File.read(File.join(ruby_src, "cygwin", "GNUmakefile.in"))
       expect(gnu_makefile_in.scan("tebako-dll-exports.def").length).to eq(1)
-      common_mk = File.read(File.join(ruby_src, "common.mk"))
-      expect(common_mk.scan("$(LIBRUBY)").length).to eq(1)
+      makefile_in = File.read(File.join(ruby_src, "template", "Makefile.in"))
+      expect(makefile_in.scan(/^TEBAKO_MINILIBS = /).length).to eq(1)
     end
 
     it "fails loudly when the mkexports anchor drifted" do
@@ -148,10 +147,41 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
         .to raise_error(TebakoRuntimeBuilder::Error, /mkexports rule anchor/)
     end
 
+    it "fails loudly when the miniruby recipe anchor drifted" do
+      File.write(File.join(ruby_src, "template", "Makefile.in"), "no miniruby recipe here\n")
+      expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc") }
+        .to raise_error(TebakoRuntimeBuilder::Error, /miniruby recipe anchor/)
+    end
+
     it "fails loudly when the libtfs archive defines no tebako_* symbols" do
       FileUtils.rm(File.join(deps_lib_dir, "libtfs.a"))
       expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc") }
-        .to raise_error(TebakoRuntimeBuilder::Error, /no libtfs.a to derive the DLL export fragment/)
+        .to raise_error(TebakoRuntimeBuilder::Error, /no libtfs\/driver archive to derive the DLL export fragment/)
+    end
+
+    it "merges the scoped libtfs.a AND libtebako_driver.a surfaces in the fragment (the v2 link)" do
+      Dir.mktmpdir do |link_unit|
+        FileUtils.cp(File.join(deps_lib_dir, "libtfs.a"), File.join(link_unit, "libtfs.a"))
+        FileUtils.mkdir_p(File.join(link_unit, "closure"))
+        FileUtils.touch(File.join(link_unit, "closure", "libfmt.a"))
+        src = File.join(link_unit, "driver.c")
+        obj = File.join(link_unit, "driver.o")
+        File.write(src, "int tebako_driver_boot(void) { return 0; }\n")
+        TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["cc", "-c", src, "-o", obj])
+        TebakoRuntimeBuilder::BuildHelpers.run_with_capture(
+          ["ar", "rcs", File.join(link_unit, "libtebako_driver.a"), obj]
+        )
+        prev = ENV.fetch("TEBAKO_RUST_LIBDIR", nil)
+        ENV["TEBAKO_RUST_LIBDIR"] = link_unit
+        begin
+          described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc")
+        ensure
+          prev.nil? ? ENV.delete("TEBAKO_RUST_LIBDIR") : ENV["TEBAKO_RUST_LIBDIR"] = prev
+        end
+        fragment = File.read(File.join(ruby_src, "tebako-dll-exports.def"))
+        expect(fragment).to include("tebako_fs_mount\n")
+        expect(fragment).to include("tebako_driver_boot\n")
+      end
     end
   end
 
@@ -234,7 +264,8 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
                  "S[\"SOLIBS\"]=\"$(MAINLIBS)\"\n")
       described_class.postconfigure("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7")
       contents = File.read(config_status)
-      # the exe side: driver + import library + system libs, never the closure
+      # the exe side: fs TU + import library + system libs, never the closure
+      expect(contents).to include("-Wl,--push-state,--whole-archive -l:libtebako-fs.a -Wl,--pop-state")
       expect(contents).to include("libx64-ucrt-ruby330.dll.a")
       expect(contents).not_to include("S[\"MAINLIBS\"]=\"#{described_class::MSYS_MAINLIBS_LINE}\"")
       # the DLL side: the closure replaces the $(MAINLIBS) reference
