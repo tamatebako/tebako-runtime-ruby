@@ -107,14 +107,22 @@ RSpec.describe TebakoRuntimeBuilder::Mlibs do
       expect(mlibs.compute(ruby_ver)).to include("-Wl,--end-group")
     end
 
-    it "keeps the libtfs closure OUT of MAINLIBS (the exe side, issue 40) and carries the import lib" do
+    it "keeps the libtfs closure OUT of MAINLIBS (the exe side, issue 40)" do
       result = mlibs.compute(ruby_ver)
-      expect(result).to include("libx64-ucrt-ruby330.dll.a")
       expect(result).to include("-lws2_32")
       expect(result).to include("-lpsapi")
       expect(result).to include("-lntdll")
       expect(result).not_to include("-l:libtfs.a")
       expect(result).not_to include("-l:libbz2.a")
+    end
+
+    it "computes miniruby's FULL static set (driver + closure + system libs, issue 40)" do
+      result = mlibs.compute_minilibs(ruby_ver)
+      expect(result).to start_with("-Wl,--start-group -Wl,--push-state,--whole-archive -l:libtebako-fs.a")
+      expect(result).to include("-l:libtfs.a")
+      expect(result).to include("-l:libbz2.a")
+      expect(result).to include("-lws2_32")
+      expect(result).to include("-lntdll")
     end
 
     it "carries the closure and the windows system libs in SOLIBS (the DLL side, issue 40)" do
