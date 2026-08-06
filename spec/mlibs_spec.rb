@@ -207,9 +207,11 @@ RSpec.describe TebakoRuntimeBuilder::Mlibs do
         expect(mainlibs).not_to include("#{root}/closure/libfmt.a")
       end
 
-      it "links miniruby against the driver archive DIRECTLY (no stub member to collide with, issue 40)" do
+      it "links miniruby with the whole-archive minimal stub + the driver archive (issue 40)" do
         minilibs = mlibs.compute_minilibs(ruby_ver)
-        expect(minilibs).not_to include("libtebako-fs.a")
+        # the stub is the only C-visible tebako_main (the driver's own is
+        # not a C export); its minimal content keeps the pull collision-free
+        expect(minilibs).to include("-Wl,--push-state,--whole-archive -l:libtebako-fs.a -Wl,--pop-state")
         expect(minilibs).to include("#{root}/libtebako_driver.a")
         expect(minilibs).to include("#{root}/libtfs.a")
       end
