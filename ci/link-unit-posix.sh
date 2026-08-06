@@ -78,6 +78,11 @@ ensure_checkouts() {
     die "tebako product checkout missing at $WS/tebako-rs (the workflow checks tamatebako/tebako out there)"
   [ -f "$WS/dwarfs-rs/dwarfs-t/CMakeLists.txt" ] ||
     die "dwarfs-rs checkout (submodules: recursive) missing at $WS/dwarfs-rs"
+  # The contract tests' limnifs-write path dep (spec 20) resolves beside
+  # the workspace; cloned by the workflow's limnifs step. cargo fails the
+  # whole workspace without it.
+  [ -f "$(cd "$WS/.." && pwd)/limnifs/limnifs/limnifs-write/Cargo.toml" ] ||
+    die "limnifs sibling checkout missing at $(cd "$WS/.." && pwd)/limnifs/limnifs (the workflow clones it beside the workspace)"
 }
 
 # vcpkg build logs die with the container otherwise — surface the tails.
@@ -207,6 +212,11 @@ host_container() { # $1=gnu|musl
     mkdir -p "$HOME/.cache/tebako-cmake-musl-$ARCH"
     extra_mounts="-v $HOME/.cache/tebako-cmake-musl-$ARCH:/opt/cmake-musl"
   fi
+  # The contract tests' limnifs-write path dep (spec 20) resolves BESIDE
+  # the workspace (../limnifs/limnifs); the workspace alone is mounted, so
+  # the sibling rides in at the same absolute path (read-only).
+  limnifs_sibling="$(cd "$WS/.." && pwd)/limnifs"
+  extra_mounts="$extra_mounts -v $limnifs_sibling:$limnifs_sibling:ro"
   echo "== staging the link unit inside $image (flavor $flavor, arch $ARCH) =="
   # shellcheck disable=SC2086
   docker run --rm \
