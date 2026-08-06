@@ -684,14 +684,14 @@ jobs:
         shell: msys2 {0}
         env:
           TEBAKO_RUNTIME_ROOT: runtime-packages
-          # Issue 40 tripwire: the windows runtime binds NO native
-          # extension until the --enable-shared fix lands (the ruby DLL as
-          # a third artifact), so require "openssl" fails today and this
-          # leg records 'fail'. The spec fails on ANY drift from the
-          # recorded state -- the fix's first green probe turns this leg
-          # red until the same PR flips the value to 'ok'; from then on
-          # the canary enforces like on POSIX.
-          TEBAKO_SMOKE_EXPECT_OPENSSL: fail
+          # openssl is STATICALLY linked into the runtime (not a dynamic
+          # ext), so require "openssl" must LOAD on every windows leg
+          # today, shared build or not — the 4.0.6 probe proves it
+          # (OpenSSL 3.6.0). A 'fail' probe here is a broken runtime, the
+          # leg fails, the upload never happens. Issue 40's dynamic-ext
+          # tripwire rides the cparse.so check (load_native_extension),
+          # never this one.
+          TEBAKO_SMOKE_EXPECT_OPENSSL: ok
         run: |
           set -euo pipefail
           gem install bundler --no-document
