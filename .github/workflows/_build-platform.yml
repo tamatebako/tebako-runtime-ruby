@@ -216,9 +216,7 @@ jobs:
           done
           [ "$missing" -eq 0 ] || { echo "::error::preflight failed — publish the containers or fix container_version in contract.yml"; exit 1; }
 
-  build:
-    name: Build runtime package for ${{ matrix.env.os }} / ${{ matrix.env.arch }} / Ruby ${{ matrix.ruby.version }}
-      # The v2 link unit (image era), staged ONCE per platform-arch:
+  # The v2 link unit (image era), staged ONCE per platform-arch:
   # tebako-driver + scoped tfs + the native closure, from the tebako
   # product checkout. tebako-rs OWNS the staging tool
   # (tools/stage_link_unit); the factory STAGES, never re-implements.
