@@ -170,12 +170,18 @@ module TebakoRuntimeBuilder
     end
 
     # SOLIBS of the msys shared build (issue #40): the DLL side, substituted
-    # into config.status by build_pass.rb postconfigure (x64-ucrt-ruby<ABI>.dll
-    # links core objects + the libtfs closure + the system set). The driver
-    # stays OUT (it is exe code); the export surface comes from the mkexports
-    # .def plus the tebako_* fragment build_pass.rb prepare appends.
+    # into config.status by build_pass.rb postconfigure. x64-ucrt-ruby<ABI>.dll
+    # links the ruby core objects + the scoped DRIVER + libtfs.a + the
+    # closure: the driver mounts through its bundled tfs instance, and the
+    # c_api's context unifies with it only inside ONE link -- so the whole
+    # tebako side (driver + tfs + closure) lives in the DLL and the process
+    # holds exactly one mount table, the static exe's semantics preserved.
+    # The exe keeps only the fs TU shim (MAINLIBS). The export surface is
+    # the mkexports .def plus the tebako_* fragment build_pass.rb prepare
+    # appends (libtfs.a and libtebako_driver.a both feed it).
     def compute_solibs(ruby_ver)
       libraries = ["-Wl,--start-group"] +
+                  msys_driver_libraries +
                   msys_closure_libraries +
                   ["-Wl,--end-group"] +
                   MSYS_DLL_PACMAN_PROVIDERS +
@@ -259,20 +265,23 @@ module TebakoRuntimeBuilder
       libraries.join(" ")
     end
 
-    # MAINLIBS of the msys shared build (issue #40): the exe side. The
-    # driver (libtebako-fs.a whole-archive + the scoped libtebako_driver.a
-    # in the v2 link) and the static-ext/system deps -- the ruby API and
-    # tebako_fs_* bind from the DLL's import library (LIBRUBYARG in the
-    # link rule; upstream's $(PROGRAM): $(LIBRUBY) dependency orders it).
-    # The libtfs closure is NOT here: it rides the DLL (compute_solibs) so
-    # the process holds exactly one mount table. miniruby is a separate
-    # matter (compute_minilibs): a build tool that must not depend on the
-    # DLL at all.
+    # MAINLIBS of the msys shared build (issue #40): the exe side. The fs
+    # TU (whole-archive libtebako-fs.a: the tebako_main shim forwarding the
+    # exe's compiled-in root) + the import library of the ruby DLL (inside
+    # the group: the shim's tebako_driver_boot reference is later than
+    # LIBRUBYARG) + the static-ext/system deps. The driver is NOT here --
+    # it rides the DLL (compute_solibs): the driver mounts through its OWN
+    # bundled tfs instance, which unifies with the c_api's context only
+    # when driver and libtfs.a share one link (the static exe's shape);
+    # split across two PE modules the driver mounts into the exe-side
+    # context while ruby's io routing reads the DLL's empty one -- A:/t
+    # falls through to the host and touching the unmapped A: drive hangs
+    # the process silently (proven on the 3.3.12/4.0.6 legs).
     def msys_libraries(ruby_ver, with_compression)
       libraries = with_compression ? ["-Wl,-Bstatic"] : []
       libraries += ["-Wl,--start-group",
-                    "-Wl,--push-state,--whole-archive -l:libtebako-fs.a -Wl,--pop-state"] +
-                   msys_driver_libraries +
+                    "-Wl,--push-state,--whole-archive -l:libtebako-fs.a -Wl,--pop-state",
+                    ruby_ver.msys_implib_name] +
                    ["-Wl,--end-group"] +
                    MSYS_LIBRARIES +
                    # Rust std's Windows references the dwarfs closure
@@ -283,8 +292,9 @@ module TebakoRuntimeBuilder
       linux_libraries(libraries, ruby_ver, with_compression)
     end
 
-    # The exe-side driver archives: the scoped libtebako_driver.a in the v2
-    # (Rust driver) link, nothing extra in the v1 (C++ driver) one.
+    # The scoped libtebako_driver.a of the v2 (Rust driver) link, for the
+    # DLL (compute_solibs) and for miniruby (compute_minilibs); the v1
+    # (C++ driver) link has no such archive.
     def msys_driver_libraries
       return [] unless rust_libdir
 

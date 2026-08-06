@@ -156,7 +156,32 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
     it "fails loudly when the libtfs archive defines no tebako_* symbols" do
       FileUtils.rm(File.join(deps_lib_dir, "libtfs.a"))
       expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc") }
-        .to raise_error(TebakoRuntimeBuilder::Error, /no libtfs.a to derive the DLL export fragment/)
+        .to raise_error(TebakoRuntimeBuilder::Error, /no libtfs\/driver archive to derive the DLL export fragment/)
+    end
+
+    it "merges the scoped libtfs.a AND libtebako_driver.a surfaces in the fragment (the v2 link)" do
+      Dir.mktmpdir do |link_unit|
+        FileUtils.cp(File.join(deps_lib_dir, "libtfs.a"), File.join(link_unit, "libtfs.a"))
+        FileUtils.mkdir_p(File.join(link_unit, "closure"))
+        FileUtils.touch(File.join(link_unit, "closure", "libfmt.a"))
+        src = File.join(link_unit, "driver.c")
+        obj = File.join(link_unit, "driver.o")
+        File.write(src, "int tebako_driver_boot(void) { return 0; }\n")
+        TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["cc", "-c", src, "-o", obj])
+        TebakoRuntimeBuilder::BuildHelpers.run_with_capture(
+          ["ar", "rcs", File.join(link_unit, "libtebako_driver.a"), obj]
+        )
+        prev = ENV.fetch("TEBAKO_RUST_LIBDIR", nil)
+        ENV["TEBAKO_RUST_LIBDIR"] = link_unit
+        begin
+          described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc")
+        ensure
+          prev.nil? ? ENV.delete("TEBAKO_RUST_LIBDIR") : ENV["TEBAKO_RUST_LIBDIR"] = prev
+        end
+        fragment = File.read(File.join(ruby_src, "tebako-dll-exports.def"))
+        expect(fragment).to include("tebako_fs_mount\n")
+        expect(fragment).to include("tebako_driver_boot\n")
+      end
     end
   end
 
@@ -239,10 +264,10 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
                  "S[\"SOLIBS\"]=\"$(MAINLIBS)\"\n")
       described_class.postconfigure("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7")
       contents = File.read(config_status)
-      # the exe side: driver + system libs, never the closure nor the DLL
+      # the exe side: fs TU + import library + system libs, never the closure
       expect(contents).to include("-Wl,--push-state,--whole-archive -l:libtebako-fs.a -Wl,--pop-state")
+      expect(contents).to include("libx64-ucrt-ruby330.dll.a")
       expect(contents).not_to include("S[\"MAINLIBS\"]=\"#{described_class::MSYS_MAINLIBS_LINE}\"")
-      expect(contents).not_to include("libx64-ucrt-ruby330.dll.a")
       # the DLL side: the closure replaces the $(MAINLIBS) reference
       expect(contents).to include("S[\"SOLIBS\"]=\"-Wl,--start-group -l:libtfs.a")
       expect(contents).not_to include("S[\"SOLIBS\"]=\"$(MAINLIBS)\"")

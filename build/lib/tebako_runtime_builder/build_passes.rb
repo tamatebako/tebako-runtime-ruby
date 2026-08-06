@@ -432,59 +432,69 @@ module TebakoRuntimeBuilder
         File.write(io_c, contents.sub(MSYS_FD_IS_TEXT_ANCHOR, MSYS_FD_IS_TEXT_REPLACEMENT))
       end
 
-      # The DLL export fragment (issue #40): the tebako_* definitions of the
-      # libtfs archive the DLL links (the scoped Rust libtfs.a of the staged
-      # link unit, else the C++ libtfs of the deps provisioning), written as
-      # a .def fragment the mkexports rule appends to the generated
-      # x64-ucrt-ruby<ABI>.def. Derived by nm at prepare time -- a hand list
-      # would drift against the link unit silently. Functions go bare, data
-      # symbols with the DATA keyword (PE imports of data need it).
+      # The DLL export fragment (issue #40): the tebako_* definitions of
+      # the archives the DLL links (the staged link unit's scoped libtfs.a
+      # AND libtebako_driver.a -- the exe binds tebako_driver_boot and the
+      # compat getters (tebako_mount_point & co.) from the DLL; the v1
+      # link's C++ libtfs.a alone), written as a .def fragment the
+      # mkexports rule appends to the generated x64-ucrt-ruby<ABI>.def.
+      # Derived by nm at prepare time -- a hand list would drift against
+      # the link unit silently. Functions go bare, data symbols with the
+      # DATA keyword (PE imports of data need it).
       def write_dll_exports_fragment!(ruby_source_dir, deps_lib_dir) # rubocop:disable Metrics/MethodLength
-        archive = dll_export_source_archive(deps_lib_dir)
-        out = TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["nm", "-g", "--defined-only", archive])
-        lines = out.lines.filter_map do |line|
-          fields = line.split
-          next unless fields.length >= 3
+        lines = dll_export_source_archives(deps_lib_dir).flat_map do |archive|
+          out = TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["nm", "-g", "--defined-only", archive])
+          out.lines.filter_map do |line|
+            fields = line.split
+            next unless fields.length >= 3
 
-          type = fields[-2]
-          # COFF x64 names carry no prefix; the leading underscore is the
-          # i386 PE (and mach-O) decoration -- normalize before matching
-          name = fields[-1].delete_prefix("_")
-          next unless name.start_with?("tebako_")
+            type = fields[-2]
+            # COFF x64 names carry no prefix; the leading underscore is the
+            # i386 PE (and mach-O) decoration -- normalize before matching
+            name = fields[-1].delete_prefix("_")
+            next unless name.start_with?("tebako_")
 
-          case type.upcase
-          when "T", "W" then name
-          when "D", "B", "C", "R", "S", "V" then "#{name} DATA"
+            case type.upcase
+            when "T", "W" then name
+            when "D", "B", "C", "R", "S", "V" then "#{name} DATA"
+            end
           end
         end.uniq.sort
         if lines.empty?
           raise TebakoRuntimeBuilder::Error.new(
-            "#{archive} defines no tebako_* symbols -- the link unit drifted; " \
-            "the ruby DLL would export no tebako_fs_* surface (issue 40)", 130
+            "the link unit defines no tebako_* symbols -- the link unit drifted; " \
+            "the ruby DLL would export no tebako surface (issue 40)", 130
           )
         end
 
         path = File.join(ruby_source_dir, MSYS_DLL_EXPORTS_FRAGMENT)
-        puts "   ... writing the DLL export fragment (#{lines.length} tebako_* symbols from #{File.basename(archive)})"
+        puts "   ... writing the DLL export fragment (#{lines.length} tebako_* symbols)"
         File.write(path, "#{lines.join("\n")}\n")
       end
 
-      # The libtfs archive whose tebako_* surface the DLL exports: the
-      # staged Rust link unit's (TEBAKO_RUST_LIBDIR, normalized like
+      # The archives whose tebako_* surface the DLL exports: the staged
+      # Rust link unit's (TEBAKO_RUST_LIBDIR, normalized like
       # Mlibs#rust_libdir -- the workflow passes a Windows-form path), else
-      # the deps provisioning's C++ libtfs.a (the v1 link).
-      def dll_export_source_archive(deps_lib_dir)
+      # the deps provisioning's C++ libtfs.a (the v1 link, whose C++ driver
+      # is exe code and exports nothing).
+      def dll_export_source_archives(deps_lib_dir)
         rust_libdir = ENV.fetch("TEBAKO_RUST_LIBDIR", nil)&.tr('\\', "/")
         candidates = []
-        candidates << File.join(rust_libdir, "libtfs.a") if rust_libdir && !rust_libdir.empty?
-        candidates << File.join(deps_lib_dir, "libtfs.a")
-        archive = candidates.find { |path| File.file?(path) }
-        return archive if archive
+        if rust_libdir && !rust_libdir.empty?
+          candidates << File.join(rust_libdir, "libtfs.a")
+          candidates << File.join(rust_libdir, "libtebako_driver.a")
+        else
+          candidates << File.join(deps_lib_dir, "libtfs.a")
+        end
+        missing = candidates.reject { |path| File.file?(path) }
+        unless missing.empty?
+          raise TebakoRuntimeBuilder::Error.new(
+            "no libtfs/driver archive to derive the DLL export fragment from (missing: #{missing.join(", ")}) -- " \
+            "stage the link unit (TEBAKO_RUST_LIBDIR) or let the libtfs provisioning deploy", 112
+          )
+        end
 
-        raise TebakoRuntimeBuilder::Error.new(
-          "no libtfs.a to derive the DLL export fragment from (tried: #{candidates.join(", ")}) -- " \
-          "stage the link unit (TEBAKO_RUST_LIBDIR) or let the libtfs provisioning deploy", 112
-        )
+        candidates
       end
 
       # Append the fragment to the mkexports .def generation rule in
