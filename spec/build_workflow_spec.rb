@@ -26,6 +26,43 @@ RSpec.describe "build-platform reusable workflow" do
     expect(File.read(workflow_path)).not_to include("${{ matrix.ruby }}")
   end
 
+  # The native closure depends on the platform triplet only — staging it
+  # inside the ruby matrix paid the full native build per version (the
+  # catalog's 22 legs per platform-arch). The link-unit job stages ONCE
+  # per platform-arch from a ruby-free matrix; the build legs download.
+  it "stages the link unit once per platform-arch (a ruby-free matrix)" do
+    link_unit = workflow.fetch("jobs").fetch("link-unit")
+    matrix = link_unit.fetch("strategy").fetch("matrix")
+    expect(matrix).to eq("env" => "${{fromJson(needs.compute.outputs.link-unit-matrix)}}")
+    expect(link_unit["if"]).to include("inputs.platform != 'windows'")
+  end
+
+  it "keys no link-unit cache on a ruby version" do
+    workflow.fetch("jobs").fetch("link-unit").fetch("steps").each do |step|
+      key = step.dig("with", "key")
+      expect(key).not_to include("ruby") if key
+    end
+  end
+
+  it "has the build legs download the staged unit, never rebuild it per ruby" do
+    build = workflow.fetch("jobs").fetch("build")
+    expect(build.fetch("needs")).to eq(%w[compute link-unit])
+    steps = build.fetch("steps")
+    download = steps.find { |step| step["name"] == "Download the staged link unit" }
+    expect(download["if"]).to eq("matrix.env.os != 'windows'")
+    expect(download.dig("with", "path")).to eq(".build/link-unit")
+    assertion = steps.find { |step| step["name"] == "Assert the staged link unit is complete" }
+    expect(assertion["if"]).to eq("matrix.env.os != 'windows'")
+    expect(assertion["run"]).to include("libtebako_driver.a", "libtfs.a", "closure")
+    per_leg_rebuilds = steps.select do |step|
+      step["if"] == "matrix.env.os != 'windows'" &&
+        ["Checkout the tebako product repo (the link unit source)",
+         "Checkout dwarfs-rs (link-unit sibling path dep)",
+         "Stage the POSIX link unit"].include?(step["name"])
+    end
+    expect(per_leg_rebuilds).to be_empty
+  end
+
   # The publish job downloads THIS platform's artifacts only and the
   # publishes serialize globally — the manifest merge is read-modify-write,
   # so two publishes must never run at once.

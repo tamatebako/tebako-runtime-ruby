@@ -32,8 +32,15 @@
 #   a leg runs because something it reads changed, never because "the
 #   workflow fired". An unaffected platform computes `run=false` and the
 #   build/publish stages skip (seconds, not a build).
-# Stage 2 (build): the matrix legs, exactly the retired monolith's steps.
-# Stage 3 (publish): uploads THIS platform's packages; the manifest merge
+# Stage 2 (link-unit): the v2 link unit (tebako-driver + scoped tfs + the
+#   native closure) staged ONCE per platform-arch — the closure depends on
+#   the triplet only, never on the ruby version — and handed to the build
+#   legs as an artifact. Windows legs still stage in-leg (the build job
+#   below) until the first published windows link unit ships.
+# Stage 3 (build): the matrix legs, exactly the retired monolith's steps,
+#   consuming the staged unit via TEBAKO_RUST_LIBDIR instead of rebuilding
+#   the native closure per ruby version.
+# Stage 4 (publish): uploads THIS platform's packages; the manifest merge
 #   (scripts/upload_release.rb) keeps every other platform's entries, so
 #   platforms publish independently. A globally serialized concurrency
 #   group makes two simultaneous publishes impossible (the merge is
@@ -98,6 +105,9 @@ jobs:
       why: ${{ steps.matrix.outputs.why }}
       env-matrix: ${{ steps.matrix.outputs.env-matrix }}
       ruby-matrix: ${{ steps.matrix.outputs.ruby-matrix }}
+      # The env matrix deduped by (os, arch) — one link-unit leg per
+      # platform-arch, never per ruby (the native closure is ruby-free).
+      link-unit-matrix: ${{ steps.matrix.outputs.link-unit-matrix }}
       tebako-version: ${{ steps.get-version.outputs.version }}
       container-version: ${{ steps.get-container-version.outputs.version }}
       source-pin: ${{ steps.get-source-pin.outputs.pin }}
@@ -206,11 +216,121 @@ jobs:
           done
           [ "$missing" -eq 0 ] || { echo "::error::preflight failed — publish the containers or fix container_version in contract.yml"; exit 1; }
 
+  # The v2 link unit (image era), staged ONCE per platform-arch:
+  # tebako-driver + scoped tfs + the native closure, from the tebako
+  # product checkout. tebako-rs OWNS the staging tool
+  # (tools/stage_link_unit); the factory STAGES, never re-implements.
+  # The closure depends on the triplet only — staging it inside the ruby
+  # matrix paid the full native build per version (the catalog's 22 legs
+  # per platform-arch). ci/link-unit-posix.sh owns the leg logic:
+  # linux-gnu stages inside ubuntu:20.04 (the glibc 2.31 floor, by
+  # construction), linux-musl inside alpine:3.17 (the build container's
+  # musl generation), macos on the runner. Windows keeps the in-leg
+  # staging (the build job below) until the first published windows link
+  # unit ships — its download joins THIS job then.
+  link-unit:
+    name: Stage the v2 link unit (${{ matrix.env.os }} / ${{ matrix.env.arch }})
+    needs: compute
+    # Same gates as the build legs, and never on windows (in-leg there).
+    if: ${{ needs.compute.outputs.run == 'true' && !inputs.audit && inputs.platform != 'windows' }}
+    runs-on: ${{ matrix.env.host }}
+    strategy:
+      fail-fast: false
+      matrix:
+        env: ${{fromJson(needs.compute.outputs.link-unit-matrix)}}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+
+      - name: Checkout the tebako product repo (the link unit source)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: tamatebako/tebako
+          path: tebako-rs
+          ref: main
+      - name: Checkout dwarfs-rs (link-unit sibling path dep)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: tamatebako/dwarfs-rs
+          path: dwarfs-rs
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@e43eeffd51aefeea929f4ea14e09fd077153e788 # 1.94.1
+        if: matrix.env.os == 'macos'
+      # The warmers below key on (os, arch[, the vcpkg closure hash]) and
+      # NOTHING else — this job has no ruby dimension, so no key ever
+      # carries a ruby version (spec-locked in build_workflow_spec.rb).
+      - name: Cache the cargo target dir (link unit)
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: |
+            tebako-rs
+          # link-unit2-: the musl dwarfs-t build tree is configured with
+          # CXXFLAGS baked in (the cstddef shim) — the v1 entries hold a
+          # shimless CMakeCache that would silently win over the env.
+          key: link-unit2-${{ matrix.env.os }}-${{ matrix.env.arch }}
+      # The archive caches are per flavor on purpose: a floor-built gnu
+      # archive, a musl archive, and a macos archive never serve each other.
+      - name: Cache vcpkg package archives (link unit, macos)
+        if: matrix.env.os == 'macos'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/Library/Caches/vcpkg
+          key: vcpkg-archives-linkunit-${{ matrix.env.os }}-${{ matrix.env.arch }}-${{ hashFiles('dwarfs-rs/dwarfs-t/vcpkg.json', 'dwarfs-rs/dwarfs-t/vcpkg_ports/**', 'dwarfs-rs/dwarfs-t/vcpkg_triplets/**', 'tebako-rs/crates/sqfs-sys/vcpkg.json', 'tebako-rs/crates/sqfs-sys/vcpkg_ports/**', 'tebako-rs/crates/sqfs-sys/vcpkg_triplets/**') }}
+          restore-keys: |
+            vcpkg-archives-linkunit-${{ matrix.env.os }}-${{ matrix.env.arch }}-
+          # Content-addressed port archives cannot poison a later run;
+          # a failed leg keeps its progress instead of restarting cold.
+          save-always: true
+      - name: Cache vcpkg package archives (link unit, container legs)
+        if: matrix.env.container != null
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/vcpkg
+          key: vcpkg-archives-linkunit-${{ matrix.env.os }}-${{ matrix.env.arch }}-${{ hashFiles('dwarfs-rs/dwarfs-t/vcpkg.json', 'dwarfs-rs/dwarfs-t/vcpkg_ports/**', 'dwarfs-rs/dwarfs-t/vcpkg_triplets/**', 'tebako-rs/crates/sqfs-sys/vcpkg.json', 'tebako-rs/crates/sqfs-sys/vcpkg_ports/**', 'tebako-rs/crates/sqfs-sys/vcpkg_triplets/**') }}
+          restore-keys: |
+            vcpkg-archives-linkunit-${{ matrix.env.os }}-${{ matrix.env.arch }}-
+          save-always: true
+      # The musl staging container's source-built cmake (3.17's stock
+      # 3.24 is too old for the boost 1.90 ports; built once per arch).
+      - name: Cache the musl cmake build (link unit)
+        if: matrix.env.os == 'linux-musl'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/tebako-cmake-musl-${{ matrix.env.arch }}
+          key: cmake-musl-3.31.8-${{ matrix.env.arch }}
+          save-always: true
+      - name: Stage the POSIX link unit
+        env:
+          # Only the macos baseline restore needs it (gh release download);
+          # the container flavors build the ports in-leg by design.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Everything lives in ci/link-unit-posix.sh (reviewed,
+        # shellcheck-able) — never inline run-blocks.
+        run: sh ci/link-unit-posix.sh ${{ matrix.env.os }} ${{ matrix.env.arch }}
+
+      # The handoff to the build legs: the staged unit
+      # (.build/link-unit — libtebako_driver.a + libtfs.a + closure/*.a +
+      # include/) travels as a same-run artifact; each build leg downloads
+      # it into the exact workspace path its TEBAKO_RUST_LIBDIR names.
+      - name: Upload the staged link unit
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: link-unit-${{ matrix.env.os }}-${{ matrix.env.arch }}
+          path: .build/link-unit
+          retention-days: 1
+
   build:
     name: Build runtime package for ${{ matrix.env.os }} / ${{ matrix.env.arch }} / Ruby ${{ matrix.ruby.version }}
-    needs: [compute, preflight-containers]
+    needs: [compute, preflight-containers, link-unit]
     # Audit runs publish-shaped verification without spending a build.
-    if: ${{ needs.compute.outputs.run == 'true' && !inputs.audit }}
+    # always() + the explicit result check: on windows the link-unit job
+    # is skipped BY DESIGN (the legs stage in-leg there) and a skipped
+    # dependency must not take the legs down with it; a POSIX link-unit
+    # failure skips the legs here by name instead of 40 minutes into the
+    # ruby link.
+    if: ${{ always() && !cancelled() && needs.compute.outputs.run == 'true' && !inputs.audit && (needs.link-unit.result == 'success' || needs.link-unit.result == 'skipped') }}
     runs-on: ${{ matrix.env.host }}
     strategy:
       fail-fast: false
@@ -261,81 +381,38 @@ jobs:
           key: tebako-runtime-${{ matrix.env.os }}-${{ matrix.env.arch }}-${{ matrix.ruby.version }}-${{ needs.compute.outputs.tebako-version }}-${{ matrix.ruby.src_sha256 }}-v${{ env.CACHE_VER }}
           save-always: true
 
-      # The v2 link unit (image era), POSIX legs: tebako-driver + scoped tfs
-      # + the native closure, staged from the tebako product checkout.
-      # tebako-rs OWNS the staging tool (tools/stage_link_unit); the factory
-      # STAGES, never re-implements (the windows-gnu shape, proven on the
-      # msys legs — until the first published POSIX link unit ships, then
-      # this becomes a download). ci/link-unit-posix.sh owns the leg logic:
-      # linux-gnu stages inside ubuntu:20.04 (the glibc 2.31 floor, by
-      # construction), linux-musl inside alpine:3.17 (the build container's
-      # musl generation), macos on the runner.
-      - name: Checkout the tebako product repo (the link unit source)
+      # The v2 link unit (image era), POSIX legs: staged ONCE per
+      # platform-arch by the link-unit job above (the native closure
+      # depends on the triplet, never on the ruby version) and downloaded
+      # into the exact workspace path TEBAKO_RUST_LIBDIR names below.
+      # The .build prefix cache may restore a link-unit/ staged by an
+      # older run — drop it first so the download lands on a clean
+      # directory (an overlay merge would link stale closure archives).
+      - name: Clean any cache-restored link unit
         if: matrix.env.os != 'windows'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: tamatebako/tebako
-          path: tebako-rs
-          ref: main
-      - name: Checkout dwarfs-rs (link-unit sibling path dep)
+        run: rm -rf .build/link-unit
+
+      - name: Download the staged link unit
         if: matrix.env.os != 'windows'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          repository: tamatebako/dwarfs-rs
-          path: dwarfs-rs
-          submodules: recursive
-      - uses: dtolnay/rust-toolchain@e43eeffd51aefeea929f4ea14e09fd077153e788 # 1.94.1
-        if: matrix.env.os == 'macos'
-      - name: Cache the cargo target dir (link unit)
+          name: link-unit-${{ matrix.env.os }}-${{ matrix.env.arch }}
+          path: .build/link-unit
+
+      # Fail fast BY NAME when the handoff is incomplete — a missing unit
+      # must stop the leg here, not an hour into the ruby build with a
+      # missing-archive error from the link.
+      - name: Assert the staged link unit is complete
         if: matrix.env.os != 'windows'
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-        with:
-          workspaces: |
-            tebako-rs
-          # link-unit2-: the musl dwarfs-t build tree is configured with
-          # CXXFLAGS baked in (the cstddef shim) — the v1 entries hold a
-          # shimless CMakeCache that would silently win over the env.
-          key: link-unit2-${{ matrix.env.os }}-${{ matrix.env.arch }}
-      # The archive caches are per flavor on purpose: a floor-built gnu
-      # archive, a musl archive, and a macos archive never serve each other.
-      - name: Cache vcpkg package archives (link unit, macos)
-        if: matrix.env.os == 'macos'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/Library/Caches/vcpkg
-          key: vcpkg-archives-linkunit-${{ matrix.env.os }}-${{ matrix.env.arch }}-${{ hashFiles('dwarfs-rs/dwarfs-t/vcpkg.json', 'dwarfs-rs/dwarfs-t/vcpkg_ports/**', 'dwarfs-rs/dwarfs-t/vcpkg_triplets/**', 'tebako-rs/crates/sqfs-sys/vcpkg.json', 'tebako-rs/crates/sqfs-sys/vcpkg_ports/**', 'tebako-rs/crates/sqfs-sys/vcpkg_triplets/**') }}
-          restore-keys: |
-            vcpkg-archives-linkunit-${{ matrix.env.os }}-${{ matrix.env.arch }}-
-          # Content-addressed port archives cannot poison a later run;
-          # a failed leg keeps its progress instead of restarting cold.
-          save-always: true
-      - name: Cache vcpkg package archives (link unit, container legs)
-        if: matrix.env.container != null
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/vcpkg
-          key: vcpkg-archives-linkunit-${{ matrix.env.os }}-${{ matrix.env.arch }}-${{ hashFiles('dwarfs-rs/dwarfs-t/vcpkg.json', 'dwarfs-rs/dwarfs-t/vcpkg_ports/**', 'dwarfs-rs/dwarfs-t/vcpkg_triplets/**', 'tebako-rs/crates/sqfs-sys/vcpkg.json', 'tebako-rs/crates/sqfs-sys/vcpkg_ports/**', 'tebako-rs/crates/sqfs-sys/vcpkg_triplets/**') }}
-          restore-keys: |
-            vcpkg-archives-linkunit-${{ matrix.env.os }}-${{ matrix.env.arch }}-
-          save-always: true
-      # The musl staging container's source-built cmake (3.17's stock
-      # 3.24 is too old for the boost 1.90 ports; built once per arch).
-      - name: Cache the musl cmake build (link unit)
-        if: matrix.env.os == 'linux-musl'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/tebako-cmake-musl-${{ matrix.env.arch }}
-          key: cmake-musl-3.31.8-${{ matrix.env.arch }}
-          save-always: true
-      - name: Stage the POSIX link unit
-        if: matrix.env.os != 'windows'
-        env:
-          # Only the macos baseline restore needs it (gh release download);
-          # the container flavors build the ports in-leg by design.
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        # Everything lives in ci/link-unit-posix.sh (reviewed,
-        # shellcheck-able) — never inline run-blocks.
-        run: sh ci/link-unit-posix.sh ${{ matrix.env.os }} ${{ matrix.env.arch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          unit=.build/link-unit
+          for f in libtebako_driver.a libtfs.a include/tebako/fs/c_api.h; do
+            test -s "$unit/$f" || { echo "::error::missing link-unit input $unit/$f — the link-unit job's artifact is incomplete"; exit 1; }
+          done
+          compgen -G "$unit/closure/*.a" > /dev/null || { echo "::error::$unit carries no closure/*.a — the link-unit job's artifact is incomplete"; exit 1; }
+          echo "staged link unit OK: $(find "$unit/closure" -name '*.a' | wc -l) closure archives"
 
       - name: Build runtime using ci container
         if: matrix.env.container != null
@@ -352,9 +429,9 @@ jobs:
           container="ghcr.io/tamatebako/tebako-${{ matrix.env.container }}:${{ needs.compute.outputs.container-version }}-${arch_suffix}"
           echo "Building runtime for Ruby ${{ matrix.ruby.version }} on ${{ matrix.env.os }}/${{ matrix.env.arch }}"
           runtime="tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
-          # TEBAKO_RUST_LIBDIR: the staged v2 link unit (see the POSIX
-          # link-unit steps above) — the builder's rust_driver? switch then
-          # links the scoped Rust staticlibs instead of the C++ driver.
+          # TEBAKO_RUST_LIBDIR: the staged v2 link unit (downloaded from
+          # the link-unit job above) — the builder's rust_driver? switch
+          # then links the scoped Rust staticlibs instead of the C++ driver.
           docker run -v ${{github.workspace}}:/mnt/w \
             -e TEBAKO_RUST_LIBDIR=/mnt/w/.build/link-unit \
             -t $container \
@@ -506,7 +583,7 @@ jobs:
       - name: Build runtime
         if: matrix.env.container == null && matrix.env.os != 'windows'
         env:
-          # The staged v2 link unit (see the POSIX link-unit steps above).
+          # The staged v2 link unit (downloaded from the link-unit job above).
           TEBAKO_RUST_LIBDIR: ${{ github.workspace }}/.build/link-unit
         run: |
           echo "Building runtime for Ruby ${{ matrix.ruby.version }} on ${{ matrix.env.os }}/${{ matrix.env.arch }}"

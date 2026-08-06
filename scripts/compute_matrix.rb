@@ -382,7 +382,16 @@ class MatrixComputer # rubocop:disable Metrics/ClassLength
     File.write(out, "run=#{legs[:run]}\n", mode: "a")
     File.write(out, "ruby-matrix=#{legs[:rubies].to_json}\n", mode: "a")
     File.write(out, "env-matrix=#{legs[:env].to_json}\n", mode: "a")
+    File.write(out, "link-unit-matrix=#{link_unit_matrix(legs[:env]).to_json}\n", mode: "a")
     File.write(out, "why=#{legs[:why]}\n", mode: "a")
+  end
+
+  # The link-unit matrix: one leg per platform-arch, NEVER per ruby —
+  # the native closure depends on the triplet only. Deduped by env key
+  # (os, arch) so a future second host for the same arch still stages
+  # once (two same-named artifact uploads would collide in the run).
+  def link_unit_matrix(env)
+    env.uniq { |entry| [entry["os"], entry["arch"]] }
   end
 end
 
