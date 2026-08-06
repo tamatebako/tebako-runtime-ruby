@@ -14,5 +14,16 @@
 # TEBAKO_CONTRACT_VERSION env var.
 #
 # Schema: schema/contract.schema.yml (validated by the same check).
+#
+# container_version: the toolchain CONTAINER line the builds run inside
+# (ghcr.io/tamatebako/tebako-<platform>:<container_version>-<arch>) —
+# an axis INDEPENDENT of the artifact version (VERSION file). The build
+# legs reference it via needs.compute.outputs.container-version, and the
+# preflight-containers job fails the run in seconds when a tag is
+# missing (2026-08-05: VERSION 0.16.3 briefly referenced a nonexistent
+# 0.16.3 container — manifest unknown, ~40 min into every leg). Pinned
+# at the last-published v1 containers until the tpkg-builder images
+# (tebako-ci-containers) take over with their own tag scheme.
 ---
 contract_version: 2
+container_version: "0.16.2"

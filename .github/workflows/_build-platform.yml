@@ -99,6 +99,7 @@ jobs:
       env-matrix: ${{ steps.matrix.outputs.env-matrix }}
       ruby-matrix: ${{ steps.matrix.outputs.ruby-matrix }}
       tebako-version: ${{ steps.get-version.outputs.version }}
+      container-version: ${{ steps.get-container-version.outputs.version }}
       source-pin: ${{ steps.get-source-pin.outputs.pin }}
     steps:
       - name: Checkout
@@ -119,6 +120,17 @@ jobs:
         run: |
           version=$(cat VERSION)
           echo "Building runtimes for Tebako version $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # The toolchain container line — an axis INDEPENDENT of the
+      # artifact version (contract.yml owns it; the preflight job fails
+      # the run in seconds when a referenced tag is missing).
+      - name: Get container version
+        id: get-container-version
+        run: |
+          version=$(grep -E '^container_version:' contract.yml | sed -E 's/^container_version: *"([^"]+)".*/\1/')
+          [ -n "$version" ] || { echo "::error::contract.yml declares no container_version"; exit 1; }
+          echo "Building in toolchain containers $version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       # The tamatebako/ruby source release pin the runtimes build from,
@@ -162,9 +174,41 @@ jobs:
         run: |
           ./scripts/compute_matrix.rb --platform ${{ inputs.platform }}
 
+  # FAIL FAST: every container the legs reference must exist BEFORE any
+  # leg spends compute. 2026-08-05: a VERSION bump referenced a
+  # nonexistent container tag and every leg discovered it ~40 min in
+  # ("manifest unknown"). Seconds here, never mid-leg.
+  preflight-containers:
+    name: Preflight the toolchain containers
+    needs: compute
+    if: ${{ needs.compute.outputs.run == 'true' && !inputs.audit }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify every referenced container manifest exists
+        env:
+          ENV_MATRIX: ${{ needs.compute.outputs.env-matrix }}
+          CONTAINER_VERSION: ${{ needs.compute.outputs.container-version }}
+        run: |
+          set -u
+          names=$(printf '%s' "$ENV_MATRIX" | jq -r '.[].container // empty' | sort -u)
+          [ -n "$names" ] || { echo "no containerized legs; nothing to preflight"; exit 0; }
+          missing=0
+          for c in $names; do
+            for arch in amd64 arm64; do
+              ref="ghcr.io/tamatebako/tebako-${c}:${CONTAINER_VERSION}-${arch}"
+              if docker manifest inspect "$ref" >/dev/null 2>&1; then
+                echo "ok: $ref"
+              else
+                echo "::error::missing toolchain container: $ref"
+                missing=1
+              fi
+            done
+          done
+          [ "$missing" -eq 0 ] || { echo "::error::preflight failed — publish the containers or fix container_version in contract.yml"; exit 1; }
+
   build:
     name: Build runtime package for ${{ matrix.env.os }} / ${{ matrix.env.arch }} / Ruby ${{ matrix.ruby.version }}
-    needs: compute
+    needs: [compute, preflight-containers]
     # Audit runs publish-shaped verification without spending a build.
     if: ${{ needs.compute.outputs.run == 'true' && !inputs.audit }}
     runs-on: ${{ matrix.env.host }}
@@ -305,7 +349,7 @@ jobs:
             arm64)  arch_suffix=arm64 ;;
             *) echo "::error::no container arch suffix for '${{ matrix.env.arch }}'"; exit 1 ;;
           esac
-          container="ghcr.io/tamatebako/tebako-${{ matrix.env.container }}:${{ needs.compute.outputs.tebako-version }}-${arch_suffix}"
+          container="ghcr.io/tamatebako/tebako-${{ matrix.env.container }}:${{ needs.compute.outputs.container-version }}-${arch_suffix}"
           echo "Building runtime for Ruby ${{ matrix.ruby.version }} on ${{ matrix.env.os }}/${{ matrix.env.arch }}"
           runtime="tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
           # TEBAKO_RUST_LIBDIR: the staged v2 link unit (see the POSIX
