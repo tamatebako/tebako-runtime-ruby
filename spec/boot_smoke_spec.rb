@@ -1,11 +1,29 @@
 # frozen_string_literal: true
 
 require "spec_helper"
+require "yaml"
 
 # Runtime boot-smoke class (roadmap item 19): boots ONE built runtime
 # executable per example and asserts the memfs syscall surface from inside
 # the packaged context -- the statx/fcntl/flock drift class, caught per
 # runtime at build time, before tebako-rs users boot the package.
+#
+# The boot is the spec-17 smoke form (spec 17 §1: "With images but NO
+# --tebako-entry at all, the boot mounts and starts the interpreter with
+# its own args"): TEBAKO_RUNTIME_IMAGE names the leg's own .tfs and the
+# probe preloaded through RUBYOPT executes inside the packaged context.
+# Beyond the syscall surface the class gates the upload on:
+#   * code execution FROM the mount (the default-gem require resolves
+#     inside the memfs -- "boots + runs ruby from the image"),
+#   * the openssl native-extension canary (issue #40; each leg records
+#     its expectation as TEBAKO_SMOKE_EXPECT_OPENSSL in
+#     _build-platform.yml and the class fails on any drift, either way),
+#   * the deploy-direction IO.copy_stream (the io.c zero-copy EBADF
+#     class -- only a real run exposes it),
+#   * the era-2 release card next to the package plus the driver's
+#     compiled-in contract version export, pinned against contract.yml
+#     (the manifest entry's contract fields, validated BEFORE upload --
+#     the corrupt-manifest incident class).
 #
 # Point TEBAKO_RUNTIME_ROOT at a runtime root (a directory holding exactly
 # one tebako-runtime-* executable, e.g. a build leg's runtime-packages/, or
@@ -92,6 +110,13 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
     let(:smoke) { described_class.new }
     let(:artifact) { smoke.artifact }
 
+    # contract.yml at the repo root is the release pipeline's source of
+    # truth for the contract_version every manifest entry emits
+    # (scripts/upload_release.rb); the exe's compiled-in export must agree.
+    def contract_yml_version
+      YAML.load_file(File.join(REPO_ROOT, "contract.yml")).fetch("contract_version")
+    end
+
     describe "boot" do
       let(:run) { smoke.run("boot") }
 
@@ -99,6 +124,20 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
         expect(run).to be_booted, boot_failure(run)
         expect(run.state("ruby_version")).to eq("ok")
         expect(run.detail("ruby_version")).to eq(artifact.ruby_version)
+      end
+
+      it "exports the compiled-in contract version, matching contract.yml (roadmap 45)" do
+        # The manifest entry emits contract.yml's contract_version; the
+        # fs-TU's tebako_main shim exports the linked driver's compiled-in
+        # constant into the runtime's environment at boot. Pinning the two
+        # here closes the stale-link-unit hole the compute job's
+        # source-level check cannot see: a cached link unit carrying an
+        # older driver would ship a manifest that mis-declares the
+        # contract the binary speaks.
+        expect(run).to be_booted, boot_failure(run)
+        expect(run.state("contract_version")).to eq("ok"),
+                                                 "probe contract_version detail: #{run.detail("contract_version")}"
+        expect(run.detail("contract_version")).to eq(contract_yml_version.to_s)
       end
     end
 
@@ -162,10 +201,26 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
                                                   "probe read_stdlib_files detail: #{run.detail("read_stdlib_files")}"
       end
 
-      it "resolves a default gem through $LOAD_PATH" do
+      it "executes a default gem's code from the mount through $LOAD_PATH" do
+        # The spec-17 smoke form's point: not just that the interpreter
+        # starts, but that it runs code OUT OF THE IMAGE -- the resolved
+        # feature path must live under the mount point, never on the host.
         expect(run).to be_booted, boot_failure(run)
         expect(run.state("load_path_default_gem")).to eq("ok")
-        expect(run.detail("load_path_default_gem")).not_to be_empty
+        expect(run.detail("load_path_default_gem")).to start_with(smoke.mount_point)
+      end
+
+      it "copies a file out of the image byte-exactly (the deploy direction)" do
+        # IO.copy_stream from a memfs fd to a host file is the deploy
+        # path: ruby's io.c zero-copy syscall (copy_file_range/fcopyfile)
+        # must degrade to read/write on the memfs fd. The unguarded EBADF
+        # is invisible to every static check -- only this real run exposes
+        # it (the 0.16.2 deploy incident; guarded in tamatebako/ruby
+        # v0.2.15). A "fail" here is a broken runtime: the upload must
+        # not happen.
+        expect(run).to be_booted, boot_failure(run)
+        expect(run.state("copy_stream")).to eq("ok"),
+                                            "probe copy_stream detail: #{run.detail("copy_stream")}"
       end
 
       it "declares the era-2 image layout at /lib/tebako/layout.yaml (spec 18 C3)" do
@@ -246,6 +301,75 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
                            "probe load_native_extension detail: #{run.detail("load_native_extension")}"
         end
       end
+      it "loads openssl on every leg (it is statically linked into the runtime)" do
+        # openssl is STATICALLY linked into the runtime, so require
+        # "openssl" must load on EVERY leg before the artifacts leave it
+        # (owner directive), windows included — a "fail" probe is a broken
+        # runtime, always. Issue 40's dynamic-extension tripwire rides the
+        # cparse.so check (load_native_extension), never openssl; this
+        # canary exists to catch a regression that drops the static
+        # openssl link.
+        expect(run).to be_booted, boot_failure(run)
+        state = run.state("require_openssl")
+        expect(state).to eq(smoke.expected_openssl_state),
+                         "openssl canary: the probe reports '#{state}' (#{run.detail("require_openssl")}) but this " \
+                         "leg records '#{smoke.expected_openssl_state}' (TEBAKO_SMOKE_EXPECT_OPENSSL in " \
+                         "_build-platform.yml). A POSIX leg reporting 'fail' is a broken runtime -- the upload " \
+                         "must not happen. A windows leg flipping to 'ok' means the issue-#40 fix landed: flip " \
+                         "the recorded value to 'ok' in the same PR to enforce it from then on."
+      end
     end
-  end
+
+    describe "the era-2 release card (spec 18 C2, gated pre-upload)" do
+      # Host-side validation of the manifest entry's contract fields
+      # BEFORE the artifacts leave the leg -- the 0.16.2 corrupt-manifest
+      # incident class. The publish pipeline re-validates fail-closed
+      # (scripts/upload_release.rb#contract_sidecar); catching it here
+      # fails the ONE leg instead of the whole matrix at publish time.
+      let(:card_path) { "#{smoke.executable.sub(/\.exe\z/, "")}.contract.yaml" }
+      let(:card) { File.file?(card_path) ? YAML.load_file(card_path) : nil }
+
+      it "ships the contract sidecar next to the package" do
+        expect(File.file?(card_path)).to be(true),
+                                         "missing #{card_path} -- a pre-era or corrupt build; the release pipeline " \
+                                         "refuses it by name at publish time (spec 18 C2/S11), after the whole " \
+                                         "matrix spent itself"
+      end
+
+      it "declares the era-2 contract set this factory speaks" do
+        expect(card).to be_a(Hash), "contract sidecar #{card_path} is missing or not a mapping"
+        card_era = TebakoRuntimeBuilder::Builder::CONTRACT_CARD.fetch("contract_era")
+        image_layout = TebakoRuntimeBuilder::Builder::CONTRACT_CARD.fetch("image_layout")
+        expect(card.fetch("contract_era", nil)).to eq(card_era)
+        expect(card.fetch("image_layout", nil)).to eq(image_layout)
+        %w[mount_root built_from].each do |key|
+          expect(card[key]).not_to be_nil,
+                                   "contract sidecar misses '#{key}' -- the manifest entry would ship under-declared"
+        end
+      end
+
+      it "declares the mount root this platform's runtime compiled in" do
+        # The manifest's mount_root flows from this card; the image's own
+        # layout.yaml (the layout_yaml probe) and the driver's exit-78
+        # pair-check pin the same value against the exe's compiled-in
+        # root, so agreement here closes the triangle.
+        expect(card).to be_a(Hash), "contract sidecar #{card_path} is missing or not a mapping"
+        expect(card["mount_root"]).to eq(smoke.mount_point)
+      end
+
+      it "names the build provenance (built_from release + verified sources)" do
+        expect(card).to be_a(Hash), "contract sidecar #{card_path} is missing or not a mapping"
+        built_from = card["built_from"]
+        expect(built_from).to be_a(Hash), "built_from is missing or not a mapping"
+        expect(built_from["release"].to_s).not_to be_empty
+        sources = built_from["sources"]
+        expect(sources).to be_a(Array), "built_from.sources is missing or not an array"
+        expect(sources).not_to be_empty
+        sources.each do |source|
+          expect(source["name"].to_s).not_to be_empty
+          expect(source["sha256"].to_s).to match(/\A[0-9a-f]{64}\z/)
+        end
+      end
+    end
+end
 end

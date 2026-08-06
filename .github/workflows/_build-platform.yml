@@ -609,12 +609,16 @@ jobs:
 
       # Roadmap item 19: boot-smoke the freshly built runtime BEFORE the
       # artifacts leave the leg. spec/boot_smoke_spec.rb (tag :boot_smoke)
-      # boots the executable and exercises the memfs syscall surface
-      # (stat/btime, image IO, gem home/bundler, flock) so the
-      # statx/fcntl/flock drift class is caught at build time rather than
-      # by tebako-rs users. The boot mirrors the image-era bootstrap:
-      # TEBAKO_RUNTIME_IMAGE points at the leg's own .tfs (item 30b). A red
-      # boot-smoke skips the upload below, and
+      # boots the executable in the spec-17 smoke form (TEBAKO_RUNTIME_IMAGE
+      # = the leg's own .tfs, no --tebako-entry -- the driver mounts and
+      # starts the interpreter with its own args) and asserts from inside
+      # the packaged context: the memfs syscall surface (stat/btime, image
+      # IO, gem home/bundler, flock), code execution FROM the mount, the
+      # openssl native-extension canary (TEBAKO_SMOKE_EXPECT_OPENSSL
+      # records the leg's expectation -- issue 40), the deploy-direction
+      # IO.copy_stream (the io.c zero-copy EBADF class), and the era-2
+      # release card + contract version the manifest entry will carry.
+      # A red boot-smoke skips the upload below, and
       # the release job's completeness gate then fails the run loudly --
       # a drifted runtime never ships. Container legs run the class on the
       # host: the gnu/musl executables run on the ubuntu host kernel
@@ -632,6 +636,13 @@ jobs:
         shell: bash
         env:
           TEBAKO_RUNTIME_ROOT: runtime-packages
+          # The openssl canary's recorded expectation (issue 40 class):
+          # openssl is statically linked into the runtime, so require
+          # "openssl" must LOAD on every POSIX leg today -- a 'fail' probe
+          # here is a broken runtime, the leg fails, and the upload below
+          # never happens. The spec fails on ANY drift from this record,
+          # either way.
+          TEBAKO_SMOKE_EXPECT_OPENSSL: ok
         run: |
           set -euo pipefail
           bundle install --jobs 4 --retry 3
@@ -653,10 +664,15 @@ jobs:
         if: matrix.env.os == 'linux-musl'
         env:
           TEBAKO_RUNTIME_ROOT: runtime-packages
+          # The openssl canary's recorded expectation -- POSIX legs enforce
+          # (see the host-leg step above); the musl runtime links openssl
+          # statically like every POSIX build.
+          TEBAKO_SMOKE_EXPECT_OPENSSL: ok
         run: |
           set -euo pipefail
           docker run --rm -v ${{ github.workspace }}:/mnt/w -w /mnt/w \
             -e TEBAKO_RUNTIME_ROOT \
+            -e TEBAKO_SMOKE_EXPECT_OPENSSL \
             alpine:3.21 sh -c '
               set -e
               apk add --no-cache ruby ruby-dev build-base ruby-bundler >/dev/null
@@ -668,6 +684,14 @@ jobs:
         shell: msys2 {0}
         env:
           TEBAKO_RUNTIME_ROOT: runtime-packages
+          # openssl is STATICALLY linked into the runtime (not a dynamic
+          # ext), so require "openssl" must LOAD on every windows leg
+          # today, shared build or not — the 4.0.6 probe proves it
+          # (OpenSSL 3.6.0). A 'fail' probe here is a broken runtime, the
+          # leg fails, the upload never happens. Issue 40's dynamic-ext
+          # tripwire rides the cparse.so check (load_native_extension),
+          # never this one.
+          TEBAKO_SMOKE_EXPECT_OPENSSL: ok
         run: |
           set -euo pipefail
           gem install bundler --no-document

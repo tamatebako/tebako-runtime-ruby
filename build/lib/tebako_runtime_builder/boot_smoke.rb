@@ -87,6 +87,17 @@ module TebakoRuntimeBuilder
       @platform.fs_mount_point
     end
 
+    # The leg's recorded expectation for the openssl native-extension
+    # canary: each boot-smoke step in _build-platform.yml records it per
+    # leg as TEBAKO_SMOKE_EXPECT_OPENSSL. openssl is STATICALLY linked
+    # into the runtime, so require "openssl" must load on EVERY leg,
+    # windows included — a "fail" probe is a broken runtime, always.
+    # (Issue 40's dynamic-extension tripwire rides the cparse.so check,
+    # never openssl.) Unset defaults to "ok", the only correct state.
+    def expected_openssl_state
+      ENV.fetch("TEBAKO_SMOKE_EXPECT_OPENSSL", "ok")
+    end
+
     # Boot the runtime once with the named scenario preloaded; returns the
     # parsed Run model (never raises for a failed boot -- the model carries
     # the failure; a raise means the driver itself is miswired)

@@ -367,14 +367,36 @@ endif(TEBAKO_EMBED_IMAGE)
 # of the value — the driver crate carries no copy, so exe and driver
 # cannot drift (the 2026-08-01 msys class: driver mounted the POSIX
 # root, ruby looked in the drive-letter root). The driver archive's own
-# tebako_main member is never pulled (the symbol is already defined).
+# tebako_main member is never pulled (the symbol is already defined) —
+# so the shim also replicates that entry's other side effect, the
+# TEBAKO_CONTRACT_VERSION export (roadmap 45): the runtime is
+# authoritative for the contract it speaks, an inherited value is always
+# overwritten, and the value FLOWS from the driver's
+# tebako_driver_contract_version() getter — never a factory-side literal
+# (SSOT). The boot smoke reads the export inside the runtime and pins it
+# against contract.yml, the value the release manifest declares.
 if(TEBAKO_RUST_DRIVER)
   set(TEBAKO_MAIN_SHIM "\
-// The v1 entry hook (TEBAKO_RUST_DRIVER builds): forwards to the Rust\n\
-// driver's generic boot with the exe's own compiled-in mount point.\n\
+// The v1 entry hook (TEBAKO_RUST_DRIVER builds): exports the linked\n\
+// driver's compiled-in contract version (roadmap 45), then forwards to\n\
+// the Rust driver's generic boot with the exe's own compiled-in mount\n\
+// point. The miniruby pass-through exports nothing (a build-time tool).\n\
+#include <stdio.h>\n\
+#include <stdlib.h>\n\
+#include <string.h>\n\
 extern \"C\" {\n\
   int tebako_driver_boot(int* argc, char*** argv, const char* runtime_root);\n\
+  unsigned int tebako_driver_contract_version(void);\n\
   int tebako_main(int* argc, char*** argv) {\n\
+    if (strstr((*argv)[0], \"miniruby\") == nullptr) {\n\
+      char contract_version[16];\n\
+      snprintf(contract_version, sizeof(contract_version), \"%u\", tebako_driver_contract_version());\n\
+#ifdef _WIN32\n\
+      _putenv_s(\"TEBAKO_CONTRACT_VERSION\", contract_version);\n\
+#else\n\
+      setenv(\"TEBAKO_CONTRACT_VERSION\", contract_version, 1);\n\
+#endif\n\
+    }\n\
     return tebako_driver_boot(argc, argv, tebako::fs_mount_point);\n\
   }\n\
 }")
