@@ -289,21 +289,25 @@ module TebakoRuntimeBuilder
     # pull drags the toolchain stub's compat getters (tebako_original_pwd,
     # tebako_is_running_miniruby) into the link on top of the same symbols
     # the DLL's import archive already bound -- the ld multiple-definition
-    # failure on the 3.3.12/4.0.6 legs) + the import library of the ruby
-    # DLL (inside the group: the shim's tebako_driver_boot reference is
-    # later than LIBRUBYARG) + the static-ext/system deps. The driver is
-    # NOT here -- it rides the DLL (compute_solibs): the driver mounts
-    # through its OWN bundled tfs instance, which unifies with the c_api's
-    # context only when driver and libtfs.a share one link (the static
-    # exe's shape); split across two PE modules the driver mounts into the
-    # exe-side context while ruby's io routing reads the DLL's empty one
-    # -- A:/__tfs__ falls through to the host and touching the unmapped A: drive
-    # hangs the process silently (proven on the 3.3.12/4.0.6 legs).
+    # failure on the 3.3.12/4.0.6 legs) + the static-ext/system deps. NO
+    # import-library literal: the exe recipes name it via LIBRUBYARG
+    # already, and a bare libx64-ucrt-ruby<ABI>.dll.a in MAINLIBS lands in
+    # every mkmf conftest link -- the import library is deleted-and-rewritten
+    # on each DLL relink (the rbconfig rewrites relink it three times a
+    # build), and a probe reading it in that window fails and marks the ext
+    # broken for good (the 4.0.6 ext/openssl 'cannot find
+    # libx64-ucrt-ruby400.dll.a' class). The driver is NOT here -- it rides
+    # the DLL (compute_solibs): the driver mounts through its OWN bundled
+    # tfs instance, which unifies with the c_api's context only when driver
+    # and libtfs.a share one link (the static exe's shape); split across
+    # two PE modules the driver mounts into the exe-side context while
+    # ruby's io routing reads the DLL's empty one -- A:/__tfs__ falls
+    # through to the host and touching the unmapped A: drive hangs the
+    # process silently (proven on the 3.3.12/4.0.6 legs).
     def msys_libraries(ruby_ver, with_compression)
       libraries = with_compression ? ["-Wl,-Bstatic"] : []
       libraries += ["-Wl,--start-group",
-                    "-l:libtebako-fs.a",
-                    ruby_ver.msys_implib_name] +
+                    "-l:libtebako-fs.a"] +
                    ["-Wl,--end-group"] +
                    MSYS_LIBRARIES +
                    # Rust std's Windows references the dwarfs closure

@@ -275,10 +275,12 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
                  "S[\"SOLIBS\"]=\"$(MAINLIBS)\"\n")
       described_class.postconfigure("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7")
       contents = File.read(config_status)
-      # the exe side: fs TU (plain, never whole-archive) + import library + system libs
+      # the exe side: fs TU (plain, never whole-archive) + system libs;
+      # the import library comes via LIBRUBYARG, never a MAINLIBS literal
+      # (a literal lands in every mkmf conftest link and races the DLL relinks)
       expect(contents).to include("-l:libtebako-fs.a")
       expect(contents).not_to include("--whole-archive -l:libtebako-fs.a")
-      expect(contents).to include("libx64-ucrt-ruby330.dll.a")
+      expect(contents).not_to include("libx64-ucrt-ruby330.dll.a")
       expect(contents).not_to include("S[\"MAINLIBS\"]=\"#{described_class::MSYS_MAINLIBS_LINE}\"")
       # the DLL side: the closure replaces the $(MAINLIBS) reference
       expect(contents).to include("S[\"SOLIBS\"]=\"-Wl,--start-group -l:libtfs.a")

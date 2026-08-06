@@ -107,11 +107,11 @@ RSpec.describe TebakoRuntimeBuilder::Mlibs do
       expect(mlibs.compute(ruby_ver)).to include("-Wl,--end-group")
     end
 
-    it "keeps the driver and the closure OUT of MAINLIBS (the exe side: fs TU + import lib, issue 40)" do
+    it "keeps the driver, the closure and the import-lib literal OUT of MAINLIBS (the exe side, issue 40)" do
       result = mlibs.compute(ruby_ver)
       expect(result).to include("-l:libtebako-fs.a")
       expect(result).not_to include("--whole-archive")
-      expect(result).to include("libx64-ucrt-ruby330.dll.a")
+      expect(result).not_to include(".dll.a")
       expect(result).to include("-lws2_32")
       expect(result).to include("-lpsapi")
       expect(result).to include("-lntdll")
@@ -188,11 +188,11 @@ RSpec.describe TebakoRuntimeBuilder::Mlibs do
         FileUtils.remove_entry(root)
       end
 
-      it "links the fs TU shim archive plainly ahead of the import library (no --whole-archive, issue 40)" do
+      it "links the fs TU shim archive plainly (no --whole-archive, no import-lib literal, issue 40)" do
         result = mlibs.compute(ruby_ver)
         expect(result).to start_with(
           "-Wl,-Bstatic -Wl,--start-group " \
-          "-l:libtebako-fs.a libx64-ucrt-ruby330.dll.a"
+          "-l:libtebako-fs.a -Wl,--end-group"
         )
       end
 
