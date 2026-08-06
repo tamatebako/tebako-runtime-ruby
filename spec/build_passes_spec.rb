@@ -166,7 +166,7 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
         FileUtils.touch(File.join(link_unit, "closure", "libfmt.a"))
         src = File.join(link_unit, "driver.c")
         obj = File.join(link_unit, "driver.o")
-        File.write(src, "int tebako_driver_boot(void) { return 0; }\n")
+        File.write(src, "int tebako_driver_boot(void) { return 0; }\nint tebako_main(void) { return 0; }\n")
         TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["cc", "-c", src, "-o", obj])
         TebakoRuntimeBuilder::BuildHelpers.run_with_capture(
           ["ar", "rcs", File.join(link_unit, "libtebako_driver.a"), obj]
@@ -178,9 +178,18 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
         ensure
           prev.nil? ? ENV.delete("TEBAKO_RUST_LIBDIR") : ENV["TEBAKO_RUST_LIBDIR"] = prev
         end
-        fragment = File.read(File.join(ruby_src, "tebako-dll-exports.def"))
-        expect(fragment).to include("tebako_fs_mount\n")
-        expect(fragment).to include("tebako_driver_boot\n")
+        names = File.read(File.join(ruby_src, "tebako-dll-exports.def")).lines.map(&:strip)
+        expect(names).to include("tebako_fs_mount")
+        expect(names).to include("tebako_driver_boot")
+        # the exe's own entry stays out of the DLL exports (the fs TU shim
+        # wins the exe's tebako_main reference; the driver's member is DLL-internal)
+        expect(names).not_to include("tebako_main")
+        # the v2 stub drops the compat getters the import library already
+        # exports (the ld multiple-definition class on the windows legs)
+        symbols, = Open3.capture2e("nm", "-g", File.join(deps_lib_dir, "libtebako-fs.a"))
+        expect(symbols).to include("tebako_main")
+        expect(symbols).not_to include("tebako_original_pwd")
+        expect(symbols).not_to include("tebako_is_running_miniruby")
       end
     end
   end
@@ -264,8 +273,9 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
                  "S[\"SOLIBS\"]=\"$(MAINLIBS)\"\n")
       described_class.postconfigure("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7")
       contents = File.read(config_status)
-      # the exe side: fs TU + import library + system libs, never the closure
-      expect(contents).to include("-Wl,--push-state,--whole-archive -l:libtebako-fs.a -Wl,--pop-state")
+      # the exe side: fs TU (plain, never whole-archive) + import library + system libs
+      expect(contents).to include("-l:libtebako-fs.a")
+      expect(contents).not_to include("--whole-archive -l:libtebako-fs.a")
       expect(contents).to include("libx64-ucrt-ruby330.dll.a")
       expect(contents).not_to include("S[\"MAINLIBS\"]=\"#{described_class::MSYS_MAINLIBS_LINE}\"")
       # the DLL side: the closure replaces the $(MAINLIBS) reference

@@ -453,6 +453,11 @@ module TebakoRuntimeBuilder
             # i386 PE (and mach-O) decoration -- normalize before matching
             name = fields[-1].delete_prefix("_")
             next unless name.start_with?("tebako_")
+            # tebako_main is the exe's own entry (the fs TU shim, the S51
+            # provenance contract): exported from the DLL it would win the
+            # exe's own reference at LIBRUBYARG and the shim member would
+            # never pull -- the driver's tebako_main member stays DLL-internal.
+            next if name == "tebako_main"
 
             case type.upcase
             when "T", "W" then name
@@ -613,6 +618,12 @@ module TebakoRuntimeBuilder
         # ruby >= 3.3 defines rb_w32_pread in win32.c; only the older msys
         # lines need the stub's fallback
         defines << "-DRB_W32_PRE_33" if platform.msys? && !ruby_ver.ruby33?
+        # The v2 (Rust driver) link's import library exports the driver's
+        # compat getters; the stub drops its copies so the toolchain link
+        # has exactly one definition (issue 40, the ld multiple-definition
+        # failure). Normalized like Mlibs#rust_libdir (Windows-form paths).
+        rust_libdir = ENV.fetch("TEBAKO_RUST_LIBDIR", nil)&.tr('\\', "/")
+        defines << "-DTEBAKO_STUB_MINIMAL" if platform.msys? && rust_libdir && !rust_libdir.empty?
         TebakoRuntimeBuilder::BuildHelpers.run_with_capture(
           [cc, "-c", TOOLCHAIN_STUB_C, *defines, "-o", obj]
         )

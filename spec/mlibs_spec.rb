@@ -100,16 +100,17 @@ RSpec.describe TebakoRuntimeBuilder::Mlibs do
       described_class.new(TebakoRuntimeBuilder::Platform.new("x64-mingw-ucrt", "x86_64"), "/deps/lib")
     end
 
-    it "prepends -Wl,-Bstatic only with compression and group-wraps the driver + import lib" do
+    it "prepends -Wl,-Bstatic only with compression and group-wraps the fs TU + import lib" do
       expect(mlibs.compute(ruby_ver,
-                           with_compression: true)).to start_with("-Wl,-Bstatic -Wl,--start-group -Wl,--push-state")
-      expect(mlibs.compute(ruby_ver, with_compression: false)).to start_with("-Wl,--start-group -Wl,--push-state")
+                           with_compression: true)).to start_with("-Wl,-Bstatic -Wl,--start-group -l:libtebako-fs.a")
+      expect(mlibs.compute(ruby_ver, with_compression: false)).to start_with("-Wl,--start-group -l:libtebako-fs.a")
       expect(mlibs.compute(ruby_ver)).to include("-Wl,--end-group")
     end
 
     it "keeps the driver and the closure OUT of MAINLIBS (the exe side: fs TU + import lib, issue 40)" do
       result = mlibs.compute(ruby_ver)
-      expect(result).to include("-Wl,--push-state,--whole-archive -l:libtebako-fs.a -Wl,--pop-state")
+      expect(result).to include("-l:libtebako-fs.a")
+      expect(result).not_to include("--whole-archive")
       expect(result).to include("libx64-ucrt-ruby330.dll.a")
       expect(result).to include("-lws2_32")
       expect(result).to include("-lpsapi")
@@ -187,11 +188,11 @@ RSpec.describe TebakoRuntimeBuilder::Mlibs do
         FileUtils.remove_entry(root)
       end
 
-      it "whole-archives libtebako-fs.a ahead of the import library (the fs TU carries the tebako_main shim)" do
+      it "links the fs TU shim archive plainly ahead of the import library (no --whole-archive, issue 40)" do
         result = mlibs.compute(ruby_ver)
         expect(result).to start_with(
           "-Wl,-Bstatic -Wl,--start-group " \
-          "-Wl,--push-state,--whole-archive -l:libtebako-fs.a -Wl,--pop-state libx64-ucrt-ruby330.dll.a"
+          "-l:libtebako-fs.a libx64-ucrt-ruby330.dll.a"
         )
       end
 

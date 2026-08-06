@@ -40,6 +40,15 @@ const char *tebako_mount_point(void)
     return TEBAKO_STUB_MOUNT_POINT;
 }
 
+/* The v2 (Rust driver) link builds the exe against the ruby DLL's import
+   library, which exports the driver's own tebako_original_pwd and
+   tebako_is_running_miniruby: a stub that also defines them collides in
+   the toolchain link (the ld multiple-definition failure on the
+   3.3.12/4.0.6 legs). TEBAKO_STUB_MINIMAL (build_pass.rb, v2 only) drops
+   the two getters -- the exe binds them from the import library, miniruby
+   from the driver archive (TEBAKO_MINILIBS). The v1 link keeps the full
+   stub: no import library exists there. */
+#ifndef TEBAKO_STUB_MINIMAL
 int tebako_is_running_miniruby(void)
 {
     return 0;
@@ -49,6 +58,7 @@ const char *tebako_original_pwd(void)
 {
     return "";
 }
+#endif
 
 /* Referenced by the ruby < 3.3 msys builds (the real driver provides it
    under RB_W32_PRE_33); ruby >= 3.3 defines it in win32.c, so it is
