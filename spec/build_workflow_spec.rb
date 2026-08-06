@@ -46,7 +46,7 @@ RSpec.describe "build-platform reusable workflow" do
 
   it "has the build legs download the staged unit, never rebuild it per ruby" do
     build = workflow.fetch("jobs").fetch("build")
-    expect(build.fetch("needs")).to eq(%w[compute link-unit])
+    expect(build.fetch("needs")).to eq(%w[compute preflight-containers link-unit])
     steps = build.fetch("steps")
     download = steps.find { |step| step["name"] == "Download the staged link unit" }
     expect(download["if"]).to eq("matrix.env.os != 'windows'")

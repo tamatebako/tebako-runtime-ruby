@@ -266,21 +266,25 @@ module TebakoRuntimeBuilder
     end
 
     # MAINLIBS of the msys shared build (issue #40): the exe side. The fs
-    # TU (whole-archive libtebako-fs.a: the tebako_main shim forwarding the
-    # exe's compiled-in root) + the import library of the ruby DLL (inside
-    # the group: the shim's tebako_driver_boot reference is later than
-    # LIBRUBYARG) + the static-ext/system deps. The driver is NOT here --
-    # it rides the DLL (compute_solibs): the driver mounts through its OWN
-    # bundled tfs instance, which unifies with the c_api's context only
-    # when driver and libtfs.a share one link (the static exe's shape);
-    # split across two PE modules the driver mounts into the exe-side
-    # context while ruby's io routing reads the DLL's empty one -- A:/t
-    # falls through to the host and touching the unmapped A: drive hangs
-    # the process silently (proven on the 3.3.12/4.0.6 legs).
+    # TU (PLAIN -l:libtebako-fs.a, never --whole-archive: the exe
+    # references only the archive's tebako_main shim, and a whole-archive
+    # pull drags the toolchain stub's compat getters (tebako_original_pwd,
+    # tebako_is_running_miniruby) into the link on top of the same symbols
+    # the DLL's import archive already bound -- the ld multiple-definition
+    # failure on the 3.3.12/4.0.6 legs) + the import library of the ruby
+    # DLL (inside the group: the shim's tebako_driver_boot reference is
+    # later than LIBRUBYARG) + the static-ext/system deps. The driver is
+    # NOT here -- it rides the DLL (compute_solibs): the driver mounts
+    # through its OWN bundled tfs instance, which unifies with the c_api's
+    # context only when driver and libtfs.a share one link (the static
+    # exe's shape); split across two PE modules the driver mounts into the
+    # exe-side context while ruby's io routing reads the DLL's empty one
+    # -- A:/t falls through to the host and touching the unmapped A: drive
+    # hangs the process silently (proven on the 3.3.12/4.0.6 legs).
     def msys_libraries(ruby_ver, with_compression)
       libraries = with_compression ? ["-Wl,-Bstatic"] : []
       libraries += ["-Wl,--start-group",
-                    "-Wl,--push-state,--whole-archive -l:libtebako-fs.a -Wl,--pop-state",
+                    "-l:libtebako-fs.a",
                     ruby_ver.msys_implib_name] +
                    ["-Wl,--end-group"] +
                    MSYS_LIBRARIES +
