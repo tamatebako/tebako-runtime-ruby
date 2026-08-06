@@ -297,7 +297,7 @@ module TebakoRuntimeBuilder
     # context only when driver and libtfs.a share one link (the static
     # exe's shape); split across two PE modules the driver mounts into the
     # exe-side context while ruby's io routing reads the DLL's empty one
-    # -- A:/t falls through to the host and touching the unmapped A: drive
+    # -- A:/__tfs__ falls through to the host and touching the unmapped A: drive
     # hangs the process silently (proven on the 3.3.12/4.0.6 legs).
     def msys_libraries(ruby_ver, with_compression)
       libraries = with_compression ? ["-Wl,-Bstatic"] : []

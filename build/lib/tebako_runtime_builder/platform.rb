@@ -46,7 +46,7 @@ module TebakoRuntimeBuilder
       # (MountRoot, exit 132 when absent). What reads the convention is
       # the host-side expectation of a built exe's compiled-in root (the
       # boot smoke) and the CMake default for bare invocations.
-      @fs_mount_point = @msys ? "A:/t" : "/__tfs__"
+      @fs_mount_point = @msys ? "A:/__tfs__" : "/__tfs__"
       @exe_suffix = @msys ? ".exe" : ""
     end
 
