@@ -9,3 +9,7 @@ properties:
   contract_version:
     type: integer
     minimum: 1
+  container_version:
+    type: string
+    pattern: '^\d+\.\d+\.\d+$'
+    description: the toolchain container line the builds run inside (an axis independent of the artifact version)
