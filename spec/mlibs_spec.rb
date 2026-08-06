@@ -207,6 +207,13 @@ RSpec.describe TebakoRuntimeBuilder::Mlibs do
         expect(mainlibs).not_to include("#{root}/closure/libfmt.a")
       end
 
+      it "links miniruby against the driver archive DIRECTLY (no stub member to collide with, issue 40)" do
+        minilibs = mlibs.compute_minilibs(ruby_ver)
+        expect(minilibs).not_to include("libtebako-fs.a")
+        expect(minilibs).to include("#{root}/libtebako_driver.a")
+        expect(minilibs).to include("#{root}/libtfs.a")
+      end
+
       it "dedupes the pacman-covered closure archives (re-provided from pacman in the DLL link)" do
         FileUtils.touch(File.join(root, "closure", "libssl.a"))
         solibs = mlibs.compute_solibs(ruby_ver)

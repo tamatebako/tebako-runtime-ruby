@@ -184,12 +184,14 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
         # the exe's own entry stays out of the DLL exports (the fs TU shim
         # wins the exe's tebako_main reference; the driver's member is DLL-internal)
         expect(names).not_to include("tebako_main")
-        # the v2 stub drops the compat getters the import library already
-        # exports (the ld multiple-definition class on the windows legs)
+        # the v2 stub keeps ONLY tebako_main: every other stub symbol
+        # duplicates a definition the import library or the driver archive
+        # already has (the ld multiple-definition class on the windows legs)
         symbols, = Open3.capture2e("nm", "-g", File.join(deps_lib_dir, "libtebako-fs.a"))
         expect(symbols).to include("tebako_main")
         expect(symbols).not_to include("tebako_original_pwd")
         expect(symbols).not_to include("tebako_is_running_miniruby")
+        expect(symbols).not_to include("tebako_mount_point")
       end
     end
   end

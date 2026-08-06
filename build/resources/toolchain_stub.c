@@ -28,6 +28,23 @@
 
 #include <sys/types.h>
 
+/* The v2 (Rust driver) link builds the exe against the ruby DLL's import
+   library and miniruby against the driver archive directly (the driver's
+   own tebako_main carries the miniruby argv0 pass-through): every other
+   stub symbol would duplicate a definition that side already has (the ld
+   multiple-definition failures on the 3.3.12/4.0.6 legs -- first the
+   compat getters, then tebako_mount_point). TEBAKO_STUB_MINIMAL (v2 only)
+   reduces the stub to the one symbol the toolchain exe needs from it:
+   tebako_main, the plain-interpreter pass-through. The v1 link keeps the
+   full stub: no import library and no driver archive exists there. */
+#ifdef TEBAKO_STUB_MINIMAL
+int tebako_main(int *argc, char ***argv)
+{
+    (void)argc;
+    (void)argv;
+    return 0;
+}
+#else
 int tebako_main(int *argc, char ***argv)
 {
     (void)argc;
@@ -40,15 +57,6 @@ const char *tebako_mount_point(void)
     return TEBAKO_STUB_MOUNT_POINT;
 }
 
-/* The v2 (Rust driver) link builds the exe against the ruby DLL's import
-   library, which exports the driver's own tebako_original_pwd and
-   tebako_is_running_miniruby: a stub that also defines them collides in
-   the toolchain link (the ld multiple-definition failure on the
-   3.3.12/4.0.6 legs). TEBAKO_STUB_MINIMAL (build_pass.rb, v2 only) drops
-   the two getters -- the exe binds them from the import library, miniruby
-   from the driver archive (TEBAKO_MINILIBS). The v1 link keeps the full
-   stub: no import library exists there. */
-#ifndef TEBAKO_STUB_MINIMAL
 int tebako_is_running_miniruby(void)
 {
     return 0;
