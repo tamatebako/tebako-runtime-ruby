@@ -301,16 +301,14 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
                            "probe load_native_extension detail: #{run.detail("load_native_extension")}"
         end
       end
-      it "loads openssl, or matches the leg's recorded issue-40 expectation" do
-        # A native extension must load on EVERY leg before the artifacts
-        # leave it (owner directive): openssl is statically linked into
-        # the runtime, so POSIX legs record "ok" and a "fail" is a broken
-        # runtime. Windows records "fail" while issue #40 stands (the
-        # runtime binds no native extension until the shared build ships
-        # the ruby DLL); the first green probe after the fix lands
-        # mismatches the record and fails the leg until the same PR flips
-        # TEBAKO_SMOKE_EXPECT_OPENSSL to "ok" -- the canary enforces from
-        # then on.
+      it "loads openssl on every leg (it is statically linked into the runtime)" do
+        # openssl is STATICALLY linked into the runtime, so require
+        # "openssl" must load on EVERY leg before the artifacts leave it
+        # (owner directive), windows included — a "fail" probe is a broken
+        # runtime, always. Issue 40's dynamic-extension tripwire rides the
+        # cparse.so check (load_native_extension), never openssl; this
+        # canary exists to catch a regression that drops the static
+        # openssl link.
         expect(run).to be_booted, boot_failure(run)
         state = run.state("require_openssl")
         expect(state).to eq(smoke.expected_openssl_state),
