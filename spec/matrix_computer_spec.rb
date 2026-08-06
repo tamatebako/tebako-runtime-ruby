@@ -223,4 +223,37 @@ RSpec.describe MatrixComputer do
     env = JSON.parse(out[/^env-matrix=(.+)$/, 1])
     expect(env.first["host_id"]).to eq("windows-ucrt64")
   end
+
+  # The link-unit matrix feeds the ruby-free link-unit job: one leg per
+  # platform-arch — the native closure depends on the triplet only.
+  it "emits the link-unit matrix alongside the build matrices" do
+    ENV["MATRIX_RUBY_FILTER"] = "tidy"
+    out = run_computer("macos", event: "workflow_dispatch", payload: {})
+    link_unit = JSON.parse(out[/^link-unit-matrix=(.+)$/, 1])
+    expect(link_unit.map { |e| [e["os"], e["arch"]] })
+      .to contain_exactly(%w[macos x86_64], %w[macos arm64])
+  end
+
+  # A second host for the same (os, arch) must NOT stage the unit twice
+  # (two same-named artifact uploads would collide in the run) — the
+  # link-unit matrix dedupes by env key while the build env-matrix keeps
+  # every host.
+  context "with two hosts for the same platform-arch" do
+    let(:matrix_json) do
+      data = super()
+      data["env"] << { "host" => "ubuntu-24.04", "container" => "ubuntu-20.04",
+                       "os" => "linux-gnu", "arch" => "x86_64" }
+      data
+    end
+
+    it "dedupes the link-unit matrix by env key only" do
+      ENV["MATRIX_RUBY_FILTER"] = "tidy"
+      out = run_computer("linux-gnu", event: "workflow_dispatch", payload: {})
+      env = JSON.parse(out[/^env-matrix=(.+)$/, 1])
+      link_unit = JSON.parse(out[/^link-unit-matrix=(.+)$/, 1])
+      expect(env.size).to eq(3)
+      expect(link_unit.map { |e| [e["os"], e["arch"]] })
+        .to eq([%w[linux-gnu x86_64], %w[linux-gnu arm64]])
+    end
+  end
 end
