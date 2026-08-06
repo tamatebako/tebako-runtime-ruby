@@ -22,6 +22,14 @@
  * program picks up the real libtebako-fs.a.
  */
 
+/* The stub's definitions are WEAK: in the shared build (issue #40) the
+ * real driver TU rides the ruby DLL and exports the same entry points;
+ * weak lets the DLL's strong definitions win silently, while the static
+ * build (stub-only) links the weak copies unchanged. A whole-archive
+ * pull of this stub in the MAINLIBS shape must never produce a
+ * multiple-definition failure against the DLL's import archive.
+ */
+
 #ifndef TEBAKO_STUB_MOUNT_POINT
 #error "TEBAKO_STUB_MOUNT_POINT must be defined (the memfs mount point)"
 #endif
@@ -52,17 +60,17 @@ int tebako_main(int *argc, char ***argv)
     return 0;
 }
 
-const char *tebako_mount_point(void)
+__attribute__((weak)) const char *tebako_mount_point(void)
 {
     return TEBAKO_STUB_MOUNT_POINT;
 }
 
-int tebako_is_running_miniruby(void)
+__attribute__((weak)) int tebako_is_running_miniruby(void)
 {
     return 0;
 }
 
-const char *tebako_original_pwd(void)
+__attribute__((weak)) const char *tebako_original_pwd(void)
 {
     return "";
 }
