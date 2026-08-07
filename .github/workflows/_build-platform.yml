@@ -668,6 +668,15 @@ jobs:
             echo "== $1:"; grep -h "^S\[\"MAINLIBS\"\]\|^S\[\"SOLIBS\"\]\|^S\[\"LIBRUBYARG_STATIC\"\]" "$1" | cut -c1-140
           ' _ {} \; || true
           find .build/deps/src -maxdepth 2 -name config.status -exec ls -la --time-style=full-iso {} \; 2>/dev/null | awk "{print \$6, \$7, \$NF}" | head -4 || true
+          # the DLL export surface: does the fragment carry the driver's
+          # tebako_driver_* entries, and does the import lib export them
+          # (the ruby.exe link binds them from the import lib)
+          find .build/deps/src -name "tebako-dll-exports.def" -exec sh -c '
+            echo "== $1: driver/fs export lines:"; grep -nE "tebako_driver|tebako_fs_|tebako_mount|tebako_original" "$1" | head -20; echo "(count: $(wc -l < "$1"))"
+          ' _ {} \; || true
+          find .build/deps/src -name "libx64-ucrt-ruby*.dll.a" -exec sh -c '
+            echo "== $1: import-lib driver exports:"; nm -g "$1" 2>/dev/null | grep -E "tebako_driver_boot|tebako_driver_contract_version" || echo "(tebako_driver_* NOT exported)"
+          ' _ {} \; || true
           find .build/deps/src -maxdepth 2 -name Makefile -exec sh -c '
             echo "== $1: start-group refs:"; grep -n "start-group" "$1" || echo "(none)"
             echo "== $1: ruby.exe link rule region:"; grep -n -B4 -A6 "EXTOBJS.*-o \$@)" "$1" || true
