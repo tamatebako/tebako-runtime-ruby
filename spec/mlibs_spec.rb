@@ -247,7 +247,7 @@ RSpec.describe TebakoRuntimeBuilder::Mlibs do
       # NB: the vcpkg paths keep the non-normalized 'deps/lib/../' form, as
       # the gem's PatchLibraries produced them (the linker resolves them)
       vcpkg = File.join(root, "deps", "lib", "..", "vcpkg_installed", "arm64-osx", "lib")
-      expected = "-ltebako-fs " \
+      expected = "-Wl,-ld_classic -ltebako-fs " \
                  "#{root}/deps/lib/libtfs.a " \
                  "/brew/openssl@3/lib/libssl.a /brew/openssl@3/lib/libcrypto.a " \
                  "/brew/zlib/lib/libz.a /brew/gdbm/lib/libgdbm.a /brew/readline/lib/libreadline.a " \

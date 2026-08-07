@@ -532,6 +532,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     @client.upload_asset(release.url, package.to_s,
                          content_type: "application/octet-stream",
                          name: filename)
+    invalidate_assets_memo # the landed asset joins the listing
   end
 
   def platform_display_name(platform)
@@ -681,6 +682,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     return unless existing
 
     with_transient_retries { @client.delete_release_asset(existing.id) }
+    invalidate_assets_memo # the deleted asset leaves the listing
     wait_for_absence(release, filename)
   end
 
@@ -691,6 +693,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   # following upload starts clean; if propagation outlasts the poll, the
   # upload's 422 handler resolves by content.
   def wait_for_absence(release, filename, attempts: 12)
+    invalidate_assets_memo # the propagation poll needs live reads
     return if find_asset(release, filename).nil?
     return if attempts <= 1
 
@@ -702,16 +705,26 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   # release.assets is an embedded array capped at 30 entries, and a raw
   # rels[:assets].get is NOT auto-paginated either (auto_paginate covers
   # client methods, not Sawyer rel gets) — with 100+ assets most lookups
-  # silently miss. Walk the pages explicitly; a missing lookup re-uploads
-  # an existing asset, which is how a timeout becomes a 422 cascade.
+  # silently miss. Walk the pages explicitly, MEMOIZED per process: a full
+  # publish fetches the listing once instead of ~3 pages per file (~1000
+  # calls at catalog size — the difference on a degraded network). Our own
+  # mutations invalidate the memo (an upload adds to the listing, a delete
+  # removes); another actor's mutations are invisible by design — the
+  # global publish serialization means none exist within a run.
   def all_assets(release)
-    page = with_transient_retries { release.rels[:assets].get }
-    assets = page.data
-    while (nxt = page.rels[:next])
-      page = with_transient_retries { nxt.get }
-      assets += page.data
+    @assets_memo ||= begin
+      page = with_transient_retries { release.rels[:assets].get }
+      assets = page.data
+      while (nxt = page.rels[:next])
+        page = with_transient_retries { nxt.get }
+        assets += page.data
+      end
+      assets
     end
-    assets
+  end
+
+  def invalidate_assets_memo
+    @assets_memo = nil
   end
 
   def find_asset(release, filename)
