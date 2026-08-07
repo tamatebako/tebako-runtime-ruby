@@ -15,6 +15,7 @@ version: 1
 shared:
   - build/lib/**            # the builder model (Platform, SourceFetcher, MountRoot, …)
   - build/tools/**          # build_pass.rb and friends
+  - build/resources/**      # the stub/driver resources compiled into every runtime
   - build/CMakeLists.txt
   - build/cmake/**
   - tools/build_runtime

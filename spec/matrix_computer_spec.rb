@@ -59,11 +59,20 @@ RSpec.describe MatrixComputer do
       ]
     }
   end
-  let(:default_sums) do
-    { "tfs-ruby-3.3.12-src.tar.gz" => "aaa312",
-      "tfs-ruby-4.0.6-src.tar.gz" => "aaa406",
-      "SHA256SUMS" => "skip" }
+  # One release's asset set per fixture version: the base tarball (the
+  # linux-gnu scenario — also what macos consumes), the musl tarball, and
+  # the two msys passes. The per-scenario sums let the planner see WHICH
+  # platform's bytes a pin bump moved.
+  def sums_for(versions = %w[3.1.6 3.2.11 3.3.12 4.0.6])
+    versions.each_with_object({}) do |v, acc|
+      acc["tfs-ruby-#{v}-src.tar.gz"] = "gnu-#{v}"
+      acc["tfs-ruby-#{v}-src-linux-musl.tar.gz"] = "musl-#{v}"
+      acc["tfs-ruby-#{v}-src-msys-pass1.tar.gz"] = "msys1-#{v}"
+      acc["tfs-ruby-#{v}-src-msys-pass2.tar.gz"] = "msys2-#{v}"
+    end
   end
+
+  let(:default_sums) { sums_for }
   let(:sums_by_pin) { Hash.new(default_sums) }
   # One fake fetcher per pinned release (the pin owns its SHA256SUMS);
   # a spec moves a version's tarball by overriding its pin's sums.
@@ -174,15 +183,52 @@ RSpec.describe MatrixComputer do
   end
 
   # The pin lands by merge: the push that moves DEFAULT_RELEASE rebuilds
-  # exactly the moved versions — no repository_dispatch sender required.
-  it "a push that moves the source pin builds exactly the moved versions, on every platform" do
+  # the moved versions on exactly the platforms whose scenario moved —
+  # no repository_dispatch sender required.
+  it "a push that moves the source pin builds the moved versions on the platforms the moved scenario feeds" do
     differ.contents[["a", MatrixComputer::PIN_FILE]] = 'DEFAULT_RELEASE = "v0.2.13"'
     differ.contents[["b", MatrixComputer::PIN_FILE]] = 'DEFAULT_RELEASE = "v0.2.14"'
+    # The base (linux-gnu scenario) tarball moved: linux-gnu and macos
+    # consume it; windows and linux-musl do not run.
     sums_by_pin["v0.2.14"] = default_sums.merge("tfs-ruby-4.0.6-src.tar.gz" => "bbb406")
-    %w[windows linux-gnu linux-musl macos].each do |platform|
+    %w[linux-gnu macos].each do |platform|
       out = run_computer(platform, event: "push", files: [MatrixComputer::PIN_FILE],
                                    payload: { "before" => "a", "after" => "b" })
       expect(rubies(out)).to eq(["4.0.6"]), "#{platform} should build the moved version"
+    end
+    %w[windows linux-musl].each do |platform|
+      out = run_computer(platform, event: "push", files: [MatrixComputer::PIN_FILE],
+                                   payload: { "before" => "a", "after" => "b" })
+      expect(legs(out)).to eq("false"), "#{platform} must not run: the base tarball is not its scenario"
+    end
+  end
+
+  it "an msys-only source re-roll runs windows legs only" do
+    differ.contents[["a", MatrixComputer::PIN_FILE]] = 'DEFAULT_RELEASE = "v0.2.13"'
+    differ.contents[["b", MatrixComputer::PIN_FILE]] = 'DEFAULT_RELEASE = "v0.2.14"'
+    sums_by_pin["v0.2.14"] = default_sums.merge("tfs-ruby-3.3.12-src-msys-pass1.tar.gz" => "www312",
+                                                "tfs-ruby-3.3.12-src-msys-pass2.tar.gz" => "www312")
+    windows = run_computer("windows", event: "push", files: [MatrixComputer::PIN_FILE],
+                                      payload: { "before" => "a", "after" => "b" })
+    expect(rubies(windows)).to eq(["3.3.12"])
+    %w[linux-gnu linux-musl macos].each do |platform|
+      out = run_computer(platform, event: "push", files: [MatrixComputer::PIN_FILE],
+                                   payload: { "before" => "a", "after" => "b" })
+      expect(legs(out)).to eq("false"), "#{platform} must not run on an msys-only re-roll"
+    end
+  end
+
+  it "a musl-only source re-roll runs linux-musl legs only" do
+    differ.contents[["a", MatrixComputer::PIN_FILE]] = 'DEFAULT_RELEASE = "v0.2.13"'
+    differ.contents[["b", MatrixComputer::PIN_FILE]] = 'DEFAULT_RELEASE = "v0.2.14"'
+    sums_by_pin["v0.2.14"] = default_sums.merge("tfs-ruby-4.0.6-src-linux-musl.tar.gz" => "mmm406")
+    musl = run_computer("linux-musl", event: "push", files: [MatrixComputer::PIN_FILE],
+                                      payload: { "before" => "a", "after" => "b" })
+    expect(rubies(musl)).to eq(["4.0.6"])
+    %w[windows linux-gnu macos].each do |platform|
+      out = run_computer(platform, event: "push", files: [MatrixComputer::PIN_FILE],
+                                   payload: { "before" => "a", "after" => "b" })
+      expect(legs(out)).to eq("false"), "#{platform} must not run on a musl-only re-roll"
     end
   end
 

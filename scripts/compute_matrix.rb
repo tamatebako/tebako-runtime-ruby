@@ -51,13 +51,16 @@ require "tebako_runtime_builder"
 #     the tidy validation legs. A matrix.json change is diffed by
 #     CONTENT (which ruby sets/versions and which env entries moved).
 #     A diff that moves the source pin (PIN_FILE) rebuilds exactly the
-#     versions whose tarballs moved — the pin lands by merge, so the
-#     repository_dispatch path below is a compat route, never required.
+#     versions whose tarballs moved IN THE SCENARIOS THIS PLATFORM
+#     CONSUMES — an msys-only source re-roll runs windows legs only,
+#     a POSIX-only one leaves windows idle (the per-scenario SHA256SUMS
+#     diff; macos consumes the linux-gnu scenario). The pin lands by
+#     merge, so the repository_dispatch path below is a compat route,
+#     never required.
 #   repository_dispatch ("tebako release" — a new source release pin):
 #     the pinned release's SHA256SUMS is diffed against the PREVIOUS
-#     pin's — only versions whose tarball sha moved are affected (a
-#     4.0-only source release rebuilds 4.0.x only), on every platform
-#     (a source tarball change reaches every scenario of that version).
+#     pin's — only versions whose tarball sha moved are affected, and
+#     only on the platforms whose scenario moved.
 #   workflow_dispatch — the explicit filters (the three first-class
 #     shapes: one version everywhere, one platform all versions, one
 #     version on one platform), never the diff.
@@ -71,10 +74,23 @@ class MatrixComputer # rubocop:disable Metrics/ClassLength
   GRAPH = File.expand_path("../.github/build-graph.yaml", __dir__).freeze
   MATRIX_JSON = File.expand_path("../.github/matrix.json", __dir__).freeze
   # The source pin file: a diff that moves DEFAULT_RELEASE rebuilds exactly
-  # the versions whose tarballs moved (the pin lands by merge — no external
-  # sender required), on every platform.
+  # the versions whose tarballs moved in the scenarios each platform
+  # consumes (the pin lands by merge — no external sender required).
   PIN_FILE = "build/lib/tebako_runtime_builder/source_fetcher.rb"
   PLATFORMS = %w[windows linux-gnu linux-musl macos].freeze
+  # The scenario this platform's legs consume (macos reads the base
+  # linux-gnu tarball — SourceFetcher.scenario_asset_names is the owner
+  # of the platform→asset rule; this map only says which release
+  # scenario FEEDS each platform).
+  PLATFORM_SCENARIOS = {
+    "windows" => "msys",
+    "linux-gnu" => "linux-gnu",
+    "linux-musl" => "linux-musl",
+    "macos" => "linux-gnu"
+  }.freeze
+  # Asset name → [version, scenario]: the source release's naming
+  # contract (unsuffixed = the linux-gnu scenario).
+  ASSET_SCENARIO = /\Atfs-ruby-(\d+\.\d+\.\d+)-src(?:-(linux-musl|msys))?(?:-pass[12])?\.tar\.gz\z/.freeze
 
   def initialize(argv, fetcher_factory: nil, differ: nil)
     @platform = parse_platform(argv)
@@ -331,22 +347,50 @@ class MatrixComputer # rubocop:disable Metrics/ClassLength
 
     old_sums = sha_sums(old_pin)
     new_sums = sha_sums(new_pin)
-    new_sums.keys.reject { |version| old_sums[version] == new_sums[version] }
+    # Only the (version, scenario) pairs THIS platform consumes: an
+    # msys-only source re-roll moves no POSIX asset, so no POSIX leg
+    # runs; a POSIX-only re-roll leaves windows idle.
+    my_scenario = PLATFORM_SCENARIOS.fetch(@platform)
+    new_sums.keys
+            .select { |(_version, scenario)| scenario == my_scenario }
+            .reject { |pair| old_sums[pair] == new_sums[pair] }
+            .map(&:first)
+            .uniq
   end
 
+  # The pin's per-asset sums keyed by [version, scenario] — every
+  # scenario asset participates (an msys-only re-roll is visible to the
+  # windows planner, invisible to the POSIX ones).
   def sha_sums(pin)
     @fetcher_factory.call(pin).sha256sums.each_with_object({}) do |(name, sha), acc|
-      m = name.match(/\Atfs-ruby-(\d+\.\d+\.\d+)-src\.tar\.gz\z/)
-      acc[m[1]] = sha if m
+      m = name.match(ASSET_SCENARIO)
+      acc[[m[1], m[2] || "linux-gnu"]] = sha if m
     end
   end
 
   def all_versions(pin)
-    sha_sums(pin).keys
+    sha_sums(pin).keys.map(&:first).uniq
   end
 
   def with_shas(versions)
-    versions.map { |v| { "version" => v, "src_sha256" => source_fetcher.tarball_sha256(v) } }
+    versions.map { |v| { "version" => v, "src_sha256" => platform_tarball_sha256(v) } }
+  end
+
+  # The cache-key sha is the sha of the tarball THIS platform consumes
+  # (the msys pass-1 tree on windows, the musl tree on linux-musl, the
+  # base tree elsewhere): a scenario-suffixed re-roll moves the key of
+  # exactly the platforms whose bytes moved.
+  def platform_tarball_sha256(version)
+    name = TebakoRuntimeBuilder::SourceFetcher.scenario_asset_names(version, matrix_platform).first
+    source_fetcher.sha256sums.fetch(name)
+  end
+
+  # The builder Platform for this matrix platform (the scenario asset
+  # rule consumes it).
+  def matrix_platform
+    ostype = { "windows" => "x64-mingw-ucrt", "linux-gnu" => "linux-gnu",
+               "linux-musl" => "linux-musl", "macos" => "darwin" }.fetch(@platform)
+    TebakoRuntimeBuilder::Platform.new(ostype)
   end
 
   def source_fetcher
