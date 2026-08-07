@@ -418,11 +418,14 @@ module TebakoRuntimeBuilder
       # reads are GONE: the released source carries the pinned tebako_stat
       # ABI — stat64 layout — from tamatebako/ruby v0.2.13, so there is
       # nothing left to re-read.)
-      def hotfix_msys!(ruby_source_dir, deps_lib_dir, ruby_ver)
+      def hotfix_msys!(ruby_source_dir, deps_lib_dir, ruby_ver) # rubocop:disable Metrics/AbcSize
         hotfix_msys_glob_opendir!(File.join(ruby_source_dir, "dir.c"))
         hotfix_msys_fd_is_text!(File.join(ruby_source_dir, "io.c"))
         write_dll_exports_fragment!(ruby_source_dir, deps_lib_dir)
         hotfix_msys_dll_exports!(File.join(ruby_source_dir, "cygwin", "GNUmakefile.in"))
+        # The ruby.exe link rule lives in BOTH template/Makefile.in (the one
+        # the build actually uses) and cygwin/GNUmakefile.in — patch both.
+        hotfix_msys_exe_link_order!(File.join(ruby_source_dir, "template", "Makefile.in"))
         hotfix_msys_exe_link_order!(File.join(ruby_source_dir, "cygwin", "GNUmakefile.in"))
         hotfix_msys_mkexports_popen!(File.join(ruby_source_dir, "win32", "mkexports.rb"))
         minilibs = TebakoRuntimeBuilder::Mlibs.new(TebakoRuntimeBuilder::Platform.new, deps_lib_dir)

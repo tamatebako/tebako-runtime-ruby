@@ -41,6 +41,8 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
     miniruby_recipe = TebakoRuntimeBuilder::BuildPasses::MSYS_MINIRUBY_LIBS_ANCHOR
     File.write(File.join(dir, "template", "Makefile.in"),
                "MAINLIBS = @MAINLIBS@\n" \
+               "ruby$(EXEEXT):\n" \
+               "\t\t$(Q) $(PURIFY) $(CC) $(EXE_LDFLAGS) $(XLDFLAGS) $(MAINOBJ) $(EXTOBJS) $(LIBRUBYARG) -Wl,--start-group $(MAINLIBS) $(LIBS) $(EXTLIBS) -Wl,--end-group $(OUTFLAG)$@ # tebako patched\n" \
                "miniruby$(EXEEXT):\n" \
                "\t$(Q) $(PURIFY) $(CC) $(EXE_LDFLAGS) $(XLDFLAGS) #{miniruby_recipe} $(OUTFLAG)$@\n")
   end
@@ -160,6 +162,10 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
       gnu_makefile_in = File.read(File.join(ruby_src, "cygwin", "GNUmakefile.in"))
       expect(gnu_makefile_in).to include("-Wl,--start-group $(LIBRUBYARG) $(MAINLIBS) -Wl,--end-group")
       expect(gnu_makefile_in).not_to include("$(LIBRUBYARG) -Wl,--start-group $(MAINLIBS)")
+      # the rule the build actually uses (template/Makefile.in) too
+      makefile_in = File.read(File.join(ruby_src, "template", "Makefile.in"))
+      expect(makefile_in).to include("-Wl,--start-group $(LIBRUBYARG) $(MAINLIBS)")
+      expect(makefile_in).not_to include("$(LIBRUBYARG) -Wl,--start-group $(MAINLIBS)")
     end
 
     it "rewrites mkexports.rb's pipe-string IO.foreach as array-form IO.popen (ruby 4 baseruby)" do
@@ -219,7 +225,8 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
     end
 
     it "fails loudly when the miniruby recipe anchor drifted" do
-      File.write(File.join(ruby_src, "template", "Makefile.in"), "no miniruby recipe here\n")
+      File.write(File.join(ruby_src, "template", "Makefile.in"),
+                 "$(LIBRUBYARG) -Wl,--start-group $(MAINLIBS)\nno miniruby recipe here\n")
       expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tfs__", "cc") }
         .to raise_error(TebakoRuntimeBuilder::Error, /miniruby recipe anchor/)
     end
