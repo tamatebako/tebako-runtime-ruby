@@ -22,8 +22,9 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
   # hot-patches act on (dir.c: the glob hint; io.c: the fd_is_text block —
   # the stat wire-layout hot-patch is gone: the released source carries
   # the pinned tebako_stat ABI from tamatebako/ruby v0.2.13), plus the
-  # shared-build set (issue 40): the mkexports rule in cygwin/GNUmakefile.in
-  # and the miniruby recipe in template/Makefile.in.
+  # shared-build set (issue 40): the mkexports rule in cygwin/GNUmakefile.in,
+  # the pipe-string mkexports.rb (the 3.3-line spelling), and the miniruby
+  # recipe in template/Makefile.in.
   def write_msys_source_fixtures(dir)
     glob = TebakoRuntimeBuilder::BuildPasses::MSYS_GLOB_OPENDIR_ANCHOR
     fd_text = TebakoRuntimeBuilder::BuildPasses::MSYS_FD_IS_TEXT_ANCHOR
@@ -32,6 +33,9 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
     FileUtils.mkdir_p(File.join(dir, "cygwin"))
     File.write(File.join(dir, "cygwin", "GNUmakefile.in"),
                "rule-a\n#{TebakoRuntimeBuilder::BuildPasses::MSYS_DLL_EXPORTS_ANCHOR}rule-b\n")
+    FileUtils.mkdir_p(File.join(dir, "win32"))
+    File.write(File.join(dir, "win32", "mkexports.rb"),
+               "#{TebakoRuntimeBuilder::BuildPasses::MSYS_MKEXPORTS_FOREACH_ANCHORS.last}\n")
     miniruby_recipe = TebakoRuntimeBuilder::BuildPasses::MSYS_MINIRUBY_LIBS_ANCHOR
     File.write(File.join(dir, "template", "Makefile.in"),
                "MAINLIBS = @MAINLIBS@\n" \
@@ -123,6 +127,36 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
       expect(gnu_makefile_in).to include("cat tebako-dll-exports.def >> $@ # tebako patched (issue 40)")
     end
 
+    it "rewrites mkexports.rb's pipe-string IO.foreach as array-form IO.popen (ruby 4 baseruby)" do
+      mkexports = File.read(File.join(ruby_src, "win32", "mkexports.rb"))
+      expect(mkexports).to include("IO.popen([*self.class.nm, *%w[--extern-only --defined-only], *objs]) do |f|")
+      expect(mkexports).to include("      f.each(&block)\n    end\n")
+      expect(mkexports).not_to include("IO.foreach(")
+    end
+
+    it "rewrites the abbreviated nm-option spelling too (the 3.1/3.2 lines)" do
+      File.write(File.join(ruby_src, "win32", "mkexports.rb"),
+                 "#{described_class::MSYS_MKEXPORTS_FOREACH_ANCHORS.first}\n")
+      described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.2.7", "A:/__tfs__", "cc")
+      mkexports = File.read(File.join(ruby_src, "win32", "mkexports.rb"))
+      expect(mkexports).to include("IO.popen([*self.class.nm,")
+      expect(mkexports).not_to include("IO.foreach(")
+    end
+
+    it "leaves an already array-form mkexports.rb (3.2.10+/3.3.11+/3.4/4.0) untouched" do
+      File.write(File.join(ruby_src, "win32", "mkexports.rb"),
+                 "    IO.popen([*self.class.nm, *%w[--extern-only --defined-only], *objs]) do |f|\n")
+      expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.12", "A:/__tfs__", "cc") }
+        .not_to raise_error
+      expect(File.read(File.join(ruby_src, "win32", "mkexports.rb"))).not_to include("# tebako patched")
+    end
+
+    it "fails loudly when the mkexports pipe-foreach anchor drifted" do
+      File.write(File.join(ruby_src, "win32", "mkexports.rb"), "no pipe foreach here\n")
+      expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tfs__", "cc") }
+        .to raise_error(TebakoRuntimeBuilder::Error, /mkexports pipe-foreach anchor/)
+    end
+
     it "links miniruby with the full static TEBAKO_MINILIBS in template/Makefile.in" do
       makefile_in = File.read(File.join(ruby_src, "template", "Makefile.in"))
       expect(makefile_in).to include("$(NORMALMAINOBJ) $(MINIOBJS) $(COMMONOBJS) $(TEBAKO_MINILIBS)")
@@ -139,6 +173,8 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
       expect(gnu_makefile_in.scan("tebako-dll-exports.def").length).to eq(1)
       makefile_in = File.read(File.join(ruby_src, "template", "Makefile.in"))
       expect(makefile_in.scan(/^TEBAKO_MINILIBS = /).length).to eq(1)
+      mkexports = File.read(File.join(ruby_src, "win32", "mkexports.rb"))
+      expect(mkexports.scan("IO.popen([*self.class.nm,").length).to eq(1)
     end
 
     it "fails loudly when the mkexports anchor drifted" do
