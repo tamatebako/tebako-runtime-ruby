@@ -410,7 +410,18 @@ module TebakoRuntimeBuilder
       # SEGV at builtin init), and the dylib fails the test_101
       # no-shared-libs assertion. System malloc until a properly built
       # static jemalloc ships with libtfs-deps.
-      "-ltebako-fs #{libs}-lc++ -lc++abi"
+      # ld_classic: the cargo-bundled natives land in each staticlib
+      # more than once (the same vcpkg objects ride several sys crates),
+      # and Xcode 15+'s ld_prime asserts on the same-name atoms
+      # ("malformed atom files with duplicate names",
+      # atomShouldReplaceExisting) resolving the vague-linkage C++
+      # template duplicates. GNU ld merges them first-wins and
+      # ld_classic resolves them by the same ODR rule; only ld_prime
+      # treats it as fatal. Proven locally against the staged unit
+      # (pristine link-unit-macos-x86_64 + probe: ld_prime asserts,
+      # ld_classic links). Keep until the staticlibs dedupe at the
+      # source (arscope/cargo bundling).
+      "-Wl,-ld_classic -ltebako-fs #{libs}-lc++ -lc++abi"
     end
 
     # The v2 link unit (image era): the two Rust staticlibs SCOPED to
