@@ -652,6 +652,9 @@ jobs:
         shell: msys2 {0}
         run: |
           find .build/deps/src -path "*/ext/openssl/mkmf.log" -exec sh -c 'echo "== $1"; cat "$1"' _ {} \; || true
+          # ext/socket: the link-type probes (socketpair vs the compiled-out
+          # rsock_sock_s_socketpair — the ucrt DLL link failure class)
+          find .build/deps/src -path "*/ext/socket/mkmf.log" -exec sh -c 'echo "== $1"; cat "$1"' _ {} \; || true
           find .build/deps/src -maxdepth 2 -name Makefile -exec sh -c '
             echo "== $1: start-group refs:"; grep -n "start-group" "$1" || echo "(none)"
             echo "== $1: ruby.exe link rule region:"; grep -n -B4 -A6 "EXTOBJS.*-o \$@)" "$1" || true
