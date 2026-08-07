@@ -739,13 +739,17 @@ module TebakoRuntimeBuilder
       end
 
       # Force every extension to re-run extconf: the per-ext Makefiles
-      # and the exts.mk/extinit cascade products carry the probe results
-      # a racy parallel make may have produced against a partial libruby.
+      # carry the probe results a racy parallel make may have produced
+      # against a partial libruby, and the compiled ext objects must go
+      # with them (make does not rebuild an up-to-date .o on a flags-only
+      # change). The exts.mk/extinit cascade products regenerate. The
+      # .ext/include tree is NOT touched — it holds the generated
+      # ruby/config.h the main build needs, not probe results.
       def clean_ext_build_state
         require "fileutils"
         FileUtils.rm_f(Dir.glob(File.join("ext", "**", "Makefile")))
+        FileUtils.rm_f(Dir.glob(File.join("ext", "**", "*.o")))
         FileUtils.rm_f(["exts.mk", "ext/extinit.c", "ext/extinit.o"])
-        FileUtils.rm_rf(".ext", secure: true)
       end
 
       # Rewrite the two prefix lines of the GENERATED rbconfig.rb (every
