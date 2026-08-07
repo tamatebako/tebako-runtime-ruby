@@ -696,8 +696,18 @@ module TebakoRuntimeBuilder
       # headers escalate to a hard error (json's parser.c fallback vs the
       # now-public rb_hash_bulk_insert declaration). Pin configure ahead
       # of its inputs; tarball builds never re-autoconf.
+      #
+      # The config.status pin is for the msys pass-2: the overlay re-
+      # extracts the sources with fresh mtimes, so the config.status
+      # prereqs (enc/Makefile.in, version.h, abi.h) land NEWER than the
+      # pass-1-substituted config.status and the recheck reverts the
+      # closure substitution before the DLL link (the ucrt tebako_fs_*
+      # undefined-reference failure). Keep config.status ahead of its
+      # prereqs when it exists (pass 1 has none yet — configure makes it).
       def pin_autotools_timestamps!(ruby_source_dir)
         FileUtils.touch(File.join(ruby_source_dir, "configure"))
+        config_status = File.join(ruby_source_dir, "config.status")
+        FileUtils.touch(config_status) if File.exist?(config_status)
       end
 
       # Compile and archive the toolchain stub driver as

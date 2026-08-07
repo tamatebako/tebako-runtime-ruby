@@ -91,6 +91,17 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
       expect(File.mtime(configure)).to be > File.mtime(configure_ac)
     end
 
+    it "pins an existing config.status ahead of its prereqs (the msys pass-2 overlay re-skews them)" do
+      config_status = File.join(ruby_src, "config.status")
+      File.write(config_status, "S[\"MAINLIBS\"]=\"-Wl,--start-group\"\n")
+      File.write(File.join(ruby_src, "configure"), "#!/bin/sh\n")
+      past = Time.now - 3600
+      FileUtils.touch(config_status, mtime: past)
+      described_class.prepare("x86_64-linux-gnu", ruby_src, deps_lib_dir, "3.3.7", "/__tfs__", "cc")
+      expect(File.mtime(config_status)).to be > past
+      expect(File.read(config_status)).to include("start-group") # content untouched
+    end
+
     it "fails loudly when the placeholder is absent (not a pre-patched tree)" do
       File.write(File.join(ruby_src, "template", "Makefile.in"), "MAINLIBS = @MAINLIBS@\n")
       expect { described_class.prepare("x86_64-linux-gnu", ruby_src, deps_lib_dir, "3.3.7", "/__tfs__", "cc") }
