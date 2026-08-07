@@ -252,7 +252,7 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
     it "substitutes the darwin MAINLIBS line" do
       File.write(config_status, "S[\"MAINLIBS\"]=\"-ldl -lobjc -lpthread \"\n")
       described_class.postconfigure("arm64-darwin23", ruby_src, deps_lib_dir, "3.3.7")
-      expect(File.read(config_status)).to include("S[\"MAINLIBS\"]=\"-ltebako-fs ")
+      expect(File.read(config_status)).to include("S[\"MAINLIBS\"]=\"-Wl,-ld_classic -ltebako-fs ")
     end
 
     it "is a no-op for ruby < 3.3 off msys" do

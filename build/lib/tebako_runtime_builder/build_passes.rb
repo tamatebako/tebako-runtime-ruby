@@ -718,15 +718,34 @@ module TebakoRuntimeBuilder
       # start (the gem applied it only for the final, stable build), the
       # first full make can race the regenerated extinit.o away from a
       # parallel ruby link ('no such file or directory: ext/extinit.o' --
-      # timing-dependent; observed on the 3-core CI runners). A failed
-      # parallel make leaves clean target state, so a serial re-run
-      # completes deterministically; keep the parallel fast path and fall
-      # back only on failure.
+      # timing-dependent; observed on the 3-core CI runners). A parallel
+      # make can ALSO race an ext's extconf probe against the still-
+      # assembling static libruby: the probe's link test then answers
+      # false for a function ruby really exports (json's
+      # rb_hash_bulk_insert / rb_str_to_interned_str, strscan's
+      # rb_reg_onig_match), the vendored compat shim compiles in its
+      # place, and clang-18 hard-errors on 'static declaration follows
+      # non-static declaration'. A plain -j1 retry reuses the racy ext
+      # Makefile and fails identically, so the fallback first removes the
+      # ext build state -- every ext re-runs extconf serially, against a
+      # finished libruby, and the probe answers truthfully.
       def run_make_with_serial_fallback(args)
         TebakoRuntimeBuilder::BuildHelpers.run_with_capture(args)
       rescue TebakoRuntimeBuilder::Error
-        puts "   ... parallel make failed (possible exts.mk/extinit.c cascade race); retrying serially"
+        puts "   ... parallel make failed (possible exts.mk/extinit.c cascade race); " \
+             "cleaning ext state and retrying serially"
+        clean_ext_build_state
         TebakoRuntimeBuilder::BuildHelpers.run_with_capture(args[0..-2] + ["-j1"])
+      end
+
+      # Force every extension to re-run extconf: the per-ext Makefiles
+      # and the exts.mk/extinit cascade products carry the probe results
+      # a racy parallel make may have produced against a partial libruby.
+      def clean_ext_build_state
+        require "fileutils"
+        FileUtils.rm_f(Dir.glob(File.join("ext", "**", "Makefile")))
+        FileUtils.rm_f(["exts.mk", "ext/extinit.c", "ext/extinit.o"])
+        FileUtils.rm_rf(".ext", secure: true)
       end
 
       # Rewrite the two prefix lines of the GENERATED rbconfig.rb (every
