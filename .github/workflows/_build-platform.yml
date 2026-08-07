@@ -700,6 +700,10 @@ jobs:
         if: matrix.env.os == 'windows'
         shell: msys2 {0}
         run: |
+          # Informational only — a bare boot returns 127 (the exe's ruby DLL
+          # is materialized by the boot smoke, not present here), and this
+          # step must never fail the leg on it.
+          set +e
           runtime="tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
           exe="runtime-packages/$runtime"
           [ -s "$exe" ] || exe="$exe.exe"
