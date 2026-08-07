@@ -51,13 +51,6 @@ module TebakoRuntimeBuilder
   module BuildPasses # rubocop:disable Metrics/ModuleLength
     TEBAKO_MLIBS_PLACEHOLDER = "@TEBAKO_MLIBS@"
 
-    # config.status MAINLIBS defaults per platform (gem PatchBuildsystem);
-    # configure's LIBS env is appended to MAINLIBS after ruby's defaults,
-    # which may or may not pad the value with a trailing space before the
-    # closing quote (msys substitutes both variants)
-    MSYS_MAINLIBS_LINE =
-      "-lshell32 -lws2_32 -liphlpapi -limagehlp -lshlwapi -lbcrypt -lcrypt32 -ladvapi32 -luser32"
-
     # msys dir.c hot-patch (glob_opendir capacity hint) ----------------------
     #
     # ruby's dir.c on _WIN32 reads the win32 DIR emulation's internals
@@ -216,6 +209,7 @@ module TebakoRuntimeBuilder
         # build (issue #40) adds its own set: the DLL export fragment, the
         # mkexports rule appending it, and miniruby's static library set.
         hotfix_msys!(ruby_source_dir, deps_lib_dir, rv) if platform.msys?
+        pin_autotools_timestamps!(ruby_source_dir)
         build_toolchain_stub(platform, deps_lib_dir, mount_point, cc, rv)
       end
 
@@ -234,7 +228,15 @@ module TebakoRuntimeBuilder
         # SOLIBS feeds the ruby DLL's link (core objects + the libtfs
         # closure), MAINLIBS the exe/miniruby side.
         solibs = mlibs_model.compute_solibs(rv) if platform.msys?
-        substitute_config_status!(File.join(ruby_source_dir, "config.status"), platform, mlibs, solibs)
+        # And on msys the mkmf conftest link needs its own closure: probes
+        # ride LIBRUBYARG_STATIC, whose stock value pulls only the exe-side
+        # MAINLIBS (no closure by design — the closure is the DLL's), so
+        # every link-type probe failed on the tebako_fs_* references from
+        # libruby-static (ext/socket's socketpair probe → the ucrt DLL link
+        # died on unixsocket.o's dangling rsock_sock_s_socketpair). Feed
+        # the probes miniruby's full static set.
+        minilibs = mlibs_model.compute_minilibs(rv) if platform.msys?
+        substitute_config_status!(File.join(ruby_source_dir, "config.status"), mlibs, solibs, minilibs)
       end
 
       def toolchain(ruby_source_dir, data_src_dir, stash_dir, deps_lib_dir) # rubocop:disable Metrics/AbcSize,Metrics/MethodLength
@@ -628,7 +630,7 @@ module TebakoRuntimeBuilder
                                 "#{MSYS_MINILIBS_MARKER} = #{minilibs}\n")
       end
 
-      def substitute_config_status!(config_status, platform, mlibs, solibs = nil) # rubocop:disable Metrics/MethodLength
+      def substitute_config_status!(config_status, mlibs, solibs = nil, minilibs = nil) # rubocop:disable Metrics/MethodLength
         unless File.exist?(config_status)
           raise TebakoRuntimeBuilder::Error.new("Could not patch #{config_status} because it does not exist.",
                                                 107)
@@ -637,14 +639,14 @@ module TebakoRuntimeBuilder
         puts "   ... substituting MAINLIBS in #{config_status}"
         subst = "S[\"MAINLIBS\"]=\"#{mlibs}\""
         contents = File.read(config_status)
-        # Idempotent: a rebuild re-runs this pass over an already-substituted
-        # config.status; the msys pair covers the two padding variants of the
-        # MAINLIBS line, only one of which can match. A miss on every
-        # candidate in a file that was never substituted is the silent-failure
-        # mode the gem's sub! hid, so it earns a warning.
-        substituted = contents.include?(subst) || config_status_patterns(platform).any? do |pattern|
-          !contents.sub!(pattern, subst).nil?
-        end
+        # Key-anchored wholesale rewrite (the block form of sub!: no
+        # backreference interpretation of the mlibs list). The stock
+        # MAINLIBS value is not stable across ruby lines (4.0 dropped -lz
+        # from the gnu default), so the match must not name a value.
+        # Idempotent: a rebuild re-runs this pass over an
+        # already-substituted config.status.
+        substituted = contents.include?(subst) ||
+                      !contents.sub!(/^S\["MAINLIBS"\]=.*$/) { subst }.nil?
         puts "Warning: no config.status MAINLIBS pattern matched; the substitution did not happen" unless substituted
 
         # The msys shared build (issue #40): SOLIBS feeds the ruby DLL's
@@ -652,6 +654,7 @@ module TebakoRuntimeBuilder
         # rewrites the line wholesale (key-anchored, idempotent) so the
         # closure never lands in the exe side's MAINLIBS by reference.
         substitute_solibs!(contents, solibs) if solibs
+        substitute_librubyarg_static!(contents, minilibs) if minilibs
         File.write(config_status, contents)
         nil
       end
@@ -663,14 +666,38 @@ module TebakoRuntimeBuilder
         puts "Warning: no config.status SOLIBS line matched; the DLL closure substitution did not happen" unless done
       end
 
-      def config_status_patterns(platform)
-        if platform.macos?
-          ["S[\"MAINLIBS\"]=\"-ldl -lobjc -lpthread \""]
-        elsif platform.msys?
-          ["S[\"MAINLIBS\"]=\"#{MSYS_MAINLIBS_LINE} \"", "S[\"MAINLIBS\"]=\"#{MSYS_MAINLIBS_LINE}\""]
-        else
-          ["S[\"MAINLIBS\"]=\"-lz -lrt -lrt -ldl -lcrypt -lm -lpthread \""]
-        end
+      # The mkmf conftest link (every extconf link-type probe) rides
+      # LIBRUBYARG_STATIC; its stock value pulls only the exe-side
+      # MAINLIBS, which by design carries no closure on msys (the closure
+      # is the DLL's SOLIBS). Every link-type probe then failed on the
+      # tebako_fs_* references from libruby-static — ext/socket's
+      # socketpair probe answered no, socket.c compiled
+      # rsock_sock_s_socketpair out, and the ucrt DLL link died on
+      # unixsocket.o's dangling reference. Feed the probes miniruby's
+      # full static set (the same closure the DLL carries); only probes
+      # read LIBRUBYARG_STATIC — per-ext Makefiles never embed it.
+      def substitute_librubyarg_static!(contents, minilibs)
+        puts "   ... substituting LIBRUBYARG_STATIC (the mkmf probe closure, issue 40)"
+        subst = "S[\"LIBRUBYARG_STATIC\"]=\"-Wl,-rpath,$(libdir) -L$(libdir) -l$(RUBY_SO_NAME)-static #{minilibs}\""
+        done = contents.include?(subst) ||
+               !contents.sub!(/^S\["LIBRUBYARG_STATIC"\]=.*$/) { subst }.nil?
+        return if done
+
+        puts "Warning: no config.status LIBRUBYARG_STATIC line matched; the probe closure substitution did not happen"
+      end
+
+      # Tarball extraction skews mtimes (cmake's tar assigns extraction
+      # time with nanosecond skew, so configure.ac can land NEWER than
+      # configure): the first make then "helpfully" regenerates configure
+      # via autoconf, the config.status target's --recheck re-runs it, and
+      # the postconfigure MAINLIBS substitution is wiped before the ext
+      # probes see it — every link-type mkmf probe then fails on the
+      # tebako_fs_* references from libruby-static, which only 4.0.x's
+      # headers escalate to a hard error (json's parser.c fallback vs the
+      # now-public rb_hash_bulk_insert declaration). Pin configure ahead
+      # of its inputs; tarball builds never re-autoconf.
+      def pin_autotools_timestamps!(ruby_source_dir)
+        FileUtils.touch(File.join(ruby_source_dir, "configure"))
       end
 
       # Compile and archive the toolchain stub driver as
