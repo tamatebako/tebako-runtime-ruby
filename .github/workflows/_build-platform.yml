@@ -655,6 +655,13 @@ jobs:
           # ext/socket: the link-type probes (socketpair vs the compiled-out
           # rsock_sock_s_socketpair — the ucrt DLL link failure class)
           find .build/deps/src -path "*/ext/socket/mkmf.log" -exec sh -c 'echo "== $1"; cat "$1"' _ {} \; || true
+          # the config.status substitution state at failure: is the closure in
+          # MAINLIBS/SOLIBS/LIBRUBYARG_STATIC, and did a recheck revert it
+          # (configure newer than config.status is the autoconf trigger)
+          find .build/deps/src -maxdepth 2 -name config.status -exec sh -c '
+            echo "== $1:"; grep -h "^S\[\"MAINLIBS\"\]\|^S\[\"SOLIBS\"\]\|^S\[\"LIBRUBYARG_STATIC\"\]" "$1" | cut -c1-140
+          ' _ {} \; || true
+          find .build/deps/src -maxdepth 2 -name config.status -exec ls -la --time-style=full-iso {} \; 2>/dev/null | awk "{print \$6, \$7, \$NF}" | head -4 || true
           find .build/deps/src -maxdepth 2 -name Makefile -exec sh -c '
             echo "== $1: start-group refs:"; grep -n "start-group" "$1" || echo "(none)"
             echo "== $1: ruby.exe link rule region:"; grep -n -B4 -A6 "EXTOBJS.*-o \$@)" "$1" || true
