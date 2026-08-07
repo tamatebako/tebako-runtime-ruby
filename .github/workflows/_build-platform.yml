@@ -448,11 +448,21 @@ jobs:
           # TEBAKO_RUST_LIBDIR: the staged v2 link unit (downloaded from
           # the link-unit job above) — the builder's rust_driver? switch
           # then links the scoped Rust staticlibs instead of the C++ driver.
-          docker run -v ${{github.workspace}}:/mnt/w \
+          # On failure, surface the ext extconf probe logs (mkmf.log) — the
+          # container's build tree is ephemeral, so copy them to the
+          # workspace first. These show exactly which probe failed and why.
+          if ! docker run -v ${{github.workspace}}:/mnt/w \
             -e TEBAKO_RUST_LIBDIR=/mnt/w/.build/link-unit \
             -t $container \
             /mnt/w/tools/build_runtime --ruby "${{ matrix.ruby.version }}" --output "/mnt/w/runtime-packages/$runtime" \
-            --prefix /root/.build ${{ matrix.env.os == 'linux-gnu' && '--patchelf' || '' }}
+            --prefix /root/.build ${{ matrix.env.os == 'linux-gnu' && '--patchelf' || '' }}; then
+            echo "::warning::build failed — dumping ext extconf probe logs"
+            docker run --rm -v ${{github.workspace}}:/mnt/w $container bash -c '
+              find /root/.build/deps/src -path "*/ext/*/mkmf.log" | while read -r f; do
+                echo "=== $f ==="; tail -40 "$f"
+              done' || true
+            exit 1
+          fi
 
       - name: Select XCode
         if: matrix.env.os == 'macos'
