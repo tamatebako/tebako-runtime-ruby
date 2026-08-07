@@ -155,6 +155,44 @@ module TebakoRuntimeBuilder
     MSYS_MINIRUBY_LIBS_ANCHOR = "$(NORMALMAINOBJ) $(MINIOBJS) $(COMMONOBJS) $(MAINLIBS)"
     MSYS_MINILIBS_MARKER = "TEBAKO_MINILIBS"
 
+    # msys mkexports under a ruby-4 baseruby (issue #40 era rebuild) -------
+    #
+    # win32/mkexports.rb on ruby <= 3.2.9 / 3.3.3-3.3.10 generates
+    # x64-ucrt-ruby<ABI>.def through the pipe-string form of IO.foreach
+    # (the anchors below). The mkexports rule runs under BOOTSTRAPRUBY --
+    # the BASERUBY whenever configure finds one, and the CI runners'
+    # mingw-w64-ucrt-x86_64-ruby is 4.0.x in the era rebuild. Ruby 4.0
+    # REMOVED pipe-string process creation from the file-dedicated IO
+    # methods (Feature #19630, deprecated in 3.3): the string is opened
+    # as a literal filename, and the illegal '|' fails EINVAL at
+    # rb_sysopen ("Invalid argument @ rb_sysopen - |nm --extern --defined
+    # libx64-ucrt-ruby320-static.a", every <= 3.2.9 windows leg). The
+    # io.c shim block is NOT involved -- the rule never runs under the
+    # patched ruby while a baseruby exists, and the 3.x pipe detection is
+    # intact anyway (the 3.3.12 leg, array form, generates its .def under
+    # the same 4.0.6 baseruby without a murmur). Upstream's own fix
+    # (3.2.10 / 3.3.11 / 3.4 / 4.0) is the array form of IO.popen plus a
+    # shellsplit nm accessor; the substitution mirrors the each_line half
+    # verbatim, and the nm half is unneeded -- the mingw toolchain's NM is
+    # a bare command name (the era rebuild's own command line: "|nm
+    # --extern --defined libx64-ucrt-ruby320-static.a"). Content-keyed:
+    # the already-fixed lines carry the marker and pass through.
+    # tool/leaked-globals has the same pipe-string idiom but never runs in
+    # the build (its rule feeds only the commented-out yes-test-basic
+    # dependency).
+    MSYS_MKEXPORTS_POPEN_MARKER = "IO.popen([*self.class.nm,"
+    MSYS_MKEXPORTS_FOREACH_ANCHORS = [
+      # 3.1/3.2 abbreviate nm's long options ...
+      "    IO.foreach(\"|\#{self.class.nm} --extern --defined \#{objs.join(' ')}\", &block)",
+      # ... 3.3 spells them out
+      "    IO.foreach(\"|\#{self.class.nm} --extern-only --defined-only \#{objs.join(' ')}\", &block)"
+    ].freeze
+    MSYS_MKEXPORTS_POPEN = [
+      "    IO.popen([*self.class.nm, *%w[--extern-only --defined-only], *objs]) do |f| # tebako patched (issue 40)",
+      "      f.each(&block)",
+      "    end"
+    ].join("\n")
+
     class << self # rubocop:disable Metrics/ClassLength
       def prepare(ostype, ruby_source_dir, deps_lib_dir, ruby_ver, mount_point, cc = "cc") # rubocop:disable Metrics/ParameterLists
         puts "-- Running prepare script"
@@ -361,7 +399,8 @@ module TebakoRuntimeBuilder
       # The msys hot-patch set the prepare pass applies (the constants
       # above): the dir.c glob_opendir guard, the io.c rb_w32_fd_is_text
       # dispatch, and the shared-build set (issue #40) -- the DLL export
-      # fragment, the mkexports rule appending it, and miniruby's static
+      # fragment, the mkexports rule appending it, the mkexports
+      # pipe-string rewrite for the ruby-4 baseruby, and miniruby's static
       # library set in template/Makefile.in. (The struct stat wire-layout
       # reads are GONE: the released source carries the pinned tebako_stat
       # ABI — stat64 layout — from tamatebako/ruby v0.2.13, so there is
@@ -371,6 +410,7 @@ module TebakoRuntimeBuilder
         hotfix_msys_fd_is_text!(File.join(ruby_source_dir, "io.c"))
         write_dll_exports_fragment!(ruby_source_dir, deps_lib_dir)
         hotfix_msys_dll_exports!(File.join(ruby_source_dir, "cygwin", "GNUmakefile.in"))
+        hotfix_msys_mkexports_popen!(File.join(ruby_source_dir, "win32", "mkexports.rb"))
         minilibs = TebakoRuntimeBuilder::Mlibs.new(TebakoRuntimeBuilder::Platform.new, deps_lib_dir)
                                               .compute_minilibs(ruby_ver)
         hotfix_msys_miniruby_libs!(File.join(ruby_source_dir, "template", "Makefile.in"), minilibs)
@@ -525,6 +565,34 @@ module TebakoRuntimeBuilder
 
         puts "   ... appending the tebako_* export fragment to the mkexports rule (msys, issue 40)"
         File.write(gnu_makefile_in, contents.sub(MSYS_DLL_EXPORTS_ANCHOR, MSYS_DLL_EXPORTS_PATCHED))
+      end
+
+      # Rewrite mkexports.rb's pipe-string IO.foreach as the array-form
+      # IO.popen (MSYS_MKEXPORTS_* above). Same shape as the other msys
+      # hot-patches: idempotent on re-run (the array form is its own
+      # marker -- upstream's already-fixed lines carry it too), loud when
+      # neither the marker nor exactly one anchor matches (the released
+      # pre-patched source changed).
+      def hotfix_msys_mkexports_popen!(mkexports_rb) # rubocop:disable Metrics/MethodLength
+        unless File.exist?(mkexports_rb)
+          raise TebakoRuntimeBuilder::Error.new("Could not patch #{mkexports_rb} because it does not exist.", 107)
+        end
+
+        contents = File.read(mkexports_rb)
+        return if contents.include?(MSYS_MKEXPORTS_POPEN_MARKER)
+
+        anchor_count = MSYS_MKEXPORTS_FOREACH_ANCHORS.sum { |anchor| contents.scan(anchor).length }
+        unless anchor_count == 1
+          raise TebakoRuntimeBuilder::Error.new(
+            "#{mkexports_rb}: expected exactly one mkexports pipe-foreach anchor, found #{anchor_count} -- " \
+            "the pre-patched mkexports.rb changed; revisit the msys mkexports popen hot-patch (issue 40)", 130
+          )
+        end
+
+        anchor = MSYS_MKEXPORTS_FOREACH_ANCHORS.find { |candidate| contents.include?(candidate) }
+        puts "   ... rewriting mkexports.rb's pipe-string IO.foreach as array-form IO.popen " \
+             "(ruby 4 baseruby, msys, issue 40)"
+        File.write(mkexports_rb, contents.sub(anchor, MSYS_MKEXPORTS_POPEN))
       end
 
       # Swap miniruby's $(MAINLIBS) for the full static $(TEBAKO_MINILIBS)
