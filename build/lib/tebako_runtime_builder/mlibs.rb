@@ -125,8 +125,8 @@ module TebakoRuntimeBuilder
     MSYS_BOOST_LIBS = %w[boost_filesystem boost_chrono].freeze
 
     # The DLL side's system libraries and runtimes (msys shared build,
-    # issue #40): ruby's win32 layer (the MSYS_MAINLIBS_LINE default set in
-    # build_passes.rb) plus the Rust/dwarfs closure's references (proven by
+    # issue #40): ruby's win32 layer (the win32 default library set) plus
+    # the Rust/dwarfs closure's references (proven by
     # the mingw-ld link probes: RtlNtStatusToDosError → ntdll,
     # GetUserProfileDirectoryW → userenv, GetProcessMemoryInfo → psapi) and
     # the C++ runtime, statically — several mingw installs on a runner make

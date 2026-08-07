@@ -75,6 +75,22 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
       end
     end
 
+    it "pins configure ahead of configure.ac (the recheck would wipe postconfigure's substitution)" do
+      # Tarball extraction skews mtimes; a newer configure.ac makes the
+      # first make re-autoconf and re-run config.status --recheck,
+      # reverting config.status to stock MAINLIBS (the 0.16.3-era 4.0.x
+      # extconf probe failures).
+      configure = File.join(ruby_src, "configure")
+      configure_ac = File.join(ruby_src, "configure.ac")
+      File.write(configure, "#!/bin/sh\n")
+      File.write(configure_ac, "AC_INIT\n")
+      past = Time.now - 3600
+      FileUtils.touch(configure, mtime: past)
+      FileUtils.touch(configure_ac, mtime: past + 60) # the skew: .ac newer
+      described_class.prepare("x86_64-linux-gnu", ruby_src, deps_lib_dir, "3.3.7", "/__tfs__", "cc")
+      expect(File.mtime(configure)).to be > File.mtime(configure_ac)
+    end
+
     it "fails loudly when the placeholder is absent (not a pre-patched tree)" do
       File.write(File.join(ruby_src, "template", "Makefile.in"), "MAINLIBS = @MAINLIBS@\n")
       expect { described_class.prepare("x86_64-linux-gnu", ruby_src, deps_lib_dir, "3.3.7", "/__tfs__", "cc") }
@@ -285,6 +301,17 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
       expect(contents).not_to include("-lz -lrt -lrt -ldl -lcrypt -lm -lpthread")
     end
 
+    it "substitutes the ruby 4.0 linux MAINLIBS line (no -lz since 4.0)" do
+      # The 0.16.3-era failure: 4.0's stock MAINLIBS dropped -lz, the
+      # exact-line pattern missed, and every link-type mkmf probe failed
+      # (json's parser.c fallback vs the now-public rb_hash_bulk_insert).
+      File.write(config_status, "S[\"MAINLIBS\"]=\"-lrt -lrt -ldl -lcrypt -lm -lpthread \"\n")
+      described_class.postconfigure("x86_64-linux-gnu", ruby_src, deps_lib_dir, "4.0.6")
+      contents = File.read(config_status)
+      expect(contents).to include("S[\"MAINLIBS\"]=\"-Wl,--start-group")
+      expect(contents).not_to include("-lrt -lrt -ldl -lcrypt -lm -lpthread")
+    end
+
     it "substitutes the darwin MAINLIBS line" do
       File.write(config_status, "S[\"MAINLIBS\"]=\"-ldl -lobjc -lpthread \"\n")
       described_class.postconfigure("arm64-darwin23", ruby_src, deps_lib_dir, "3.3.7")
@@ -298,35 +325,57 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
       expect(File.read(config_status)).to eq(original)
     end
 
-    it "warns instead of raising when no pattern matches" do
-      File.write(config_status, "S[\"MAINLIBS\"]=\"unexpected\"\n")
+    it "warns instead of raising when the MAINLIBS line is absent" do
+      File.write(config_status, "S[\"ENABLE_SHARED\"]=\"no\"\n")
       expect do
         described_class.postconfigure("x86_64-linux-gnu", ruby_src, deps_lib_dir, "3.3.7")
       end.to output(/Warning: no config.status MAINLIBS pattern matched/).to_stdout
     end
 
+    # ruby's stock msys MAINLIBS default (any value matches now — the
+    # substitution is key-anchored); pinned literally so a configure-side
+    # drift is visible in the diff.
+    msys_mainlibs =
+      "-lshell32 -lws2_32 -liphlpapi -limagehlp -lshlwapi -lbcrypt -lcrypt32 -ladvapi32 -luser32"
+
+    # ruby's stock msys MAINLIBS default (any value matches now — the
+    # substitution is key-anchored); pinned literally so a configure-side
+    # drift is visible in the diff.
+    msys_mainlibs =
+      "-lshell32 -lws2_32 -liphlpapi -limagehlp -lshlwapi -lbcrypt -lcrypt32 -ladvapi32 -luser32"
+    stock_librubyarg_static =
+      'S["LIBRUBYARG_STATIC"]="-Wl,-rpath,$(libdir) -L$(libdir) -l$(RUBY_SO_NAME)-static $(MAINLIBS)"'
+
     it "substitutes MAINLIBS (exe side) and SOLIBS (the DLL closure) on msys (issue 40)" do
       File.write(config_status,
-                 "S[\"MAINLIBS\"]=\"#{described_class::MSYS_MAINLIBS_LINE}\"\n" \
-                 "S[\"SOLIBS\"]=\"$(MAINLIBS)\"\n")
+                 "S[\"MAINLIBS\"]=\"#{msys_mainlibs}\"\n" \
+                 "S[\"SOLIBS\"]=\"$(MAINLIBS)\"\n" \
+                 "#{stock_librubyarg_static}\n")
       described_class.postconfigure("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7")
       contents = File.read(config_status)
+      mainlibs = contents[/^S\["MAINLIBS"\].*$/]
       # the exe side: fs TU (plain, never whole-archive) + system libs;
       # the import library comes via LIBRUBYARG, never a MAINLIBS literal
       # (a literal lands in every mkmf conftest link and races the DLL relinks)
-      expect(contents).to include("-l:libtebako-fs.a")
-      expect(contents).not_to include("--whole-archive -l:libtebako-fs.a")
+      expect(mainlibs).to include("-l:libtebako-fs.a")
+      expect(mainlibs).not_to include("--whole-archive -l:libtebako-fs.a")
       expect(contents).not_to include("libx64-ucrt-ruby330.dll.a")
-      expect(contents).not_to include("S[\"MAINLIBS\"]=\"#{described_class::MSYS_MAINLIBS_LINE}\"")
+      expect(mainlibs).not_to include(msys_mainlibs)
       # the DLL side: the closure replaces the $(MAINLIBS) reference
       expect(contents).to include("S[\"SOLIBS\"]=\"-Wl,--start-group -l:libtfs.a")
       expect(contents).not_to include("S[\"SOLIBS\"]=\"$(MAINLIBS)\"")
+      # the probe side: LIBRUBYARG_STATIC feeds the mkmf conftest link the
+      # full static closure (miniruby's set), else every link-type probe
+      # fails on libruby-static's tebako_fs_* references
+      expect(contents).to include('S["LIBRUBYARG_STATIC"]="-Wl,-rpath,$(libdir) -L$(libdir) -l$(RUBY_SO_NAME)-static -Wl,--start-group')
+      expect(contents).not_to include('$(MAINLIBS)"')
     end
 
-    it "is idempotent for the msys MAINLIBS+SOLIBS pair" do
+    it "is idempotent for the msys MAINLIBS+SOLIBS+LIBRUBYARG_STATIC set" do
       File.write(config_status,
-                 "S[\"MAINLIBS\"]=\"#{described_class::MSYS_MAINLIBS_LINE} \"\n" \
-                 "S[\"SOLIBS\"]=\"$(MAINLIBS)\"\n")
+                 "S[\"MAINLIBS\"]=\"#{msys_mainlibs} \"\n" \
+                 "S[\"SOLIBS\"]=\"$(MAINLIBS)\"\n" \
+                 "#{stock_librubyarg_static}\n")
       described_class.postconfigure("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7")
       expect do
         described_class.postconfigure("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7")
