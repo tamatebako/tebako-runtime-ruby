@@ -63,18 +63,22 @@ on:
         description: 'Optional arch slice within the platform (x86_64 | arm64).'
         type: string
         default: ''
-      publish:
-        description: 'Publish this platform''s packages to the release'
-        type: boolean
-        default: false
-      force_rebuild:
-        description: 'Re-upload even unchanged assets'
-        type: boolean
-        default: false
       audit:
         description: 'Audit only: no builds, no uploads — verify the release against the expected matrix'
         type: boolean
         default: false
+    # The coordinator (publish.yml) reads these to feed upload_release.rb
+    # from its single release job — the publish never lives here, so N
+    # platform runs never contend for the one manifest merge.
+    outputs:
+      run:
+        value: ${{ jobs.compute.outputs.run }}
+      env-matrix:
+        value: ${{ jobs.compute.outputs.env-matrix }}
+      ruby-matrix:
+        value: ${{ jobs.compute.outputs.ruby-matrix }}
+      tebako-version:
+        value: ${{ jobs.compute.outputs.tebako-version }}
 
 permissions:
   contents: write
@@ -91,7 +95,9 @@ env:
 
 # One run per (platform, ref, slice): a re-push cancels the stale run of
 # the SAME slice; different slices (a debugging dispatch vs the push legs)
-# never cancel each other. The publish stage serializes globally below.
+# never cancel each other. There is no publish stage here — the coordinator
+# (publish.yml) publishes from a single release job, so N platform runs
+# never contend for the one manifest merge.
 concurrency:
   group: "platform-${{ inputs.platform }}-${{ github.head_ref || github.ref_name }}-${{ inputs.ruby_filter || 'auto' }}-${{ inputs.arch_filter || 'all' }}"
   cancel-in-progress: true
@@ -882,56 +888,3 @@ jobs:
             runtime-packages
             !runtime-packages/x64-*-ruby*.dll
           retention-days: 1
-
-  publish:
-    name: Publish ${{ inputs.platform }} packages
-    needs: [compute, build]
-    runs-on: ubuntu-latest
-    # The manifest merge is read-modify-write against the ONE release:
-    # publishes serialize GLOBALLY (across platforms and slices), never
-    # cancel — a queued publish re-reads the manifest the previous one
-    # just wrote, so no platform's entries are ever lost.
-    concurrency:
-      group: publish-runtime-packages
-      cancel-in-progress: false
-    # Runs when legs ran and publishing was asked for (a push, a
-    # publishing dispatch, or an audit). always(): packages from failed
-    # matrix legs simply never land, and the completeness gate in
-    # upload_release.rb fails the run loudly when its platform's expected
-    # set is incomplete — a gap never ships silently.
-    if: ${{ always() && !cancelled() && needs.compute.outputs.run == 'true' && (inputs.publish || inputs.audit) }}
-    env:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 1
-          submodules: true
-
-      # This platform's artifacts only — the merge in upload_release.rb
-      # keeps every other platform's manifest entries, and the idempotent
-      # skip keeps unchanged assets from re-uploading.
-      - name: Download this platform's runtime packages
-        if: ${{ !inputs.audit }}
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          pattern: runtime-packages-${{ inputs.platform }}-*
-          path: runtime-packages
-          merge-multiple: true
-
-      - name: Setup Ruby gems
-        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
-        with:
-          ruby-version: '3.3'
-          bundler-cache: true
-
-      - name: Update release using Ruby script
-        env:
-          TEBAKO_VERSION: ${{ needs.compute.outputs.tebako-version }}
-          EXPECTED_ENV_MATRIX: ${{ needs.compute.outputs.env-matrix }}
-          EXPECTED_RUBY_MATRIX: ${{ needs.compute.outputs.ruby-matrix }}
-          FORCE_REBUILD: ${{ inputs.force_rebuild }}
-          AUDIT_ONLY: ${{ inputs.audit }}
-        run: |
-          ./scripts/upload_release.rb

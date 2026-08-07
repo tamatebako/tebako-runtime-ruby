@@ -35,10 +35,13 @@
 #     the versions whose tarballs moved rebuild (a 4.0-only source release
 #     rebuilds 4.0.x), on every platform, and publishes.
 #
-# Every leg fans out to _build-platform.yml; per-platform publishes
-# serialize globally inside it, so any combination of slices is safe to
-# run concurrently.
-
+# Every leg fans out to _build-platform.yml to BUILD. Publishing lives ONLY
+# here, in the single `release` job that runs once per coordinator run after
+# every platform build: the manifest merge in upload_release.rb is
+# read-modify-write against the one release's manifest.json, so it must
+# serialize — and serializing per-platform publish jobs through a shared
+# concurrency group displaced (cancelled) queued publishes. One release job
+# per run means a run publishes every platform it built, never fewer.
 name: publish
 
 on:
@@ -81,8 +84,6 @@ jobs:
       platform: windows
       ruby_filter: ${{ inputs.ruby_filter || '' }}
       arch_filter: ${{ inputs.arch_filter || '' }}
-      publish: ${{ github.event_name == 'repository_dispatch' || inputs.publish }}
-      force_rebuild: ${{ inputs.force_rebuild || false }}
       audit: ${{ inputs.audit || false }}
     secrets: inherit
 
@@ -93,8 +94,6 @@ jobs:
       platform: linux-gnu
       ruby_filter: ${{ inputs.ruby_filter || '' }}
       arch_filter: ${{ inputs.arch_filter || '' }}
-      publish: ${{ github.event_name == 'repository_dispatch' || inputs.publish }}
-      force_rebuild: ${{ inputs.force_rebuild || false }}
       audit: ${{ inputs.audit || false }}
     secrets: inherit
 
@@ -105,8 +104,6 @@ jobs:
       platform: linux-musl
       ruby_filter: ${{ inputs.ruby_filter || '' }}
       arch_filter: ${{ inputs.arch_filter || '' }}
-      publish: ${{ github.event_name == 'repository_dispatch' || inputs.publish }}
-      force_rebuild: ${{ inputs.force_rebuild || false }}
       audit: ${{ inputs.audit || false }}
     secrets: inherit
 
@@ -117,7 +114,103 @@ jobs:
       platform: macos
       ruby_filter: ${{ inputs.ruby_filter || '' }}
       arch_filter: ${{ inputs.arch_filter || '' }}
-      publish: ${{ github.event_name == 'repository_dispatch' || inputs.publish }}
-      force_rebuild: ${{ inputs.force_rebuild || false }}
       audit: ${{ inputs.audit || false }}
     secrets: inherit
+
+  # The ONE release job per coordinator run. upload_release.rb's manifest
+  # merge is read-modify-write against the single release's manifest.json,
+  # so publishing must serialize — and serializing per-platform jobs through
+  # a shared concurrency group was exactly what displaced (cancelled) queued
+  # publishes. Running the per-platform merges sequentially inside ONE job
+  # gives the merge its serialization with zero group contention: a run
+  # publishes every platform it built, never fewer.
+  release:
+    name: Publish the runtime packages
+    needs: [windows, linux-gnu, linux-musl, macos]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: publish-runtime-packages
+      cancel-in-progress: false
+    # Run when the run asked to publish (dispatch input or a source
+    # repository_dispatch) and at least one platform actually built.
+    if: ${{ always() && !cancelled() && (github.event_name == 'repository_dispatch' || inputs.publish || inputs.audit) && (needs.windows.result == 'success' || needs.linux-gnu.result == 'success' || needs.linux-musl.result == 'success' || needs.macos.result == 'success') }}
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          submodules: true
+
+      # Every platform's packages land in one workspace; the merge in
+      # upload_release.rb keeps every other platform's manifest entries,
+      # and the idempotent skip keeps unchanged assets from re-uploading.
+      - name: Download the runtime packages
+        if: ${{ !inputs.audit }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: runtime-packages-*
+          path: runtime-packages
+          merge-multiple: true
+
+      - name: Setup Ruby gems
+        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+
+      # One upload_release.rb per platform that built, sequential inside
+      # this job. Each platform's completeness gate reads its own matrix.
+      - name: Update the release, per platform
+        env:
+          AUDIT_ONLY: ${{ inputs.audit }}
+          WIN_RUN: ${{ needs.windows.outputs.run }}
+          WIN_VER: ${{ needs.windows.outputs.tebako-version }}
+          WIN_ENV: ${{ needs.windows.outputs.env-matrix }}
+          WIN_RUBY: ${{ needs.windows.outputs.ruby-matrix }}
+          GNU_RUN: ${{ needs.linux-gnu.outputs.run }}
+          GNU_VER: ${{ needs.linux-gnu.outputs.tebako-version }}
+          GNU_ENV: ${{ needs.linux-gnu.outputs.env-matrix }}
+          GNU_RUBY: ${{ needs.linux-gnu.outputs.ruby-matrix }}
+          MUSL_RUN: ${{ needs.linux-musl.outputs.run }}
+          MUSL_VER: ${{ needs.linux-musl.outputs.tebako-version }}
+          MUSL_ENV: ${{ needs.linux-musl.outputs.env-matrix }}
+          MUSL_RUBY: ${{ needs.linux-musl.outputs.ruby-matrix }}
+          MAC_RUN: ${{ needs.macos.outputs.run }}
+          MAC_VER: ${{ needs.macos.outputs.tebako-version }}
+          MAC_ENV: ${{ needs.macos.outputs.env-matrix }}
+          MAC_RUBY: ${{ needs.macos.outputs.ruby-matrix }}
+        run: |
+          set -euo pipefail
+          # A platform SELECTED this run whose build failed must fail the
+          # release loudly — never publish a silent coverage gap. A platform
+          # not selected (skipped) is fine.
+          failed=""
+          mark() { # $1=selected? $2=result $3=name
+            if [ "$1" = "true" ] && [ "$2" != "success" ] && [ "$2" != "skipped" ]; then
+              failed="$failed $3"
+            fi
+          }
+          mark "${{ github.event_name == 'repository_dispatch' || inputs.platform == 'all' || inputs.platform == 'windows' }}"    "${{ needs.windows.result }}"    windows
+          mark "${{ github.event_name == 'repository_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux-gnu' }}"  "${{ needs.linux-gnu.result }}"  linux-gnu
+          mark "${{ github.event_name == 'repository_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux-musl' }}"  "${{ needs.linux-musl.result }}"  linux-musl
+          mark "${{ github.event_name == 'repository_dispatch' || inputs.platform == 'all' || inputs.platform == 'macos' }}"      "${{ needs.macos.result }}"      macos
+          if [ -n "$failed" ]; then
+            echo "::error::these platforms were selected but did not build green — refusing to publish a partial release:$failed"
+            exit 1
+          fi
+          publish_platform() {
+            local run="$1" ver="$2" envm="$3" rubym="$4" name="$5"
+            if [ "$run" != "true" ]; then
+              echo "--- $name did not build this run; skipping its merge"
+              return 0
+            fi
+            echo "=== publishing $name (tebako $ver)"
+            TEBAKO_VERSION="$ver" EXPECTED_ENV_MATRIX="$envm" EXPECTED_RUBY_MATRIX="$rubym" \
+              ./scripts/upload_release.rb
+          }
+          publish_platform "$WIN_RUN"  "$WIN_VER"  "$WIN_ENV"  "$WIN_RUBY"  windows
+          publish_platform "$GNU_RUN"  "$GNU_VER"  "$GNU_ENV"  "$GNU_RUBY"  linux-gnu
+          publish_platform "$MUSL_RUN" "$MUSL_VER" "$MUSL_ENV" "$MUSL_RUBY" linux-musl
+          publish_platform "$MAC_RUN"  "$MAC_VER"  "$MAC_ENV"  "$MAC_RUBY"  macos
