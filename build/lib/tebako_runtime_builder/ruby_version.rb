@@ -49,17 +49,12 @@ module TebakoRuntimeBuilder
     # configure's RUBY_SO_NAME for x86_64-w64-mingw32 (ucrt64) is
     # x64-ucrt-ruby$(MAJOR)$(MINOR)0, so the DLL is
     # x64-ucrt-ruby<lib_version>.dll (and its import library
-    # libx64-ucrt-ruby<lib_version>.dll.a). ONE owner: the MAINLIBS literal
-    # (mlibs.rb), the release pipeline's install-as name
-    # (scripts/upload_release.rb), the finalize staging and the boot
-    # smoke's materialization all flow it; CI asserts parity by linking
-    # and loading (a drifted name binds nothing).
+    # libx64-ucrt-ruby<lib_version>.dll.a). ONE owner: the release
+    # pipeline's install-as name (scripts/upload_release.rb), the finalize
+    # staging and the boot smoke's materialization all flow it; CI asserts
+    # parity by linking and loading (a drifted name binds nothing).
     def msys_dll_name
       "x64-ucrt-ruby#{lib_version}.dll"
-    end
-
-    def msys_implib_name
-      "libx64-ucrt-ruby#{lib_version}.dll.a"
     end
 
     # Version gates compare numerically so 4.x lines fall out naturally
