@@ -32,7 +32,9 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
     File.write(File.join(dir, "io.c"), "tfs_close\n#{fd_text}\n")
     FileUtils.mkdir_p(File.join(dir, "cygwin"))
     File.write(File.join(dir, "cygwin", "GNUmakefile.in"),
-               "rule-a\n#{TebakoRuntimeBuilder::BuildPasses::MSYS_DLL_EXPORTS_ANCHOR}rule-b\n")
+               "rule-a\n#{TebakoRuntimeBuilder::BuildPasses::MSYS_DLL_EXPORTS_ANCHOR}rule-b\n" \
+               "ruby$(EXEEXT):\n" \
+               "\t  $(WINMAINOBJ) $(EXTOBJS) $(LIBRUBYARG) -Wl,--start-group $(MAINLIBS) -Wl,--end-group -o $@  # tebako patched\n")
     FileUtils.mkdir_p(File.join(dir, "win32"))
     File.write(File.join(dir, "win32", "mkexports.rb"),
                "#{TebakoRuntimeBuilder::BuildPasses::MSYS_MKEXPORTS_FOREACH_ANCHORS.last}\n")
@@ -152,6 +154,12 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
     it "appends the fragment to the mkexports rule in cygwin/GNUmakefile.in" do
       gnu_makefile_in = File.read(File.join(ruby_src, "cygwin", "GNUmakefile.in"))
       expect(gnu_makefile_in).to include("cat tebako-dll-exports.def >> $@ # tebako patched (issue 40)")
+    end
+
+    it "moves LIBRUBYARG inside the exe link's --start-group (the fs TU binds the driver exports)" do
+      gnu_makefile_in = File.read(File.join(ruby_src, "cygwin", "GNUmakefile.in"))
+      expect(gnu_makefile_in).to include("-Wl,--start-group $(LIBRUBYARG) $(MAINLIBS) -Wl,--end-group")
+      expect(gnu_makefile_in).not_to include("$(LIBRUBYARG) -Wl,--start-group $(MAINLIBS)")
     end
 
     it "rewrites mkexports.rb's pipe-string IO.foreach as array-form IO.popen (ruby 4 baseruby)" do

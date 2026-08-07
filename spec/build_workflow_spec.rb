@@ -63,15 +63,19 @@ RSpec.describe "build-platform reusable workflow" do
     expect(per_leg_rebuilds).to be_empty
   end
 
-  # The publish job downloads THIS platform's artifacts only and the
-  # publishes serialize globally — the manifest merge is read-modify-write,
-  # so two publishes must never run at once.
-  it "publishes per-platform under the global publish serialization" do
-    publish = workflow.fetch("jobs").fetch("publish")
-    expect(publish.dig("concurrency", "group")).to eq("publish-runtime-packages")
-    expect(publish.dig("concurrency", "cancel-in-progress")).to be(false)
-    download = publish.fetch("steps").find { |step| step["name"] == "Download this platform's runtime packages" }
-    expect(download.dig("with", "pattern")).to eq("runtime-packages-${{ inputs.platform }}-*")
+  # The publish job is GONE from the per-platform builder: N platform runs
+  # sharing one publish group displaced (cancelled) queued publishes. The
+  # coordinator (publish.yml) publishes from a single release job. Locked
+  # structurally so the per-platform publish can never creep back in.
+  it "carries no publish job (publishing is the coordinator's single release job)" do
+    expect(workflow.fetch("jobs")).not_to have_key("publish")
+  end
+
+  it "exposes the compute matrices and version as workflow_call outputs for the coordinator" do
+    outputs = workflow.dig(true, "workflow_call", "outputs") # YAML 1.1: the `on:` key parses as boolean true
+    %w[run env-matrix ruby-matrix tebako-version].each do |key|
+      expect(outputs).to have_key(key)
+    end
   end
 
   # The boot smoke gates the upload (owner directive: a broken runtime
