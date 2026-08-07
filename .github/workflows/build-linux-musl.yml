@@ -46,18 +46,6 @@ on:
         description: 'Arch slice: "all" or an arch (e.g. "x86_64")'
         type: string
         default: 'all'
-      publish:
-        description: 'Publish this run''s packages to the release'
-        type: boolean
-        default: true
-      force_rebuild:
-        description: 'Re-upload even unchanged assets'
-        type: boolean
-        default: false
-      audit:
-        description: 'Audit only: verify the release against the expected matrix, no builds/uploads'
-        type: boolean
-        default: false
 
 jobs:
   linux-musl:
@@ -66,9 +54,4 @@ jobs:
       platform: linux-musl
       ruby_filter: ${{ inputs.ruby_filter || '' }}
       arch_filter: ${{ inputs.arch_filter || '' }}
-      # Pushes to main publish (the retired monolith's behavior); pull
-      # requests never touch the production release; dispatches choose.
-      publish: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish) || github.event_name == 'push' }}
-      force_rebuild: ${{ inputs.force_rebuild || false }}
-      audit: ${{ inputs.audit || false }}
     secrets: inherit
