@@ -182,10 +182,25 @@ jobs:
           MAC_ENV: ${{ needs.macos.outputs.env-matrix }}
           MAC_RUBY: ${{ needs.macos.outputs.ruby-matrix }}
         run: |
-          set -euo pipefail
-          # A platform SELECTED this run whose build failed must fail the
-          # release loudly — never publish a silent coverage gap. A platform
-          # not selected (skipped) is fine.
+          set -uo pipefail
+          # Publish every platform that built green; THEN fail loudly naming
+          # any selected platform that did not — a green platform's packages
+          # always land, and a coverage gap never goes unreported.
+          upload_failed=""
+          publish_platform() {
+            local run="$1" ver="$2" envm="$3" rubym="$4" name="$5"
+            if [ "$run" != "true" ]; then
+              echo "--- $name did not build this run; skipping its merge"
+              return 0
+            fi
+            echo "=== publishing $name (tebako $ver)"
+            TEBAKO_VERSION="$ver" EXPECTED_ENV_MATRIX="$envm" EXPECTED_RUBY_MATRIX="$rubym" \
+              ./scripts/upload_release.rb || upload_failed="$upload_failed $name"
+          }
+          publish_platform "$WIN_RUN"  "$WIN_VER"  "$WIN_ENV"  "$WIN_RUBY"  windows
+          publish_platform "$GNU_RUN"  "$GNU_VER"  "$GNU_ENV"  "$GNU_RUBY"  linux-gnu
+          publish_platform "$MUSL_RUN" "$MUSL_VER" "$MUSL_ENV" "$MUSL_RUBY" linux-musl
+          publish_platform "$MAC_RUN"  "$MAC_VER"  "$MAC_ENV"  "$MAC_RUBY"  macos
           failed=""
           mark() { # $1=selected? $2=result $3=name
             if [ "$1" = "true" ] && [ "$2" != "success" ] && [ "$2" != "skipped" ]; then
@@ -197,20 +212,9 @@ jobs:
           mark "${{ github.event_name == 'repository_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux-musl' }}"  "${{ needs.linux-musl.result }}"  linux-musl
           mark "${{ github.event_name == 'repository_dispatch' || inputs.platform == 'all' || inputs.platform == 'macos' }}"      "${{ needs.macos.result }}"      macos
           if [ -n "$failed" ]; then
-            echo "::error::these platforms were selected but did not build green — refusing to publish a partial release:$failed"
-            exit 1
+            echo "::error::these platforms were selected but did not build green — their packages did not land:$failed"
           fi
-          publish_platform() {
-            local run="$1" ver="$2" envm="$3" rubym="$4" name="$5"
-            if [ "$run" != "true" ]; then
-              echo "--- $name did not build this run; skipping its merge"
-              return 0
-            fi
-            echo "=== publishing $name (tebako $ver)"
-            TEBAKO_VERSION="$ver" EXPECTED_ENV_MATRIX="$envm" EXPECTED_RUBY_MATRIX="$rubym" \
-              ./scripts/upload_release.rb
-          }
-          publish_platform "$WIN_RUN"  "$WIN_VER"  "$WIN_ENV"  "$WIN_RUBY"  windows
-          publish_platform "$GNU_RUN"  "$GNU_VER"  "$GNU_ENV"  "$GNU_RUBY"  linux-gnu
-          publish_platform "$MUSL_RUN" "$MUSL_VER" "$MUSL_ENV" "$MUSL_RUBY" linux-musl
-          publish_platform "$MAC_RUN"  "$MAC_VER"  "$MAC_ENV"  "$MAC_RUBY"  macos
+          if [ -n "$upload_failed" ]; then
+            echo "::error::these platforms' upload_release.rb failed:$upload_failed"
+          fi
+          [ -z "$failed" ] && [ -z "$upload_failed" ]
