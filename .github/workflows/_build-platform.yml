@@ -699,9 +699,19 @@ jobs:
             echo "== $1: ruby.exe link rule region:"; grep -n -B4 -A6 "EXTOBJS.*-o \$@)" "$1" || true
             echo "== $1: LIBS/MAINLIBS definitions:"; grep -n "^LIBS\|^MAINLIBS\|^EXTLIBS" "$1" || true
           ' _ {} \; || true
+          # the static-ext state at the finalize relink (the undefined
+          # Init_* class): does exts.mk still list the archives, does
+          # extinit.c still reference them, and do the archives exist on disk
+          find .build/deps/src -maxdepth 2 -name exts.mk -exec sh -c '
+            echo "== $1: $(wc -l < "$1") lines, EXTSOBJS:"; grep -n "^EXTSOBJS" "$1" | cut -c1-240 || echo "(no EXTSOBJS line)"
+          ' _ {} \; || true
+          find .build/deps/src -maxdepth 3 -name "extinit.c" -exec sh -c '
+            echo "== $1: init calls: $(grep -c "init(Init_" "$1" || true)"
+          ' _ {} \; || true
+          echo "== ext archives on disk:"; find .build/deps/src -path "*/ext/*" -name "*.a" -exec ls -la {} \; 2>/dev/null | head -10 || true
           # the ExternalProject-swallowed inner build log (the make error's
           # real stderr never reaches the CI output otherwise)
-          find .build/deps/src -name "*-build-*.log" -o -name "*-err.log" | while read -r f; do
+          find .build -name "*-build-*.log" -o -name "*-err.log" 2>/dev/null | while read -r f; do
             echo "=== $f (tail) ==="; tail -60 "$f" || true
           done
 
