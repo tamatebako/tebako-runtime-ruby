@@ -730,6 +730,23 @@ jobs:
             timeout --preserve-status 25 "$exe" < /dev/null 2>&1 | tail -15; echo "probe exit: ${PIPESTATUS[0]}"
           echo "== image boot (no probe), stdin closed, 25s:"
           TEBAKO_RUNTIME_IMAGE="$exe.tfs" timeout --preserve-status 25 "$exe" < /dev/null 2>&1 | tail -15; echo "image exit: ${PIPESTATUS[0]}"
+          # The native-ext bind (issue 40, the 3.3+ cparse.so LoadError
+          # class): the exact smoke case, with the PE-named DLL materialized
+          # next to the exe first (the boot smoke does it in-step; here it
+          # is manual), plus the build tree's cparse.so import table — the
+          # DLL Name it binds must be the shipped x64-ucrt-ruby<ABI>.dll,
+          # and the extraction errno now names the failure class.
+          echo "== cparse.so import tables (build tree):"
+          find .build -name "cparse.so" -exec sh -c 'echo "-- $1"; objdump -p "$1" | grep -i "DLL Name"' _ {} \; 2>/dev/null || true
+          echo "== racc ext link evidence (mkmf.log/Makefile):"
+          find .build -path "*racc*" \( -name "Makefile" -o -name "mkmf.log" \) -exec sh -c '
+            echo "-- $1"; grep -hiE "LIBRUBYARG|-lx64-ucrt|^LIBS" "$1" | sort -u | head -6
+          ' _ {} \; 2>/dev/null || true
+          pedll=$(find .build/deps/src -maxdepth 2 -name "x64-*-ruby*.dll" 2>/dev/null | head -1 || true)
+          [ -n "$pedll" ] && [ -f "$pkgdll" ] && cp "$pkgdll" "runtime-packages/$(basename "$pedll")"
+          echo "== native_ext probe boot (smoke case), stdin closed, 60s:"
+          TEBAKO_RUNTIME_IMAGE="$exe.tfs" RUBYOPT="-r$probe" TEBAKO_BOOT_PROBE=native_ext TEBAKO_BOOT_MOUNT_POINT=A:/__tfs__ \
+            timeout --preserve-status 60 "$exe" < /dev/null 2>&1 | tail -8; echo "native_ext exit: ${PIPESTATUS[0]}"
           exit 0
 
       # The build emits TWO artifacts per leg since item 30: the runtime
