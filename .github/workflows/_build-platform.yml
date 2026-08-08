@@ -121,6 +121,7 @@ jobs:
       tebako-version: ${{ steps.get-version.outputs.version }}
       container-version: ${{ steps.get-container-version.outputs.version }}
       source-pin: ${{ steps.get-source-pin.outputs.pin }}
+      link-unit-release: ${{ steps.get-link-unit-pin.outputs.release }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -164,6 +165,17 @@ jobs:
           pin=$(grep -oE 'DEFAULT_RELEASE = "[^"]+"' build/lib/tebako_runtime_builder/source_fetcher.rb | cut -d'"' -f2)
           echo "Building runtimes from tamatebako/ruby source release $pin"
           echo "pin=$pin" >> "$GITHUB_OUTPUT"
+
+      # The published link-unit pin (contract.yml link_unit_release): the
+      # tebako product release whose prebuilt closure the legs CONSUME as
+      # a download instead of building from source. Empty = source build
+      # (the driver is moving). ci/link-unit-download.sh owns the fetch.
+      - name: Get the link-unit release pin
+        id: get-link-unit-pin
+        run: |
+          pin=$(grep -E '^link_unit_release:' contract.yml | sed -E 's/^link_unit_release: *"([^"]*)".*/\1/')
+          echo "Link-unit release pin: '${pin}' (empty = build from source)"
+          echo "release=$pin" >> "$GITHUB_OUTPUT"
 
       # Roadmap 45: fail before the matrix builds anything if contract.yml
       # (the release pipeline's source of truth) and the compiled-in
@@ -232,17 +244,19 @@ jobs:
   # (tools/stage_link_unit); the factory STAGES, never re-implements.
   # The closure depends on the triplet only — staging it inside the ruby
   # matrix paid the full native build per version (the catalog's 22 legs
-  # per platform-arch). ci/link-unit-posix.sh owns the leg logic:
-  # linux-gnu stages inside ubuntu:20.04 (the glibc 2.31 floor, by
+  # per platform-arch; windows paid it per leg until the hoist).
+  # Consumption order per leg: the PUBLISHED unit when contract.yml's
+  # link_unit_release pins one (ci/link-unit-download.sh — a verified
+  # ~30 s download), else the source build: ci/link-unit-posix.sh stages
+  # linux-gnu inside ubuntu:20.04 (the glibc 2.31 floor, by
   # construction), linux-musl inside alpine:3.17 (the build container's
-  # musl generation), macos on the runner. Windows keeps the in-leg
-  # staging (the build job below) until the first published windows link
-  # unit ships — its download joins THIS job then.
+  # musl generation), macos on the runner, windows via ci/link-unit.sh
+  # (the ucrt64 rules) — once per run on every platform now.
   link-unit:
     name: Stage the v2 link unit (${{ matrix.env.os }} / ${{ matrix.env.arch }})
     needs: compute
-    # Same gates as the build legs, and never on windows (in-leg there).
-    if: ${{ needs.compute.outputs.run == 'true' && !inputs.audit && inputs.platform != 'windows' }}
+    # Same gates as the build legs.
+    if: ${{ needs.compute.outputs.run == 'true' && !inputs.audit }}
     runs-on: ${{ matrix.env.host }}
     strategy:
       fail-fast: false
@@ -254,13 +268,26 @@ jobs:
         with:
           fetch-depth: 1
 
+      # The pin hit: the published link unit is a verified download, not
+      # a build (the closure depends on the triplet + product release,
+      # never on a ruby version). A miss (pin empty, or the platform not
+      # published) falls through to the source build below.
+      - name: Download the published link unit (pin hit)
+        id: published
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash ci/link-unit-download.sh ${{ matrix.env.os }} ${{ matrix.env.arch }} "${{ needs.compute.outputs.link-unit-release }}"
+
       - name: Checkout the tebako product repo (the link unit source)
+        if: steps.published.outputs.hit != 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: tamatebako/tebako
           path: tebako-rs
           ref: main
       - name: Checkout dwarfs-rs (link-unit sibling path dep)
+        if: steps.published.outputs.hit != 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: tamatebako/dwarfs-rs
@@ -275,6 +302,7 @@ jobs:
       # container's /mnt maps to the same host dir). Clone it until
       # tebako-rs ships its own answer (a release pin or an in-repo dep).
       - name: Checkout limnifs (contract-tests sibling path dep)
+        if: steps.published.outputs.hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -283,11 +311,12 @@ jobs:
           [ -d "$sibling/limnifs/.git" ] || git clone --quiet --depth 1 https://github.com/limnifs/limnifs "$sibling/limnifs"
           test -f "$sibling/limnifs/limnifs-write/Cargo.toml"
       - uses: dtolnay/rust-toolchain@e43eeffd51aefeea929f4ea14e09fd077153e788 # 1.94.1
-        if: matrix.env.os == 'macos'
+        if: steps.published.outputs.hit != 'true' && matrix.env.os == 'macos'
       # The warmers below key on (os, arch[, the vcpkg closure hash]) and
       # NOTHING else — this job has no ruby dimension, so no key ever
       # carries a ruby version (spec-locked in build_workflow_spec.rb).
       - name: Cache the cargo target dir (link unit)
+        if: steps.published.outputs.hit != 'true'
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: |
@@ -299,7 +328,7 @@ jobs:
       # The archive caches are per flavor on purpose: a floor-built gnu
       # archive, a musl archive, and a macos archive never serve each other.
       - name: Cache vcpkg package archives (link unit, macos)
-        if: matrix.env.os == 'macos'
+        if: steps.published.outputs.hit != 'true' && matrix.env.os == 'macos'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/Library/Caches/vcpkg
@@ -310,7 +339,7 @@ jobs:
           # a failed leg keeps its progress instead of restarting cold.
           save-always: true
       - name: Cache vcpkg package archives (link unit, container legs)
-        if: matrix.env.container != null
+        if: steps.published.outputs.hit != 'true' && matrix.env.container != null
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/vcpkg
@@ -321,13 +350,14 @@ jobs:
       # The musl staging container's source-built cmake (3.17's stock
       # 3.24 is too old for the boost 1.90 ports; built once per arch).
       - name: Cache the musl cmake build (link unit)
-        if: matrix.env.os == 'linux-musl'
+        if: steps.published.outputs.hit != 'true' && matrix.env.os == 'linux-musl'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/tebako-cmake-musl-${{ matrix.env.arch }}
           key: cmake-musl-3.31.8-${{ matrix.env.arch }}
           save-always: true
       - name: Stage the POSIX link unit
+        if: steps.published.outputs.hit != 'true' && matrix.env.os != 'windows'
         env:
           # Only the macos baseline restore needs it (gh release download);
           # the container flavors build the ports in-leg by design.
@@ -335,6 +365,96 @@ jobs:
         # Everything lives in ci/link-unit-posix.sh (reviewed,
         # shellcheck-able) — never inline run-blocks.
         run: sh ci/link-unit-posix.sh ${{ matrix.env.os }} ${{ matrix.env.arch }}
+
+      # The windows source staging (the pin's miss path): the steps the
+      # build legs carried in-matrix before the hoist — once per run
+      # here, never per ruby version again. The checkouts/caches above
+      # are shared with POSIX; these are the ucrt64-only provisions.
+      - name: Setup MSys
+        if: matrix.env.os == 'windows' && steps.published.outputs.hit != 'true'
+        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
+        with:
+          msystem: ucrt64
+          path-type: minimal
+          update: true
+      - name: Install pacman packages
+        if: matrix.env.os == 'windows' && steps.published.outputs.hit != 'true'
+        shell: msys2 {0}
+        run: |
+          pacman -Syu --needed --noconfirm git tar bison flex pactoys
+          pacboy sync --needed --noconfirm cmake:p diffutils:p          \
+            dlfcn:p ninja:p                                             \
+            gtest:p autotools:p ncurses:p ruby:p toolchain:p openssl:p  \
+            make:p libyaml:p libxslt:p
+      - uses: dtolnay/rust-toolchain@e43eeffd51aefeea929f4ea14e09fd077153e788 # 1.94.1
+        if: matrix.env.os == 'windows' && steps.published.outputs.hit != 'true'
+        with:
+          targets: x86_64-pc-windows-gnu
+      - name: Set up vcpkg for the link unit
+        if: matrix.env.os == 'windows' && steps.published.outputs.hit != 'true'
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.6
+        with:
+          vcpkgGitCommitId: f14401ca0f2754347c3864da7488a9b955b4e47a
+          vcpkgDirectory: ${{ github.workspace }}/.vcpkg-root
+      # run-vcpkg@v11 injects VCPKG_BINARY_SOURCES=clear;x-gha,readwrite,
+      # and vcpkg removed x-gha (2025.06) — that spec is zero binary cache.
+      # The override is the org's GitHub Packages NuGet feed (details in
+      # ci/vcpkg-nuget-cache.sh).
+      - name: Configure the vcpkg binary cache (GitHub Packages NuGet)
+        if: matrix.env.os == 'windows' && steps.published.outputs.hit != 'true'
+        shell: bash
+        env:
+          # First-push of a new package id CANNOT be done by GITHUB_TOKEN
+          # (GitHub quirk: 403 on creation; community#159893) — the org
+          # secret (classic PAT, write:packages) owns creation when present;
+          # GITHUB_TOKEN remains the read path and the whole fallback.
+          GH_TOKEN: ${{ secrets.TEBAKO_PACKAGES_PAT || secrets.GITHUB_TOKEN }}
+        run: bash ci/vcpkg-nuget-cache.sh
+      - name: Restore the vcpkg baseline (dwarfs-t is the single writer)
+        if: matrix.env.os == 'windows' && steps.published.outputs.hit != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Never fails the leg: a miss means the ports build normally.
+        # The script owns the canonical root and exports
+        # DWARFS_RS_VCPKG_INSTALLED_DIR into GITHUB_ENV.
+        run: |
+          bash dwarfs-rs/dwarfs-t/ci/vcpkg-baseline-restore.sh \
+            dwarfs-rs/dwarfs-t x64-mingw-static \
+            || echo "baseline miss — ports build normally"
+      - name: Build + stage the windows-gnu link unit
+        if: matrix.env.os == 'windows' && steps.published.outputs.hit != 'true'
+        # Git-bash, and NO msys2 bin dir on PATH: vcpkg's downloaded
+        # msys2 (make/perl) ABI-clashes with the setup-msys2 install when
+        # both are on PATH (openssl's make install died in a perl eval
+        # crash — three legs lost). The msys2 ruby is invoked by
+        # ABSOLUTE path only; the C++ runtimes static-link (several mingw
+        # installs on the runner make DLL resolution nondeterministic).
+        shell: bash
+        env:
+          DWARFS_RS_VCPKG_ROOT: ${{ github.workspace }}/.vcpkg-root
+          VCPKG_ROOT: ${{ github.workspace }}/.vcpkg-root
+          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: gcc.exe
+          # Trailing -lmsvcrt: rustc's -nodefaultlibs late-lib order ends
+          # -lmsvcrt -lmingwex -luser32 -lkernel32, so libmingwex's compat
+          # _assert.o (pulled at the LAST -lmingwex) never sees the
+          # __imp___msvcrt_assert provider behind it (probe-proven:
+          # libmsvcrt.a carries it; gcc's own tail keeps msvcrt after
+          # mingwex, rustc's does not). The end-of-line -lmsvcrt restores
+          # the invariant.
+          RUSTFLAGS: -C link-arg=-static-libgcc -C link-arg=-static-libstdc++ -C link-arg=-lmsvcrt
+        # Everything lives in ci/link-unit.sh (reviewed, shellcheck-able) —
+        # never inline run-blocks; they get string-edited and break silently.
+        run: bash ci/link-unit.sh
+      - name: Dump vcpkg build logs on failure
+        if: failure() && matrix.env.os == 'windows'
+        shell: bash
+        run: |
+          for f in .vcpkg-root/buildtrees/*/*-out.log .vcpkg-root/buildtrees/*/*-err.log; do
+            [ -s "$f" ] || continue
+            echo "=== $f ==="
+            tail -30 "$f"
+          done
 
       # The handoff to the build legs: the staged unit
       # (.build/link-unit — libtebako_driver.a + libtfs.a + closure/*.a +
@@ -351,9 +471,8 @@ jobs:
     name: Build runtime package for ${{ matrix.env.os }} / ${{ matrix.env.arch }} / Ruby ${{ matrix.ruby.version }}
     needs: [compute, preflight-containers, link-unit]
     # Audit runs publish-shaped verification without spending a build.
-    # always() + the explicit result check: on windows the link-unit job
-    # is skipped BY DESIGN (the legs stage in-leg there) and a skipped
-    # dependency must not take the legs down with it; a POSIX link-unit
+    # always() + the explicit result check: a skipped link-unit (the
+    # audit path) must not take the legs down with it, and a link-unit
     # failure skips the legs here by name instead of 40 minutes into the
     # ruby link.
     if: ${{ always() && !cancelled() && needs.compute.outputs.run == 'true' && !inputs.audit && (needs.link-unit.result == 'success' || needs.link-unit.result == 'skipped') }}
@@ -407,19 +526,18 @@ jobs:
           key: tebako-runtime-${{ matrix.env.os }}-${{ matrix.env.arch }}-${{ matrix.ruby.version }}-${{ needs.compute.outputs.tebako-version }}-${{ matrix.ruby.src_sha256 }}-v${{ env.CACHE_VER }}
           save-always: true
 
-      # The v2 link unit (image era), POSIX legs: staged ONCE per
-      # platform-arch by the link-unit job above (the native closure
-      # depends on the triplet, never on the ruby version) and downloaded
-      # into the exact workspace path TEBAKO_RUST_LIBDIR names below.
+      # The v2 link unit (image era): staged ONCE per platform-arch by
+      # the link-unit job above (a pin-hit verified download, or a source
+      # build — the native closure depends on the triplet, never on the
+      # ruby version) and downloaded into the exact workspace path
+      # TEBAKO_RUST_LIBDIR names below, on every platform.
       # The .build prefix cache may restore a link-unit/ staged by an
       # older run — drop it first so the download lands on a clean
       # directory (an overlay merge would link stale closure archives).
       - name: Clean any cache-restored link unit
-        if: matrix.env.os != 'windows'
         run: rm -rf .build/link-unit
 
       - name: Download the staged link unit
-        if: matrix.env.os != 'windows'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: link-unit-${{ matrix.env.os }}-${{ matrix.env.arch }}
@@ -429,7 +547,6 @@ jobs:
       # must stop the leg here, not an hour into the ruby build with a
       # missing-archive error from the link.
       - name: Assert the staged link unit is complete
-        if: matrix.env.os != 'windows'
         shell: bash
         run: |
           set -euo pipefail
@@ -498,126 +615,10 @@ jobs:
             gtest:p autotools:p ncurses:p ruby:p toolchain:p openssl:p  \
             make:p libyaml:p libxslt:p
 
-      # The v2 link unit (scoped staticlibs + the mingw closure), built
-      # in-leg from the tebako product checkout until the first published
-      # windows link unit ships; then this becomes a download (the other
-      # platforms' shape).
-      - name: Checkout the tebako product repo (the link unit source)
-        if: matrix.env.os == 'windows'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: tamatebako/tebako
-          path: tebako-rs
-          ref: main
-      - name: Checkout dwarfs-rs (link-unit sibling path dep)
-        if: matrix.env.os == 'windows'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: tamatebako/dwarfs-rs
-          path: dwarfs-rs
-          submodules: recursive
-      # The product repo's contract tests dev-depend on limnifs-write via a
-      # sibling path (spec 20, tebako-rs tests/contract ->
-      # ../../../../limnifs/limnifs/limnifs-write): EVERY cargo invocation
-      # on the tebako-rs workspace (the rust-cache metadata probe included)
-      # fails without it. The expected location is a "limnifs" directory
-      # holding the limnifs/limnifs repo beside the workspace. Clone it
-      # until tebako-rs ships its own answer (a release pin or an in-repo dep).
-      - name: Checkout limnifs (contract-tests sibling path dep)
-        if: matrix.env.os == 'windows'
-        shell: bash
-        run: |
-          set -euo pipefail
-          sibling="$(pwd)/../limnifs"
-          mkdir -p "$sibling"
-          [ -d "$sibling/limnifs/.git" ] || git clone --quiet --depth 1 https://github.com/limnifs/limnifs "$sibling/limnifs"
-          test -f "$sibling/limnifs/limnifs-write/Cargo.toml"
-      - uses: dtolnay/rust-toolchain@e43eeffd51aefeea929f4ea14e09fd077153e788 # 1.94.1
-        if: matrix.env.os == 'windows'
-        with:
-          targets: x86_64-pc-windows-gnu
-      - name: Set up vcpkg for the link unit
-        if: matrix.env.os == 'windows'
-        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.6
-        with:
-          vcpkgGitCommitId: f14401ca0f2754347c3864da7488a9b955b4e47a
-          vcpkgDirectory: ${{ github.workspace }}/.vcpkg-root
-      # run-vcpkg@v11 injects VCPKG_BINARY_SOURCES=clear;x-gha,readwrite,
-      # and vcpkg removed x-gha (2025.06) — that spec is zero binary cache,
-      # and it also neutered the old actions/cache over the archives dir
-      # (files provider cleared + archives path redirected). The override
-      # is the org's GitHub Packages NuGet feed; the dead cache step is
-      # gone (details in ci/vcpkg-nuget-cache.sh). Only the windows leg
-      # used run-vcpkg: the macos/container legs bootstrap vcpkg inside
-      # ci/link-unit-posix.sh, where the default files provider keeps
-      # their mounted-archives caches alive.
-      - name: Configure the vcpkg binary cache (GitHub Packages NuGet)
-        if: matrix.env.os == 'windows'
-        shell: bash
-        env:
-          # First-push of a new package id CANNOT be done by GITHUB_TOKEN
-          # (GitHub quirk: 403 on creation; community#159893) — the org
-          # secret (classic PAT, write:packages) owns creation when present;
-          # GITHUB_TOKEN remains the read path and the whole fallback.
-          GH_TOKEN: ${{ secrets.TEBAKO_PACKAGES_PAT || secrets.GITHUB_TOKEN }}
-        run: bash ci/vcpkg-nuget-cache.sh
-      - name: Cache the cargo target dir (link unit)
-        if: matrix.env.os == 'windows'
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-        with:
-          workspaces: |
-            tebako-rs
-          # The same triplet-scoped key shape as the POSIX link-unit job:
-          # rust-cache's default key (job + lockfile hashes) names no
-          # triplet, so a second windows arch would silently share one entry.
-          key: link-unit2-${{ matrix.env.os }}-${{ matrix.env.arch }}
-
-      - name: Restore the vcpkg baseline (dwarfs-t is the single writer)
-        if: matrix.env.os == 'windows'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        # Never fails the leg: a miss means the ports build normally.
-        # The script owns the canonical root and exports
-        # DWARFS_RS_VCPKG_INSTALLED_DIR into GITHUB_ENV.
-        run: |
-          bash dwarfs-rs/dwarfs-t/ci/vcpkg-baseline-restore.sh \
-            dwarfs-rs/dwarfs-t x64-mingw-static \
-            || echo "baseline miss — ports build normally"
-      - name: Build + stage the windows-gnu link unit
-        if: matrix.env.os == 'windows'
-        # Git-bash, and NO msys2 bin dir on PATH: vcpkg's downloaded
-        # msys2 (make/perl) ABI-clashes with the setup-msys2 install when
-        # both are on PATH (openssl's make install died in a perl eval
-        # crash — three legs lost). The msys2 ruby is invoked by
-        # ABSOLUTE path only; the C++ runtimes static-link (several mingw
-        # installs on the runner make DLL resolution nondeterministic).
-        shell: bash
-        env:
-          DWARFS_RS_VCPKG_ROOT: ${{ github.workspace }}/.vcpkg-root
-          VCPKG_ROOT: ${{ github.workspace }}/.vcpkg-root
-          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: gcc.exe
-          # Trailing -lmsvcrt: rustc's -nodefaultlibs late-lib order ends
-          # -lmsvcrt -lmingwex -luser32 -lkernel32, so libmingwex's compat
-          # _assert.o (pulled at the LAST -lmingwex) never sees the
-          # __imp___msvcrt_assert provider behind it (probe-proven:
-          # libmsvcrt.a carries it; gcc's own tail keeps msvcrt after
-          # mingwex, rustc's does not). The end-of-line -lmsvcrt restores
-          # the invariant.
-          RUSTFLAGS: -C link-arg=-static-libgcc -C link-arg=-static-libstdc++ -C link-arg=-lmsvcrt
-        # Everything lives in ci/link-unit.sh (reviewed, shellcheck-able) —
-        # never inline run-blocks; they get string-edited and break silently.
-        run: bash ci/link-unit.sh
-
-      - name: Dump vcpkg build logs on failure
-        if: failure() && matrix.env.os == 'windows'
-        shell: bash
-        run: |
-          for f in .vcpkg-root/buildtrees/*/*-out.log .vcpkg-root/buildtrees/*/*-err.log; do
-            [ -s "$f" ] || continue
-            echo "=== $f ==="
-            tail -30 "$f"
-          done
+      # The v2 link unit (scoped staticlibs + the mingw closure) stages
+      # ONCE per run in the link-unit job above on EVERY platform — a
+      # pin-hit verified download, or a source build — and the legs
+      # download it below. No closure work lives in the ruby matrix.
 
       - name: Setup Ruby
         if: matrix.env.container == null && matrix.env.os != 'windows'

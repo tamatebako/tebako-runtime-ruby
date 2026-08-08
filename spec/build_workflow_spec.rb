@@ -28,13 +28,15 @@ RSpec.describe "build-platform reusable workflow" do
 
   # The native closure depends on the platform triplet only — staging it
   # inside the ruby matrix paid the full native build per version (the
-  # catalog's 22 legs per platform-arch). The link-unit job stages ONCE
-  # per platform-arch from a ruby-free matrix; the build legs download.
+  # catalog's 22 legs per platform-arch; windows paid it per leg before
+  # the hoist). The link-unit job stages ONCE per platform-arch from a
+  # ruby-free matrix — every platform, windows included — and the build
+  # legs download.
   it "stages the link unit once per platform-arch (a ruby-free matrix)" do
     link_unit = workflow.fetch("jobs").fetch("link-unit")
     matrix = link_unit.fetch("strategy").fetch("matrix")
     expect(matrix).to eq("env" => "${{fromJson(needs.compute.outputs.link-unit-matrix)}}")
-    expect(link_unit["if"]).to include("inputs.platform != 'windows'")
+    expect(link_unit["if"]).not_to include("windows")
   end
 
   it "keys no link-unit cache on a ruby version" do
@@ -66,18 +68,37 @@ RSpec.describe "build-platform reusable workflow" do
     expect(build.fetch("needs")).to eq(%w[compute preflight-containers link-unit])
     steps = build.fetch("steps")
     download = steps.find { |step| step["name"] == "Download the staged link unit" }
-    expect(download["if"]).to eq("matrix.env.os != 'windows'")
+    expect(download["if"]).to be_nil # every platform downloads, windows included
     expect(download.dig("with", "path")).to eq(".build/link-unit")
     assertion = steps.find { |step| step["name"] == "Assert the staged link unit is complete" }
-    expect(assertion["if"]).to eq("matrix.env.os != 'windows'")
+    expect(assertion["if"]).to be_nil
     expect(assertion["run"]).to include("libtebako_driver.a", "libtfs.a", "closure")
     per_leg_rebuilds = steps.select do |step|
-      step["if"] == "matrix.env.os != 'windows'" &&
-        ["Checkout the tebako product repo (the link unit source)",
-         "Checkout dwarfs-rs (link-unit sibling path dep)",
-         "Stage the POSIX link unit"].include?(step["name"])
+      ["Checkout the tebako product repo (the link unit source)",
+       "Checkout dwarfs-rs (link-unit sibling path dep)",
+       "Stage the POSIX link unit",
+       "Build + stage the windows-gnu link unit",
+       "Set up vcpkg for the link unit"].include?(step["name"])
     end
     expect(per_leg_rebuilds).to be_empty
+  end
+
+  # The pin-hit consumption path (contract.yml link_unit_release): the
+  # link-unit job attempts the published-unit download first, and every
+  # source-build step is gated on the miss — a pinned run is a ~30 s
+  # download, never a closure rebuild.
+  it "attempts the published link-unit download before any source build" do
+    steps = workflow.fetch("jobs").fetch("link-unit").fetch("steps")
+    names = steps.map { |step| step["name"].to_s }
+    download_index = names.index("Download the published link unit (pin hit)")
+    expect(download_index).not_to be_nil
+    builders = steps.select { |step| step["name"].to_s.start_with?("Stage the", "Build + stage") }
+    expect(builders).not_to be_empty
+    builders.each do |step|
+      expect(step["if"].to_s).to include("steps.published.outputs.hit != 'true'"),
+                                 "#{step['name']} must be gated on the download missing"
+      expect(names.index(step["name"])).to be > download_index
+    end
   end
 
   # The publish job is GONE from the per-platform builder: N platform runs

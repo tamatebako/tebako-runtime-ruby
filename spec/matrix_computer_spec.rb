@@ -283,10 +283,25 @@ RSpec.describe MatrixComputer do
       expect(rubies(out)).to eq(%w[3.1.6 3.2.11 3.3.12 4.0.6])
     end
 
-    it "filters the tidy validation set for the deferred platform too" do
+    it "validates the deferred platform on the lines it actually ships (never empty)" do
+      # The tidy set (3.3.12, 4.0.6) is fully deferred on windows, so the
+      # available line tips substitute: a validation run must never
+      # conclude green having built nothing (the #72 no-op class).
       out = run_computer("windows", event: "schedule", payload: {})
-      expect(rubies(out)).to be_empty
-      expect(legs(out)).to eq("false")
+      expect(rubies(out)).to eq(%w[3.1.6 3.2.11])
+      expect(legs(out)).to eq("true")
+    end
+
+    context "and every line defers" do
+      let(:matrix_json) do
+        super().tap { |m| m["defer"]["windows"] = %w[3.1 3.2 3.3 3.4 4.0] }
+      end
+
+      it "still concludes empty (a platform shipping nothing validates nothing)" do
+        out = run_computer("windows", event: "schedule", payload: {})
+        expect(rubies(out)).to be_empty
+        expect(legs(out)).to eq("false")
+      end
     end
   end
 
