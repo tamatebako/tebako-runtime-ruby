@@ -772,11 +772,13 @@ jobs:
             || { echo "::error::$dll exports no tebako_fs_* surface (the export fragment did not land, issue 40)"; exit 1; }
           echo "ruby DLL wired: $(basename "$exe") imports it, it exports tebako_fs_*"
 
-          # Issue 40's own proof class: the env image's three dynamic
-          # extensions (debug/racc/rbs -- the --disable-shared era had them
-          # import a nonexistent ruby.exp.dll) must import the REAL ruby
-          # DLL. objdump each .so in the assembled layout tree (.build/o/s
-          # before packing) and require the import on every one found.
+          # Issue 40's own proof class: the env image's dynamic
+          # extensions (debug/racc/rbs -- the --disable-shared era had
+          # them import a nonexistent ruby.exp.dll) must import the REAL
+          # ruby DLL. objdump every .so in the assembled layout tree
+          # (.build/o/s before packing) — the bundled-gem extensions tree
+          # AND the stdlib archdir (racc's cparse lives there) — and
+          # require the import on every one found.
           echo "== env image dynamic extensions' imports:"
           found=0
           while IFS= read -r so; do
@@ -784,7 +786,7 @@ jobs:
             echo "  $so"
             objdump -p "$so" | grep -F "DLL Name: x64-ucrt-ruby" >/dev/null \
               || { echo "::error::$so does not import the ruby DLL (issue 40)"; exit 1; }
-          done < <(find .build/o/s/lib/ruby/gems -path "*/extensions/*" -name "*.so" 2>/dev/null)
+          done < <(find .build/o/s/lib/ruby -name "*.so" 2>/dev/null)
           [ "$found" -ge 3 ] || { echo "::error::expected the image's dynamic extensions (debug/racc/rbs) in .build/o/s, found $found"; exit 1; }
           echo "all $found dynamic extensions import the ruby DLL by name"
 
