@@ -535,6 +535,8 @@ jobs:
       # older run — drop it first so the download lands on a clean
       # directory (an overlay merge would link stale closure archives).
       - name: Clean any cache-restored link unit
+        # bash on every runner: the windows default shell (pwsh) has no rm -rf.
+        shell: bash
         run: rm -rf .build/link-unit
 
       - name: Download the staged link unit
