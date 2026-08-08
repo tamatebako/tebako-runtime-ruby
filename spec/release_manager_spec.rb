@@ -660,18 +660,21 @@ RSpec.describe ReleaseManager do
       expect(store.uploads).to be_empty
     end
 
-    # The same 422 with DIFFERENT landed bytes is the delete race (the
-    # stale asset is still listed) — keep retrying, never accept it.
-    it "keeps retrying a 422 whose landed asset carries different content" do
+    # The same 422 with DIFFERENT landed bytes is a partial (a timed-out
+    # POST that landed incomplete) or a stale asset blocking the name:
+    # delete it and land the retry — blind re-POSTs can never win (the
+    # v0.16.3 publish exhausted its budget exactly here).
+    it "deletes a 422's mismatched asset and lands the retry" do
       exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
       url = "https://download.test/#{exe.basename}"
       store.assets << FakeAsset.new(7, exe.basename.to_s, url)
       store.set_content(url, "stale bytes")
-      (ReleaseManager::UPLOAD_RETRY_DELAYS.size + 1).times { store.fail_next(:upload, Octokit::UnprocessableEntity.new) }
 
-      expect { fake_manager.perform_upload(release, exe, exe.basename.to_s) }
-        .to raise_error(Octokit::UnprocessableEntity)
-      expect(store.attempts[:upload]).to eq(ReleaseManager::UPLOAD_RETRY_DELAYS.size + 1)
+      fake_manager.perform_upload(release, exe, exe.basename.to_s)
+
+      expect(store.attempts[:upload]).to eq(2)
+      expect(store.uploads).to eq([exe.basename.to_s])
+      expect(store.deletes).to eq([7])
     end
 
     # A listed-but-unreadable landed asset (mid-propagation) proves
