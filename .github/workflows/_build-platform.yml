@@ -89,7 +89,11 @@ env:
   # recipe changes shape under an unchanged source tarball (the key carries
   # only the tarball's sha256). 3: the msys --enable-shared rearrangement
   # (issue 40) — a stamp-restored tree would keep the static configuration.
-  CACHE_VER: 3
+  # 4: the msys exe-link order + probe/closure hot-patch set (issue 40) —
+  # a cache captured before it holds a pre-ext-build tree and the finalize
+  # relink dies on undefined Init_* (the 3.2.4 catalog leg vs its green
+  # cache-miss validation leg).
+  CACHE_VER: 4
   VERBOSE: no
   RUNTIME_REPO: tamatebako/tebako-runtime-ruby
 
