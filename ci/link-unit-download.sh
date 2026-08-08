@@ -21,7 +21,7 @@ set -euo pipefail
 
 os=${1:?usage: link-unit-download.sh <os> <arch> <release>}
 arch=${2:?}
-release=${3:?}
+release=${3:-}
 
 hit() { echo "hit=$1" >> "$GITHUB_OUTPUT"; }
 
