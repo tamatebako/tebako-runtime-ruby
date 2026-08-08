@@ -69,8 +69,10 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
 
   def initialize(client: nil)
     validate_environment
+    # A fresh copy per client: Octokit/Faraday mutate the request options
+    # mid-request ("can't modify frozen Hash" killed the musl publish).
     @client = client || Octokit::Client.new(access_token: ENV.fetch("GITHUB_TOKEN"), auto_paginate: true,
-                                            connection_options: CLIENT_CONNECTION_OPTIONS)
+                                            connection_options: { request: CLIENT_CONNECTION_OPTIONS[:request].dup })
     @version = ENV.fetch("TEBAKO_VERSION")
     @tag = "v#{@version}"
     @release_title = "Tebako runtime packages #{@tag}"
