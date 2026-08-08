@@ -202,12 +202,12 @@ module TebakoRuntimeBuilder
     # The pre-patched dln.c routes dlopen of a memfs path through
     # tebako_fs_dlmap2file, which composes the extraction host path from the
     # FULL memfs path (<tmp>/tebako-dl-<hex>/<memfs path>). On msys the
-    # mount root carries a drive letter (A:/__tfs__), and a Windows path
+    # mount root carries a drive letter (A:/t), and a Windows path
     # join with a drive-prefixed absolute operand REPLACES the base -- the
     # extraction targets the nonexistent A: drive, create_dir_all fails,
     # and dlmap2file answers NULL with errno=EIO. The dlmap call site's
     # bare `goto failed` then raises LoadError with a NULL detail, which
-    # the UCRT prints as "(null)" -- the observed
+    # the UCRT prints as "(null)" -- the observed (pre-rename root)
     #   LoadError: (null) - A:/__tfs__/.../racc-1.7.3/racc/cparse.so
     # (a LoadLibrary failure would name the GetLastError code, e.g.
     # "126: ...", so the message shape itself places the failure BEFORE
@@ -238,7 +238,7 @@ module TebakoRuntimeBuilder
       #include <windows.h> /* GetTempPathA/CreateDirectoryA/GetCurrentProcessId for tfs_dlmap_extract */
 
       /* tebako_fs_dlmap2file composes the extraction host path from the
-         full memfs path; on msys the drive-letter mount root (A:/__tfs__)
+         full memfs path; on msys the drive-letter mount root (A:/t)
          makes that host join absolute, so the extraction targets the
          nonexistent A: drive and fails EIO (the ruby >= 3.3 dynamic
          native-extension LoadError: (null) class -- 3.1/3.2 ship no

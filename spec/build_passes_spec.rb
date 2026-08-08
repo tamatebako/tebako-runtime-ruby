@@ -337,7 +337,7 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
     before do
       write_msys_source_fixtures(ruby_src)
       write_libtfs_fixture(deps_lib_dir)
-      described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tfs__", "cc")
+      described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc")
     end
 
     it "routes the dlmap through the C-side extraction (the dlmap2file A:-join)" do
@@ -357,7 +357,7 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
 
     it "is idempotent across the msys pass-2 overlay prepare re-run" do
       expect do
-        described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tfs__", "cc")
+        described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc")
       end.not_to raise_error
       contents = File.read(dln_c)
       expect(contents.scan("tfs_dlmap_extract(const char *path)").length).to eq(1)
@@ -366,13 +366,13 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
 
     it "fails loudly when a dlmap anchor drifted (the pre-patched dln.c changed)" do
       File.write(dln_c, "no dlmap block here\n")
-      expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tfs__", "cc") }
+      expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc") }
         .to raise_error(TebakoRuntimeBuilder::Error, /dlmap anchor/)
     end
 
     it "fails when dln.c does not exist" do
       FileUtils.rm(dln_c)
-      expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/__tfs__", "cc") }
+      expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc") }
         .to raise_error(TebakoRuntimeBuilder::Error, /does not exist/)
     end
   end
