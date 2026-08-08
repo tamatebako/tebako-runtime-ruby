@@ -141,6 +141,24 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
       end
     end
 
+    describe "the TEBAKO_MOUNT_ROOT override (spec 17 §1)" do
+      # The full chain end-to-end: the driver mounts the env image at the
+      # override, the layout's mount_root_override grant permits it, and
+      # rbconfig's ENV fallback puts the interpreter's load paths under
+      # the override root. POSIX legs: the windows drive-form override
+      # rides the same code path; its leg proof rides with the windows
+      # catalog campaign (the msys smoke covers the A:/t default).
+      let(:run) { smoke.run("io", mount_root_override: "/rt-override") }
+
+      it "mounts the env image at the override and the interpreter follows" do
+        skip "the drive-form override proof rides with the windows catalog campaign" if smoke.platform.msys?
+
+        expect(run).to be_booted, boot_failure(run)
+        expect(run.state("load_path_default_gem")).to eq("ok")
+        expect(run.detail("load_path_default_gem")).to start_with("/rt-override")
+      end
+    end
+
     describe "stat family" do
       let(:run) { smoke.run("stat") }
 

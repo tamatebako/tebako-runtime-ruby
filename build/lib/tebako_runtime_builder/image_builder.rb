@@ -95,12 +95,16 @@ module TebakoRuntimeBuilder
     # manifest (via -DFS_MOUNT_POINT → the deploy pass) — never re-authored
     # here. Field set per docs/spec/schemas/layout.yaml (snake_case,
     # lists-not-maps): schema/version, era, image_layout, mount_root,
-    # interpreter_api_version.
+    # interpreter_api_version + the additive mount_root_override grant
+    # (schema_minor 1). The grant is truthful by construction: the pinned
+    # source release's rbconfig emits the TEBAKO_MOUNT_ROOT fallback, so
+    # every runtime this factory builds follows the override.
     LAYOUT_DECLARATION = {
       "schema" => "layout",
       "schema_version" => 1,
       "era" => 2,
-      "image_layout" => 1
+      "image_layout" => 1,
+      "mount_root_override" => true
     }.freeze
     LAYOUT_PATH = File.join("lib", "tebako", "layout.yaml").freeze
 

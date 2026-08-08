@@ -725,7 +725,7 @@ jobs:
           echo "== bare boot (no image), stdin closed, 25s:"
           timeout --preserve-status 25 "$exe" < /dev/null 2>&1 | tail -15; echo "bare exit: ${PIPESTATUS[0]}"
           echo "== probe boot (smoke case), stdin closed, 25s:"
-          TEBAKO_RUNTIME_IMAGE="$exe.tfs" RUBYOPT="-r$probe" TEBAKO_BOOT_PROBE=boot TEBAKO_BOOT_MOUNT_POINT=A:/__tfs__ \
+          TEBAKO_RUNTIME_IMAGE="$exe.tfs" RUBYOPT="-r$probe" TEBAKO_BOOT_PROBE=boot TEBAKO_BOOT_MOUNT_POINT=A:/t \
             timeout --preserve-status 25 "$exe" < /dev/null 2>&1 | tail -15; echo "probe exit: ${PIPESTATUS[0]}"
           echo "== image boot (no probe), stdin closed, 25s:"
           TEBAKO_RUNTIME_IMAGE="$exe.tfs" timeout --preserve-status 25 "$exe" < /dev/null 2>&1 | tail -15; echo "image exit: ${PIPESTATUS[0]}"
