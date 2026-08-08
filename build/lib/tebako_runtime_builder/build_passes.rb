@@ -265,6 +265,14 @@ module TebakoRuntimeBuilder
         FileUtils.mkdir_p(data_src_dir)
         Dir.chdir(ruby_source_dir) do
           run_make_with_serial_fallback(["make", "-j#{platform.ncores}"])
+          # The parallel make can WIN the exts.mk/extinit.c cascade yet leave
+          # the static exts unbuilt (a silent race — no failure, so the
+          # serial fallback never fires; a warm cache used to mask it).
+          # Guarantee them deterministically: a serial build-ext is a no-op
+          # when they are already built and rebuilds them when the race
+          # skipped them — the finalize relink's undefined Init_* failure
+          # otherwise.
+          TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["make", "build-ext", "-j1"])
           # The pre-patched tool/mkconfig.rb bakes the memfs mount point into
           # the generated rbconfig.rb (ungated), which would send
           # 'make install' into /__tfs__ on the host (EROFS) and
