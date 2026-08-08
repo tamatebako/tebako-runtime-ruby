@@ -789,7 +789,13 @@ jobs:
             objdump -p "$so" | grep -F "DLL Name: x64-ucrt-ruby" >/dev/null \
               || { echo "::error::$so does not import the ruby DLL (issue 40)"; exit 1; }
           done < <(find .build/o/s/lib/ruby -name "*.so" 2>/dev/null)
-          [ "$found" -ge 3 ] || { echo "::error::expected the image's dynamic extensions (debug/racc/rbs) in .build/o/s, found $found"; exit 1; }
+          # The census varies by ruby line (cparse is a dynamic ext on
+          # 3.3+ but statically linked into the DLL on 3.2.x) — the
+          # invariant is the IMPORTS, not the count: never an empty-glob
+          # pass, and every found ext must import the real DLL. The boot
+          # smoke's native_ext scenario guards the functional truth (it
+          # asserts cparse.so binds from the image on msys).
+          [ "$found" -ge 1 ] || { echo "::error::no dynamic extensions found in .build/o/s — an empty glob proves nothing"; exit 1; }
           echo "all $found dynamic extensions import the ruby DLL by name"
 
       # Spec 18 S51 (C4): the nm provenance assert — the exe's tebako_main
