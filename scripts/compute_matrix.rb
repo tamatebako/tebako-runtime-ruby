@@ -417,8 +417,26 @@ class MatrixComputer # rubocop:disable Metrics/ClassLength
   end
 
   def slice_legs(rubies, env, why)
+    rubies = available(rubies)
     env = env.map { |entry| entry.merge("host_id" => TebakoRuntimeBuilder::Platform.host_id_for(entry["os"], entry["arch"])) }
     { run: rubies.any? && env.any?, rubies: rubies, env: env, why: why }
+  end
+
+  # Per-platform availability (matrix.json `defer`): a version is deferred
+  # for this platform — never scheduled, never expected, never promised —
+  # when it starts with one of the platform's listed minor-line prefixes.
+  # Applied at the universal chokepoint so EVERY trigger path (dispatch
+  # filters, the pin-bump diff walk, the tidy validation set) drops a
+  # deferred version before it can become a leg. Handles both the bare
+  # version strings (tidy) and the sha-mapped rows (every other path).
+  def available(rubies)
+    deferred = matrix_data.dig("defer", @platform) || []
+    return rubies if deferred.empty?
+
+    rubies.reject do |row|
+      v = row.is_a?(Hash) ? row["version"] : row
+      deferred.any? { |prefix| v.start_with?("#{prefix}.") || v == prefix }
+    end
   end
 
   def emit(legs)

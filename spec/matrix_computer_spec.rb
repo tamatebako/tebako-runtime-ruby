@@ -256,6 +256,40 @@ RSpec.describe MatrixComputer do
     expect(rubies(out)).to eq(%w[3.1.6 3.2.11 3.3.12 4.0.6])
   end
 
+  # Per-platform availability (matrix.json `defer`): a deferred version is
+  # never scheduled for the platform — absent from the matrix, not failed.
+  context "with a platform deferral" do
+    let(:matrix_json) do
+      {
+        "ruby" => { "tidy" => %w[3.3.12 4.0.6], "full" => %w[3.1.6 3.2.11 3.3.12 4.0.6],
+                    "catalog" => %w[3.1.6 3.2.11 3.3.12 4.0.6] },
+        "env" => [
+          { "host" => "ubuntu-22.04", "container" => "ubuntu-20.04", "os" => "linux-gnu", "arch" => "x86_64" },
+          { "host" => "windows-2022", "container" => nil, "os" => "windows", "arch" => "x86_64" }
+        ],
+        "defer" => { "windows" => ["3.3", "4.0"] }
+      }
+    end
+
+    it "drops the deferred minor lines from the platform's dispatch catalog" do
+      ENV["MATRIX_RUBY_FILTER"] = "catalog"
+      out = run_computer("windows", event: "workflow_dispatch", payload: {})
+      expect(rubies(out)).to eq(%w[3.1.6 3.2.11])
+    end
+
+    it "leaves other platforms' catalogs untouched" do
+      ENV["MATRIX_RUBY_FILTER"] = "catalog"
+      out = run_computer("linux-gnu", event: "workflow_dispatch", payload: {})
+      expect(rubies(out)).to eq(%w[3.1.6 3.2.11 3.3.12 4.0.6])
+    end
+
+    it "filters the tidy validation set for the deferred platform too" do
+      out = run_computer("windows", event: "schedule", payload: {})
+      expect(rubies(out)).to be_empty
+      expect(legs(out)).to eq("false")
+    end
+  end
+
   it "a spec-only change validates on the tidy set" do
     out = run_computer("linux-musl", event: "push", files: ["spec/platform_spec.rb"],
                                      payload: { "before" => "a", "after" => "b" })
