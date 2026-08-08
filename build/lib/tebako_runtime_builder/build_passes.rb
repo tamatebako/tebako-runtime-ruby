@@ -373,6 +373,11 @@ module TebakoRuntimeBuilder
           # against the real libtebako-fs.a
           rewrite_rbconfig_prefix!(rbconfig, platform.fs_mount_point)
           FileUtils.rm_f(["verconf.h", "loadpath.o", "loadpath.obj", "ruby#{platform.exe_suffix}"])
+          # The rbconfig flip re-triggers the exts.mk/extinit.c cascade, which
+          # can leave the static exts unbuilt (the undefined Init_* relink
+          # failure). Guarantee them before the relink: a serial build-ext is
+          # a no-op when they are already built.
+          TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["make", "build-ext", "-j1"])
           # Serialized (see the toolchain pass): the rbconfig flip re-triggers
           # the exts.mk/extinit.c cascade; the link must not race it
           TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["make", "ruby", "-j1"]) if rv.ruby3x?
