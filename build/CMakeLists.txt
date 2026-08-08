@@ -300,19 +300,27 @@ set (TLIBD ${DATA_SRC_DIR}/lib)
 set (TLD ${DATA_SRC_DIR}/local)
 # TGD folder is used to install gems
 set (TGD ${DATA_SRC_DIR}/lib/ruby/gems/${RUBY_API_VER})
-# This is actually a constant that shall match libdwarfs-wr TEBAKO_MOUNT_POINT at tebako-common.h
 # The mount root FLOWS from the source tarball's tebako-mount-root
 # manifest (-DFS_MOUNT_POINT from builder.rb; tamatebako/ruby owns the
 # value, and builder.rb refuses a manifest-less tarball with exit 132).
 # The convention below is the default for bare cmake invocations only —
-# keep it equal to the current patch literals.
+# keep it equal to the current patch literals (A:/t, owner-final).
 if(NOT DEFINED FS_MOUNT_POINT)
   if(${IS_MSYS})
-    set(FS_MOUNT_POINT "A:/__tfs__")
+    set(FS_MOUNT_POINT "A:/t")
   else(${IS_MSYS})
     set(FS_MOUNT_POINT "/__tfs__")
   endif(${IS_MSYS})
 endif(NOT DEFINED FS_MOUNT_POINT)
+
+# The override capability the source tarball declares (spec 17 §1):
+# builder.rb flows the tebako-mount-root-override manifest here; the
+# deploy pass emits the image layout's mount_root_override grant only
+# when the source carries the loadpath patch. Bare invocations stay
+# closed (OFF), the fail-closed direction.
+if(NOT DEFINED MOUNT_ROOT_OVERRIDE)
+  set(MOUNT_ROOT_OVERRIDE OFF)
+endif(NOT DEFINED MOUNT_ROOT_OVERRIDE)
 
 message(STATUS "DATA_SRC_DIR: ${DATA_SRC_DIR}")
 message(STATUS "DATA_PRE_DIR: ${DATA_PRE_DIR}")
@@ -629,7 +637,7 @@ set(CMAKE_CXX_EXTENSIONS   OFF)
 # Packaged filesystem
 
 add_custom_target(packaged_filesystem
-  COMMAND ${RUBY_INTERP} ${CMAKE_SOURCE_DIR}/tools/build_pass.rb deploy ${RUBY_VER} ${RUBY_STASH_DIR} ${DATA_SRC_DIR} ${DATA_PRE_DIR} ${DATA_BIN_FILE} ${GEN_DIR}/local ${DEPS_BIN_DIR} $<BOOL:${TEBAKO_EMBED_IMAGE}> "${FS_MOUNT_POINT}"
+  COMMAND ${RUBY_INTERP} ${CMAKE_SOURCE_DIR}/tools/build_pass.rb deploy ${RUBY_VER} ${RUBY_STASH_DIR} ${DATA_SRC_DIR} ${DATA_PRE_DIR} ${DATA_BIN_FILE} ${GEN_DIR}/local ${DEPS_BIN_DIR} $<BOOL:${TEBAKO_EMBED_IMAGE}> "${FS_MOUNT_POINT}" $<BOOL:${MOUNT_ROOT_OVERRIDE}>
   DEPENDS setup
 )
 # The deploy pass writes ${DATA_BIN_FILE} (mkdwarfs) only for the embedded

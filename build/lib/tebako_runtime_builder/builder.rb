@@ -140,6 +140,14 @@ module TebakoRuntimeBuilder
       @mount_root ||= TebakoRuntimeBuilder::MountRoot.new(tarball).read
     end
 
+    # The tarball's override capability (spec 17 §1): the loadpath patch
+    # presence, declared by SourcePrep's tebako-mount-root-override
+    # manifest — the image layout's grant is emitted only when the
+    # source carries it (the same single-owner flow as mount_root).
+    def mount_root_override(tarball)
+      @mount_root_override ||= TebakoRuntimeBuilder::MountRoot.new(tarball).override?
+    end
+
     def cmake_configure(assets) # rubocop:disable Metrics/AbcSize,Metrics/MethodLength
       (tarball, sha256) = assets[0]
       args = ["cmake",
@@ -151,7 +159,8 @@ module TebakoRuntimeBuilder
               "-DDEPS:STRING=#{deps}",
               "-DTEBAKO_VERSION:STRING=#{@tebako_version}",
               "-DLOG_LEVEL:STRING=error",
-              "-DFS_MOUNT_POINT:STRING=#{mount_root(tarball)}"]
+              "-DFS_MOUNT_POINT:STRING=#{mount_root(tarball)}",
+              "-DMOUNT_ROOT_OVERRIDE:BOOL=#{mount_root_override(tarball)}"]
       if assets.length == 2
         (tarball_p2, sha256_p2) = assets[1]
         args += ["-DRUBY_TARBALL_P2:STRING=file://#{tarball_p2}", "-DRUBY_HASH_P2:STRING=#{sha256_p2}"]

@@ -347,12 +347,13 @@ module TebakoRuntimeBuilder
       end
 
       def deploy(ruby_ver, stash_dir, data_src_dir, data_pre_dir, data_bin_file, stub_dir, deps_bin_dir, # rubocop:disable Metrics/ParameterLists
-                 mount_point:, embed: true)
+                 mount_point:, embed: true, mount_root_override: false)
         rv = TebakoRuntimeBuilder::RubyVersion.new(ruby_ver)
         platform = TebakoRuntimeBuilder::Platform.new
         TebakoRuntimeBuilder::ImageBuilder.new(platform, rv, stash_dir, data_src_dir, data_pre_dir,
-                                               data_bin_file, deps_bin_dir, mount_point: mount_point,
-                                               embed: embed).build(stub_dir)
+                                               data_bin_file, deps_bin_dir,
+                                               mount_point: mount_point,
+                                               embed: embed, mount_root_override: mount_root_override).build(stub_dir)
       end
 
       def finalize(ostype, ruby_source_dir, output, ruby_ver, deps_lib_dir, patchelf = nil) # rubocop:disable Metrics/AbcSize,Metrics/MethodLength,Metrics/ParameterLists

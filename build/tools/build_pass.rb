@@ -83,12 +83,16 @@ begin
     #       ARGV[9] -- FS_MOUNT_POINT (the exe's compiled-in root, flowed
     #                  from the tarball manifest; written into the image's
     #                  /lib/tebako/layout.yaml — spec 18 C3)
-    unless ARGV.length == 10
+    #       ARGV[10] -- MOUNT_ROOT_OVERRIDE ("1": the tarball carries the
+    #                  loadpath patch — the layout gains the
+    #                  mount_root_override grant, spec 17 §1)
+    unless ARGV.length == 11
       raise TebakoRuntimeBuilder::Error,
-            "build_pass deploy command expects 10 arguments, #{ARGV.length} has been provided."
+            "build_pass deploy command expects 11 arguments, #{ARGV.length} has been provided."
     end
     TebakoRuntimeBuilder::BuildPasses.deploy(ARGV[1], ARGV[2], ARGV[3], ARGV[4], ARGV[5], ARGV[6], ARGV[7],
-                                             mount_point: ARGV[9], embed: ARGV[8] == "1")
+                                             mount_point: ARGV[9], embed: ARGV[8] == "1",
+                                             mount_root_override: ARGV[10] == "1")
   when "overlay"
     #       ARGV[1] -- PASS2_TARBALL
     #       ARGV[2] -- PASS2_SHA256

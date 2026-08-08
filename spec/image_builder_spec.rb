@@ -144,12 +144,13 @@ RSpec.describe TebakoRuntimeBuilder::ImageBuilder do
   # from the tarball manifest through the deploy pass; the interpreter api
   # line comes from the built ruby version.
   describe "#deploy_layout" do
-    def layout_for(ruby_version, mount_point: "/__tfs__")
+    def layout_for(ruby_version, mount_point: "/__tfs__", mount_root_override: false)
       rv = TebakoRuntimeBuilder::RubyVersion.new(ruby_version)
       platform = TebakoRuntimeBuilder::Platform.new("arm64-darwin23", "arm64")
       described_class.new(platform, rv, File.join(@dir, "stash"), data_src_dir, File.join(@dir, "pre"),
                           File.join(@dir, "out", "fs.bin"), File.join(@dir, "deps", "bin"),
-                          mount_point: mount_point, embed: false).deploy_layout
+                          mount_point: mount_point, embed: false,
+                          mount_root_override: mount_root_override).deploy_layout
       YAML.load_file(File.join(data_src_dir, "lib", "tebako", "layout.yaml"))
     end
 
@@ -160,17 +161,17 @@ RSpec.describe TebakoRuntimeBuilder::ImageBuilder do
         "era" => 2,
         "image_layout" => 1,
         "mount_root" => "/__tfs__",
-        "mount_root_override" => true,
         "interpreter_api_version" => "3.3.0"
       )
     end
 
-    it "flows the msys drive-letter mount root and the 4.0 api line" do
-      expect(layout_for("4.0.6", mount_point: "A:/t")).to include(
+    it "emits the override grant only for a source declaring the capability (spec 17 §1)" do
+      expect(layout_for("4.0.6", mount_point: "A:/t", mount_root_override: true)).to include(
         "mount_root" => "A:/t",
         "mount_root_override" => true,
         "interpreter_api_version" => "4.0.0"
       )
+      expect(layout_for("4.0.6", mount_point: "A:/t")).not_to have_key("mount_root_override")
     end
   end
 end
