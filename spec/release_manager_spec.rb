@@ -249,6 +249,23 @@ RSpec.describe ReleaseManager do
     Dir.chdir(@dir, &block)
   end
 
+  # The 50–200 MB runtime assets have out-written the 60 s Faraday
+  # default twice in one publish day (the v0.16.3 gnu/musl retries) —
+  # the client must carry upload-sized timeouts.
+  it "builds the Octokit client with upload-sized request timeouts" do
+    captured = nil
+    allow(Octokit::Client).to receive(:new) do |**kwargs|
+      captured = kwargs
+      FakeClient.new(FakeAssetStore.new)
+    end
+
+    described_class.new
+
+    request = captured.fetch(:connection_options).fetch(:request)
+    expect(request[:write_timeout]).to eq(600)
+    expect(request[:open_timeout]).to eq(30)
+  end
+
   it "folds the sibling .tfs into the package entry as an additive image key" do
     exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
     img = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64.tfs")
