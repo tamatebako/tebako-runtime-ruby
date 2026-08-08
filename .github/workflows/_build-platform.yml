@@ -745,7 +745,7 @@ jobs:
           pedll=$(find .build/deps/src -maxdepth 2 -name "x64-*-ruby*.dll" 2>/dev/null | head -1 || true)
           [ -n "$pedll" ] && [ -f "$pkgdll" ] && cp "$pkgdll" "runtime-packages/$(basename "$pedll")"
           echo "== native_ext probe boot (smoke case), stdin closed, 60s:"
-          TEBAKO_RUNTIME_IMAGE="$exe.tfs" RUBYOPT="-r$probe" TEBAKO_BOOT_PROBE=native_ext TEBAKO_BOOT_MOUNT_POINT=A:/__tfs__ \
+          TEBAKO_RUNTIME_IMAGE="$exe.tfs" RUBYOPT="-r$probe" TEBAKO_BOOT_PROBE=native_ext TEBAKO_BOOT_MOUNT_POINT=A:/t \
             timeout --preserve-status 60 "$exe" < /dev/null 2>&1 | tail -8; echo "native_ext exit: ${PIPESTATUS[0]}"
           exit 0
 
