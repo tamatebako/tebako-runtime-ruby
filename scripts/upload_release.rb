@@ -58,9 +58,19 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   CONTRACT_SIDECAR_SUFFIX = ".contract.yaml"
   CONTRACT_ERA = 2
 
+  # Upload-sized request timeouts: the release assets are 50–200 MB and
+  # the runner→uploads.github.com link has written slower than the
+  # 60 s Faraday default twice in one publish day (the v0.16.3 gnu/musl
+  # retries). Ten minutes of write patience; open/read ride along. The
+  # retry budget above rides OUT the failures; this makes them rare.
+  CLIENT_CONNECTION_OPTIONS = {
+    request: { open_timeout: 30, timeout: 600, write_timeout: 600 }
+  }.freeze
+
   def initialize(client: nil)
     validate_environment
-    @client = client || Octokit::Client.new(access_token: ENV.fetch("GITHUB_TOKEN"), auto_paginate: true)
+    @client = client || Octokit::Client.new(access_token: ENV.fetch("GITHUB_TOKEN"), auto_paginate: true,
+                                            connection_options: CLIENT_CONNECTION_OPTIONS)
     @version = ENV.fetch("TEBAKO_VERSION")
     @tag = "v#{@version}"
     @release_title = "Tebako runtime packages #{@tag}"
