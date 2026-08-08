@@ -483,11 +483,29 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     # asset is still listed.
     return if landed_duplicate?(release, filename, package, e)
 
+    # A 422 whose landed bytes DISAGREE with ours is a partial (a timed-out
+    # POST that landed incomplete) or a stale same-name asset: retrying the
+    # POST blindly can never win — delete the conflict so the retry lands
+    # (the v0.16.3 publish exhausted its budget exactly here). The delete's
+    # listing-propagation lag rides the retry budget below.
+    delete_conflicting_asset(release, filename) if e.is_a?(Octokit::UnprocessableEntity)
+
     delay = delays.shift
     raise if delay.nil?
 
     backoff(e, filename, delay)
     retry
+  end
+
+  # Remove the same-name asset whose content disagrees with ours (a
+  # partial upload or a stale build). No-op when the listing holds none.
+  def delete_conflicting_asset(release, filename)
+    asset = find_asset(release, filename)
+    return if asset.nil?
+
+    puts "#{filename}: the landed asset's content disagrees — deleting the partial/stale asset before the retry"
+    with_transient_retries { @client.delete_release_asset(asset.id) }
+    invalidate_assets_memo
   end
 
   # Did an earlier attempt's POST land despite the error? Accepts (loudly)
