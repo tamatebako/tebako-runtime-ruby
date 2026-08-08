@@ -44,5 +44,9 @@
         { "host": "macos-15-intel", "container": null, "os": "macos", "arch": "x86_64", "xcode": "16.1" },
         { "host": "macos-14", "container": null, "os": "macos", "arch": "arm64", "xcode": "16.1" },
         { "host": "windows-2022", "container": null, "os": "windows", "arch": "x86_64" }
-    ]
+    ],
+    "defer": {
+      "_comment": "Per-platform availability: a version is DEFERRED for a platform (never scheduled, never expected, never promised) when it starts with a listed minor-line prefix. windows 3.3+ fails the boot smoke's native-extension bind (the cparse.so LoadLibrary layer, issue 40) — deferred until the sandboxed fix lands. Remove a prefix to re-admit that line to the platform's catalog.",
+      "windows": ["3.3", "3.4", "4.0"]
+    }
 }
