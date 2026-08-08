@@ -44,6 +44,23 @@ RSpec.describe "build-platform reusable workflow" do
     end
   end
 
+  # Triplet-scoping is the cache-correctness rule: rust-cache's default key
+  # (job + lockfile hashes) names no triplet, so two triplets on a shared
+  # job name would silently share one target-dir entry. Every cargo cache
+  # in the workflow keys on (os, arch) explicitly — the same key shape the
+  # POSIX link-unit job carries.
+  it "keys every cargo target cache on the platform triplet (never the default)" do
+    workflow.fetch("jobs").each_value do |job|
+      job.fetch("steps", []).each do |step|
+        next unless step.fetch("uses", "").to_s.start_with?("Swatinem/rust-cache@")
+
+        key = step.dig("with", "key").to_s
+        expect(key).to include("${{ matrix.env.os }}")
+        expect(key).to include("${{ matrix.env.arch }}")
+      end
+    end
+  end
+
   it "has the build legs download the staged unit, never rebuild it per ruby" do
     build = workflow.fetch("jobs").fetch("build")
     expect(build.fetch("needs")).to eq(%w[compute preflight-containers link-unit])

@@ -567,6 +567,10 @@ jobs:
         with:
           workspaces: |
             tebako-rs
+          # The same triplet-scoped key shape as the POSIX link-unit job:
+          # rust-cache's default key (job + lockfile hashes) names no
+          # triplet, so a second windows arch would silently share one entry.
+          key: link-unit2-${{ matrix.env.os }}-${{ matrix.env.arch }}
 
       - name: Restore the vcpkg baseline (dwarfs-t is the single writer)
         if: matrix.env.os == 'windows'
