@@ -16,12 +16,15 @@ RSpec.describe TebakoRuntimeBuilder::MountRoot do
   end
 
   # A minimal tfs-ruby-<version>-src.tar.gz fixture: one source-tree
-  # directory, the manifest included only when `manifest` is given.
-  def make_tarball(manifest: "/__tfs__\n")
+  # directory, the manifest included only when `manifest` is given; the
+  # override capability manifest (spec 17 §1) only when `override` is.
+  def make_tarball(manifest: "/__tfs__\n", override: false)
     tree = File.join(staging_dir, "ruby-3.3.7")
+    FileUtils.rm_rf(tree)
     FileUtils.mkdir_p(tree)
     File.write(File.join(tree, "configure"), "# stub\n")
     File.write(File.join(tree, TebakoRuntimeBuilder::MountRoot::MANIFEST), manifest) unless manifest.nil?
+    File.write(File.join(tree, TebakoRuntimeBuilder::MountRoot::OVERRIDE_MANIFEST), "true\n") if override
     tarball = File.join(staging_dir, "tfs-ruby-3.3.7-src.tar.gz")
     system("tar", "-czf", tarball, "-C", staging_dir, "ruby-3.3.7") or raise "tar fixture failed"
     tarball
@@ -33,6 +36,11 @@ RSpec.describe TebakoRuntimeBuilder::MountRoot do
 
   it "passes the msys drive-letter root form through unchanged" do
     expect(described_class.new(make_tarball(manifest: "A:/t\n")).read).to eq("A:/t")
+  end
+
+  it "reads the override capability only when the tarball declares it (spec 17 §1)" do
+    expect(described_class.new(make_tarball(override: true)).override?).to be(true)
+    expect(described_class.new(make_tarball).override?).to be(false)
   end
 
   it "refuses a tarball without the manifest by name, with exit 132" do

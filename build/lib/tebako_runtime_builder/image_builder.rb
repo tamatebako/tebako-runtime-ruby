@@ -65,7 +65,7 @@ module TebakoRuntimeBuilder
       "raise PermissionError.new(path, action) # tebako backport (bundler < 2.6.6)\n"
 
     def initialize(platform, ruby_ver, stash_dir, data_src_dir, data_pre_dir, data_bin_file, deps_bin_dir, # rubocop:disable Metrics/ParameterLists,Metrics/MethodLength
-                   mount_point:, embed: true)
+                   mount_point:, embed: true, mount_root_override: false)
       @platform = platform
       @ruby_ver = ruby_ver
       @stash_dir = stash_dir
@@ -75,6 +75,10 @@ module TebakoRuntimeBuilder
       @deps_bin_dir = deps_bin_dir
       @mount_point = mount_point
       @embed = embed
+      # The source tarball's override capability (the loadpath patch):
+      # the layout's grant is emitted only when the source declares it —
+      # truthful by construction (spec 17 §1, layout schema_minor 1).
+      @mount_root_override = mount_root_override
 
       @tbd = File.join(@data_src_dir, "bin")
       @tgd = File.join(@data_src_dir, "lib", "ruby", "gems", @ruby_ver.api_version)
@@ -95,16 +99,15 @@ module TebakoRuntimeBuilder
     # manifest (via -DFS_MOUNT_POINT → the deploy pass) — never re-authored
     # here. Field set per docs/spec/schemas/layout.yaml (snake_case,
     # lists-not-maps): schema/version, era, image_layout, mount_root,
-    # interpreter_api_version + the additive mount_root_override grant
-    # (schema_minor 1). The grant is truthful by construction: the pinned
-    # source release's rbconfig emits the TEBAKO_MOUNT_ROOT fallback, so
-    # every runtime this factory builds follows the override.
+    # interpreter_api_version; the additive mount_root_override grant
+    # (schema_minor 1) is emitted by deploy_layout only when the source
+    # tarball declares the capability (the loadpath patch — the grant
+    # must be true exactly when the interpreter follows TEBAKO_MOUNT_ROOT).
     LAYOUT_DECLARATION = {
       "schema" => "layout",
       "schema_version" => 1,
       "era" => 2,
-      "image_layout" => 1,
-      "mount_root_override" => true
+      "image_layout" => 1
     }.freeze
     LAYOUT_PATH = File.join("lib", "tebako", "layout.yaml").freeze
 
@@ -115,6 +118,7 @@ module TebakoRuntimeBuilder
         "mount_root" => @mount_point,
         "interpreter_api_version" => @ruby_ver.api_version
       )
+      declaration["mount_root_override"] = true if @mount_root_override
       File.write(path, YAML.dump(declaration))
       puts "   ... env image layout declaration: #{path}"
     end

@@ -36,6 +36,10 @@ module TebakoRuntimeBuilder
   # era-2 contract set closes.
   class MountRoot
     MANIFEST = "tebako-mount-root"
+    # The override capability manifest (spec 17 §1): the source tree
+    # carries the loadpath patch, so its compiled-in load paths follow
+    # TEBAKO_MOUNT_ROOT. Absent ⇒ closed — the fail-closed direction.
+    OVERRIDE_MANIFEST = "tebako-mount-root-override"
 
     def initialize(tarball)
       @tarball = tarball
@@ -55,10 +59,20 @@ module TebakoRuntimeBuilder
       root
     end
 
+    # The override capability the tarball declares (the loadpath patch's
+    # presence, emitted by SourcePrep) — the image layout's
+    # mount_root_override grant is truthful only when this is true.
+    def override?
+      entry = manifest_entry(OVERRIDE_MANIFEST)
+      return false if entry.nil?
+
+      tar_output("-xOzf", tar_path, entry).strip == "true"
+    end
+
     private
 
-    def manifest_entry
-      tar_output("-tzf", tar_path).lines.map(&:strip).find { |name| name.end_with?("/#{MANIFEST}") }
+    def manifest_entry(manifest = MANIFEST)
+      tar_output("-tzf", tar_path).lines.map(&:strip).find { |name| name.end_with?("/#{manifest}") }
     end
 
     # A tar invocation whose failure is a READ error (corrupt tarball,
