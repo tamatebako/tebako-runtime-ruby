@@ -161,7 +161,7 @@ class MatrixComputer # rubocop:disable Metrics/ClassLength
     when "push", "pull_request" then diff_legs(event)
     else
       # schedule and unknown events validate, never publish-wide
-      slice_legs(matrix_rubies("tidy"), platform_env, "tidy (event=#{event})")
+      slice_legs(validation_rubies, platform_env, "tidy (event=#{event})")
     end
   end
 
@@ -237,7 +237,19 @@ class MatrixComputer # rubocop:disable Metrics/ClassLength
   # Validation-only changes (specs, lint config) validate on the tidy
   # set on EVERY platform — never a build-shaped leg, never empty.
   def validation_legs
-    slice_legs(with_shas(matrix_rubies("tidy")), arch_filtered_env, "validation-only change")
+    slice_legs(validation_rubies, arch_filtered_env, "validation-only change")
+  end
+
+  # The validation set for THIS platform, defer-aware (the "never empty"
+  # rule): the tidy members available here; when EVERY tidy member
+  # defers on this platform (windows: 3.3 + 4.0 both defer today, tidy
+  # is exactly those two lines), the available line tips substitute —
+  # a validation leg validates what the platform actually ships, and a
+  # shared-input change can never conclude green having built nothing.
+  def validation_rubies
+    tidy = with_shas(matrix_rubies("tidy"))
+    tidy = with_shas(matrix_rubies("full")) if available(tidy).empty?
+    tidy
   end
 
   # The build-shaped walk: a matrix.json content diff decides the
@@ -248,9 +260,9 @@ class MatrixComputer # rubocop:disable Metrics/ClassLength
     platform_hit = platform_changed?(@platform, paths, graph)
     if paths.any? { |p| shared?(p, graph) } || matrix_json_changed?(paths)
       platform_hit = true # shared inputs reach every platform
-      rubies ||= with_shas(matrix_rubies("tidy"))
+      rubies ||= validation_rubies
     end
-    rubies ||= with_shas(matrix_rubies("tidy")) # tooling change: validate on the tips
+    rubies ||= validation_rubies # tooling change: validate on the tips
     return slice_legs([], [], "#{@platform} unaffected by this diff") unless platform_hit
 
     slice_legs(rubies, arch_filtered_env, "#{event} diff: #{paths.size} changed path(s)")
