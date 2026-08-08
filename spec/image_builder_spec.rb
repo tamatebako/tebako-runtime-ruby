@@ -160,13 +160,15 @@ RSpec.describe TebakoRuntimeBuilder::ImageBuilder do
         "era" => 2,
         "image_layout" => 1,
         "mount_root" => "/__tfs__",
+        "mount_root_override" => true,
         "interpreter_api_version" => "3.3.0"
       )
     end
 
     it "flows the msys drive-letter mount root and the 4.0 api line" do
-      expect(layout_for("4.0.6", mount_point: "A:/__tfs__")).to include(
-        "mount_root" => "A:/__tfs__",
+      expect(layout_for("4.0.6", mount_point: "A:/t")).to include(
+        "mount_root" => "A:/t",
+        "mount_root_override" => true,
         "interpreter_api_version" => "4.0.0"
       )
     end

@@ -100,8 +100,12 @@ module TebakoRuntimeBuilder
 
     # Boot the runtime once with the named scenario preloaded; returns the
     # parsed Run model (never raises for a failed boot -- the model carries
-    # the failure; a raise means the driver itself is miswired)
-    def run(scenario)
+    # the failure; a raise means the driver itself is miswired).
+    # mount_root_override: boot with TEBAKO_MOUNT_ROOT set (spec 17 §1) —
+    # the probe's expectation (TEBAKO_BOOT_MOUNT_POINT) follows it, so the
+    # whole chain (driver mount + rbconfig fallback + layout grant) is
+    # asserted end-to-end under the override root.
+    def run(scenario, mount_root_override: nil)
       unless SCENARIOS.include?(scenario)
         raise TebakoRuntimeBuilder::Error.new(
           "unknown boot-smoke scenario '#{scenario}' (known: #{SCENARIOS.join(", ")})", 143
@@ -109,7 +113,7 @@ module TebakoRuntimeBuilder
       end
 
       materialize_ruby_dll
-      out, err, status = boot(scenario)
+      out, err, status = boot(scenario, mount_root_override: mount_root_override)
       Run.new(scenario: scenario, stdout: out, stderr: err, status: status)
     end
 
@@ -186,9 +190,11 @@ module TebakoRuntimeBuilder
     # would not boot otherwise; an item-30b embedded executable proves the
     # variable wins over its incbin image). A runtime root without the
     # image boots the v1 embedded way, byte-identical to before.
-    def boot(scenario)
+    def boot(scenario, mount_root_override: nil)
       Dir.mktmpdir("tebako-boot-smoke") do |cwd|
-        return Timeout.timeout(BOOT_TIMEOUT) { Open3.capture3(boot_env(scenario), executable, chdir: cwd) }
+        return Timeout.timeout(BOOT_TIMEOUT) do
+          Open3.capture3(boot_env(scenario, mount_root_override: mount_root_override), executable, chdir: cwd)
+        end
       end
     rescue Timeout::Error
       # The runtime child may outlive the killed wait; the boot is a hard
@@ -196,13 +202,14 @@ module TebakoRuntimeBuilder
       ["", "boot-smoke: runtime did not exit within #{BOOT_TIMEOUT}s", nil]
     end
 
-    def boot_env(scenario)
+    def boot_env(scenario, mount_root_override: nil)
       env = ENV_SCRUBBED.to_h { |key| [key, nil] }
       image = "#{executable}.tfs"
       env["TEBAKO_RUNTIME_IMAGE"] = image if File.file?(image)
+      env["TEBAKO_MOUNT_ROOT"] = mount_root_override if mount_root_override
       env.merge("RUBYOPT" => "-r#{PROBE_PATH}",
                 "TEBAKO_BOOT_PROBE" => scenario,
-                "TEBAKO_BOOT_MOUNT_POINT" => mount_point)
+                "TEBAKO_BOOT_MOUNT_POINT" => mount_root_override || mount_point)
     end
   end
 end
