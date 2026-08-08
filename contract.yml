@@ -27,3 +27,15 @@
 ---
 contract_version: 2
 container_version: "0.16.2"
+# The published link-unit pin: the tamatebako/tebako release whose
+# prebuilt link unit (driver + scoped tfs + the native closure, per
+# triplet) the legs CONSUME as a download instead of building from
+# source. The closure depends on the triplet and the product release
+# only — never on the ruby version — so a pin hit turns staging into a
+# ~30 s download. Empty = build from source (the driver is moving: the
+# pin must name a release whose driver carries everything the factory
+# asserts — the boot smoke's contract-version check proves the match
+# per leg). A platform with no published unit (gnu, until the product
+# ships a floor build) misses the pin and builds from source — a miss
+# is never an error.
+link_unit_release: ""
