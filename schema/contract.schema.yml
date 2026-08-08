@@ -13,3 +13,7 @@ properties:
     type: string
     pattern: '^\d+\.\d+\.\d+$'
     description: the toolchain container line the builds run inside (an axis independent of the artifact version)
+  link_unit_release:
+    type: string
+    pattern: '^$|^v\d+\.\d+\.\d+$'
+    description: the tamatebako/tebako release whose published link unit the legs consume (empty = build the closure from source)
