@@ -258,6 +258,9 @@ jobs:
     # Same gates as the build legs.
     if: ${{ needs.compute.outputs.run == 'true' && !inputs.audit }}
     runs-on: ${{ matrix.env.host }}
+    # A hung staging (a stalled fetch, a dead runner that never reports)
+    # fails LOUDLY here, never 8 h of silent queue-blocking (2026-08-09).
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -477,6 +480,9 @@ jobs:
     # ruby link.
     if: ${{ always() && !cancelled() && needs.compute.outputs.run == 'true' && !inputs.audit && (needs.link-unit.result == 'success' || needs.link-unit.result == 'skipped') }}
     runs-on: ${{ matrix.env.host }}
+    # The longest green leg on record runs ~75 min cold; a hung leg fails
+    # loudly at 150, never silently.
+    timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:
