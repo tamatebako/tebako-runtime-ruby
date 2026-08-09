@@ -801,6 +801,24 @@ RSpec.describe ReleaseManager do
         .to raise_error(/could not converge SHA256SUMS\.txt/)
     end
 
+    # A canonical name wedged server-side (a deleted name 422ing
+    # re-uploads for hours) must never block the publish: the
+    # content-addressed twin uploads first and is the authority, the
+    # canonical mirror demotes to a loud warning.
+    it "publishes the content-addressed metadata when the canonical name is wedged" do
+      entries = [{ filename: "pkg-a", sha256: "0" * 64 }]
+      store.delete_propagation = 999 # the delete never clears the listing
+      store.assets << FakeAsset.new(7, "SHA256SUMS.txt", "https://download.test/SHA256SUMS.txt")
+      store.assets << FakeAsset.new(8, "manifest.json", "https://download.test/manifest.json")
+      store.set_content("https://download.test/SHA256SUMS.txt", "stale sums")
+      store.set_content("https://download.test/manifest.json", "stale manifest")
+
+      expect { fake_manager.upload_metadata(release, entries) }
+        .to output(/::warning::canonical SHA256SUMS\.txt could not be refreshed/).to_stdout
+      expect(store.uploads).to include(a_string_matching(/SHA256SUMS-[0-9a-f]{8}\.txt/))
+      expect(store.uploads).to include(a_string_matching(/manifest-[0-9a-f]{8}\.json/))
+    end
+
     it "raises after the upload attempts are exhausted" do
       (ReleaseManager::UPLOAD_RETRY_DELAYS.size + 1).times { store.fail_next(:upload, Faraday::TimeoutError.new) }
       exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
