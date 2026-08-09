@@ -714,6 +714,27 @@ RSpec.describe ReleaseManager do
       expect(store.deletes).to eq([7])
     end
 
+    # A name wedged server-side (the replace cannot land within the
+    # budget) keeps the previous asset AND its previous manifest entry —
+    # byte-truthful, loudly warned, never a failed publish.
+    it "keeps the previous asset and entry when the replace cannot land" do
+      exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
+      url = "https://download.test/#{exe.basename}"
+      previous = { filename: exe.basename.to_s, sha256: "1" * 64, platform: "macos-arm64" }
+      store.delete_propagation = 999 # the delete never clears the listing
+      store.assets << FakeAsset.new(7, exe.basename.to_s, url)
+      store.set_content(url, "previous bytes")
+      allow(fake_manager).to receive(:previous_manifest_entries).and_return([previous])
+      allow(fake_manager).to receive(:current_shas)
+        .and_return(exe.basename.to_s => Digest::SHA256.hexdigest(exe.read))
+      (ReleaseManager::UPLOAD_RETRY_DELAYS.size + 1).times { store.fail_next(:upload, Octokit::UnprocessableEntity.new) }
+
+      expect { fake_manager.upload_package(release, exe) }
+        .to output(/keeping the previous asset/).to_stdout
+      expect(fake_manager.apply_stale_keeps([{ filename: exe.basename.to_s, sha256: "2" * 64 }]))
+        .to eq([previous])
+    end
+
     # A listed-but-unreadable landed asset (mid-propagation) proves
     # nothing — back off, never crash the publish on the read.
     it "treats an unreadable landed asset as not landed and keeps backing off" do
