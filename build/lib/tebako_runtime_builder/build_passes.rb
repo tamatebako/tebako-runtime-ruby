@@ -528,9 +528,22 @@ module TebakoRuntimeBuilder
           # failure). Guarantee them before the relink: a serial build-ext is
           # a no-op when they are already built.
           TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["make", "build-ext", "-j1"])
+          # msys: the exe relink must ride the exts.mk recursion build-ext
+          # just drove (its SUBMAKEOPTS put the ext archives in the DLL's
+          # DLDOBJS and keep extinit.o OUT of the exe). A TOP-LEVEL make ruby
+          # is broken by construction on the shared static-ext build whenever
+          # it relinks anything: the DLL relinks with dummy DLDOBJS (the
+          # exts drop out of the import library) and the exe relinks with
+          # extinit.o, whose Init_* references can never resolve (mkexports'
+          # PrivateNames keeps them out of the .def). 3.3+ makes that window
+          # deterministic: the fake rbconfig gained a $(REVISION_H)
+          # prerequisite, so the refreshed revision stamp cascades fake ->
+          # .def -> DLL relink inside make ruby (3.1/3.2's fake has no such
+          # prereq and their make ruby no-ops — the exe the recursion
+          # produced stands).
+          TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["make", "ruby", "-j1"]) if rv.ruby3x? && !platform.msys?
           # Serialized (see the toolchain pass): the rbconfig flip re-triggers
           # the exts.mk/extinit.c cascade; the link must not race it
-          TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["make", "ruby", "-j1"]) if rv.ruby3x?
           TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["make", "-j1"])
         end
 

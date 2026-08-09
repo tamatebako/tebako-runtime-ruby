@@ -716,16 +716,16 @@ jobs:
           for d in .build/deps/src/_ruby_*; do
             [ -d "$d" ] || continue
             echo "== $d symbol/mtime state:"
-            a=$(ls "$d"/libx64-ucrt-ruby*-static.a "$d"/libruby*-static.a 2>/dev/null | head -1)
-            [ -n "$a" ] && echo "   static archive Init_bigdecimal: $(nm "$a" 2>/dev/null | grep -c "T Init_bigdecimal")"
-            def=$(ls "$d"/x64-ucrt-ruby*.def 2>/dev/null | head -1)
+            a=$(ls "$d"/libx64-ucrt-ruby*-static.a "$d"/libruby*-static.a 2>/dev/null | head -1 || true)
+            [ -n "$a" ] && echo "   static archive Init_bigdecimal: $(nm "$a" 2>/dev/null | grep -c "T Init_bigdecimal" || true)"
+            def=$(ls "$d"/x64-ucrt-ruby*.def 2>/dev/null | head -1 || true)
             [ -n "$def" ] && echo "   def Init_ exports: $(grep -c "Init_" "$def" || true)"
-            imp=$(ls "$d"/libx64-ucrt-ruby*.dll.a 2>/dev/null | head -1)
-            [ -n "$imp" ] && echo "   import-lib Init_bigdecimal: $(nm -g "$imp" 2>/dev/null | grep -c "Init_bigdecimal")"
-            (cd "$d" && ls -la --time-style=full-iso ruby.exe exts.mk ext/extinit.o ext/extinit.c rbconfig.rb x64-mingw-ucrt-fake.rb .revision.time revision.h x64-ucrt-ruby*.def libx64-ucrt-ruby*.dll.a x64-ucrt-ruby*.dll 2>/dev/null | awk "{print \$6, \$7, \$NF}")
+            imp=$(ls "$d"/libx64-ucrt-ruby*.dll.a 2>/dev/null | head -1 || true)
+            [ -n "$imp" ] && echo "   import-lib Init_bigdecimal: $(nm -g "$imp" 2>/dev/null | grep -c "Init_bigdecimal" || true)"
+            (cd "$d" && ls -la --time-style=full-iso ruby.exe exts.mk ext/extinit.o ext/extinit.c rbconfig.rb x64-mingw-ucrt-fake.rb .revision.time revision.h x64-ucrt-ruby*.def libx64-ucrt-ruby*.dll.a x64-ucrt-ruby*.dll 2>/dev/null | awk "{print \$6, \$7, \$NF}") || true
             echo "   make --debug=basic ruby -n (decision trace, first 30):"
-            (cd "$d" && make --debug=basic ruby -n 2>&1 | grep -E "Must remake|is newer than|Prerequisite|^\s*(gcc|\.|generating|linking|compiling)" | head -30)
-            echo "   make -f exts.mk ruby -n (first 8):"; (cd "$d" && make -f exts.mk ruby -n 2>/dev/null | head -8)
+            (cd "$d" && make --debug=basic ruby -n 2>&1 | grep -E "Must remake|is newer than|Prerequisite|^\s*(gcc|\.|generating|linking|compiling)" | head -30) || true
+            echo "   make -f exts.mk ruby -n (first 8):"; (cd "$d" && make -f exts.mk ruby -n 2>/dev/null | head -8) || true
           done
           find .build/deps/src -maxdepth 3 -name "extinit.c" -exec sh -c '
             echo "== $1: init calls: $(grep -c "init(Init_" "$1" || true)"
