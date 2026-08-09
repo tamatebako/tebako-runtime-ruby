@@ -639,7 +639,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
 
   def publish_release(release, packages, entries)
     sections, image_sections = upload_and_categorize(release, packages, entries)
-    addressed = upload_metadata(release, entries)
+    addressed = upload_metadata(release, apply_stale_keeps(entries))
     release_body = generate_release_notes(sections, image_sections) + metadata_pointer(addressed)
     with_transient_retries { @client.update_release(release.url, body: release_body) }
     puts "Successfully updated release notes"
@@ -873,6 +873,36 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
 
     perform_upload(release, package, filename)
     filename
+  rescue Octokit::UnprocessableEntity
+    # The wedged-name class: a delete+recreate tonight 422s for hours —
+    # the replace cannot land within the budget. Keep the release's
+    # existing asset AND its previous manifest entry (byte-truthful,
+    # never a mismatch) and complete the publish; the refreshed bytes
+    # land on the next publish or FORCE_REBUILD. A never-published asset
+    # has nothing to keep — that re-raises by name.
+    raise if previous_entry_for(filename).nil?
+
+    puts "::warning::#{filename} could not replace the wedged asset — " \
+         "keeping the previous asset + manifest entry (byte-truthful); the refresh lands on the next publish"
+    (@stale_kept ||= []) << filename
+    nil
+  end
+
+  # A wedged asset keeps the release's previous bytes, so the manifest
+  # keeps the previous ENTRY (the served bytes' sha, never the fresh one
+  # that failed to land) — for the exe and its .tfs/.dll facets alike.
+  def apply_stale_keeps(entries)
+    kept = @stale_kept || []
+    return entries if kept.empty?
+
+    entries.map do |entry|
+      names = [entry[:filename], entry.dig(:image, :filename), entry.dig(:dll, :filename)].compact
+      names.any? { |name| kept.include?(name) } ? previous_entry_for(entry[:filename]) || entry : entry
+    end
+  end
+
+  def previous_entry_for(filename)
+    previous_manifest_entries.find { |entry| entry[:filename] == filename }
   end
 
   # An asset with the same name AND the same sha256 (the previous
