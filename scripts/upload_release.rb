@@ -219,11 +219,11 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   # anyway; grinding here never blocks another platform's build.
   METADATA_CONVERGENCE_DELAYS = [5, 15, 30, 60, 120, 240, 480, 600, 600, 600].freeze
 
-  def force_upload(release, file)
+  def force_upload(release, file, delays: METADATA_CONVERGENCE_DELAYS)
     filename = file.basename.to_s
     sha = Digest::SHA256.file(file).hexdigest
     converged = false
-    METADATA_CONVERGENCE_DELAYS.each do |pause|
+    delays.each do |pause|
       converged = metadata_converged?(release, file, filename, sha)
       break if converged
 
@@ -635,10 +635,14 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
 
   def publish_release(release, packages, entries)
     sections, image_sections = upload_and_categorize(release, packages, entries)
-    upload_metadata(release, entries)
-    release_body = generate_release_notes(sections, image_sections)
+    addressed = upload_metadata(release, entries)
+    release_body = generate_release_notes(sections, image_sections) + metadata_pointer(addressed)
     with_transient_retries { @client.update_release(release.url, body: release_body) }
     puts "Successfully updated release notes"
+  end
+
+  def metadata_pointer(addressed)
+    "\n---\nThis publish's metadata (write-once, content-addressed): #{addressed.join(", ")}\n"
   end
 
   def audit_only?
@@ -820,11 +824,42 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
      categorize_images(entries.filter_map { |entry| entry.dig(:image, :filename) })]
   end
 
+  # Write-once metadata: every metadata file uploads FIRST under a
+  # content-addressed name that never collides (the publish's authority),
+  # then the canonical name is refreshed best-effort with a short budget —
+  # a name wedged server-side (a deleted name 422'd re-uploads for hours
+  # on a bad night) becomes a loud warning, never a failed publish. The
+  # release notes point at the addressed names. Returns them.
+  CANONICAL_MIRROR_DELAYS = [5, 15, 30].freeze
+
   def upload_metadata(release, entries)
-    [generate_sha256sums(entries), generate_manifest(entries)].each do |file|
-      puts "Uploading metadata file #{file.basename} (always overwritten)"
-      force_upload(release, file)
+    [generate_sha256sums(entries), generate_manifest(entries)].map do |file|
+      upload_one_metadata(release, file)
     end
+  end
+
+  # One metadata file: the content-addressed twin first (the publish's
+  # authority — a fresh name, never a collision), then the canonical
+  # mirror with the short budget; a wedged canonical name is a loud
+  # warning, never a failed publish.
+  def upload_one_metadata(release, file)
+    addressed = content_addressed_name(file)
+    perform_upload(release, file, addressed) unless find_asset(release, addressed)
+    mirror_canonical(release, file, addressed)
+    addressed
+  end
+
+  def mirror_canonical(release, file, addressed)
+    canonical = file.basename.to_s
+    force_upload(release, file, delays: CANONICAL_MIRROR_DELAYS)
+    puts "canonical #{canonical} refreshed (#{addressed} is the content twin)"
+  rescue StandardError => e
+    puts "::warning::canonical #{canonical} could not be refreshed (#{e.message}) — #{addressed} is the authority"
+  end
+
+  def content_addressed_name(file)
+    sha8 = Digest::SHA256.file(file).hexdigest[0, 8]
+    file.basename.to_s.sub(/\.(txt|json)\z/, "-#{sha8}.\\1")
   end
 
   def upload_package(release, package)
