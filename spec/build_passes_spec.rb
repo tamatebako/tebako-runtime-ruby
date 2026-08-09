@@ -19,9 +19,10 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
   end
 
   # An msys ruby source tree fixture carrying the anchors the prepare
-  # hot-patches act on (dir.c: the glob hint; io.c: the fd_is_text block —
-  # the stat wire-layout hot-patch is gone: the released source carries
-  # the pinned tebako_stat ABI from tamatebako/ruby v0.2.13), plus the
+  # hot-patches act on (dir.c: the glob hint; io.c: the fd_is_text block;
+  # dln.c: the dlmap extraction block — the stat wire-layout hot-patch is
+  # gone: the released source carries the pinned tebako_stat ABI from
+  # tamatebako/ruby v0.2.13), plus the
   # shared-build set (issue 40): the mkexports rule in cygwin/GNUmakefile.in,
   # the pipe-string mkexports.rb (the 3.3-line spelling), and the miniruby
   # recipe in template/Makefile.in.
@@ -30,6 +31,7 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
     fd_text = TebakoRuntimeBuilder::BuildPasses::MSYS_FD_IS_TEXT_ANCHOR
     File.write(File.join(dir, "dir.c"), "#{glob}\n")
     File.write(File.join(dir, "io.c"), "tfs_close\n#{fd_text}\n")
+    write_dln_fixture(dir)
     FileUtils.mkdir_p(File.join(dir, "cygwin"))
     File.write(File.join(dir, "cygwin", "GNUmakefile.in"),
                "rule-a\n#{TebakoRuntimeBuilder::BuildPasses::MSYS_DLL_EXPORTS_ANCHOR}rule-b\n" \
@@ -45,6 +47,22 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
                "\t\t$(Q) $(PURIFY) $(CC) $(EXE_LDFLAGS) $(XLDFLAGS) $(MAINOBJ) $(EXTOBJS) $(LIBRUBYARG) -Wl,--start-group $(MAINLIBS) $(LIBS) $(EXTLIBS) -Wl,--end-group $(OUTFLAG)$@ # tebako patched\n" \
                "miniruby$(EXEEXT):\n" \
                "\t$(Q) $(PURIFY) $(CC) $(EXE_LDFLAGS) $(XLDFLAGS) #{miniruby_recipe} $(OUTFLAG)$@\n")
+  end
+
+  # The dln.c fixture: the dlmap patch block's three anchors (the decl the
+  # helper inserts after, the dlmap2file call, the bare goto failed) in a
+  # minimal dln_open body.
+  def write_dln_fixture(dir)
+    bp = TebakoRuntimeBuilder::BuildPasses
+    lines = [bp::MSYS_DLN_DLMAP_DECL_ANCHOR,
+             "static void *", "dln_open(const char *file)", "{",
+             "  if (file && tfs_memfs_path_p(file)) {",
+             bp::MSYS_DLN_DLMAP_CALL_ANCHOR,
+             "    if (f) { load(f); }",
+             "    else if (errno == ENOENT) { passthrough(file); }",
+             bp::MSYS_DLN_DLMAP_FAIL_ANCHOR,
+             "  }", "}"]
+    File.write(File.join(dir, "dln.c"), "#{lines.join("\n")}\n")
   end
 
   # A libtfs.a the DLL export fragment derives from (issue 40): one defined
@@ -308,6 +326,52 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
 
     it "fails when dir.c does not exist" do
       FileUtils.rm(dir_c)
+      expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc") }
+        .to raise_error(TebakoRuntimeBuilder::Error, /does not exist/)
+    end
+  end
+
+  describe ".prepare msys dln.c dlmap extraction" do
+    let(:dln_c) { File.join(ruby_src, "dln.c") }
+
+    before do
+      write_msys_source_fixtures(ruby_src)
+      write_libtfs_fixture(deps_lib_dir)
+      described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc")
+    end
+
+    it "routes the dlmap through the C-side extraction (the dlmap2file A:-join)" do
+      contents = File.read(dln_c)
+      expect(contents).to include("static char *\ntfs_dlmap_extract(const char *path)")
+      expect(contents).to include("f = tfs_dlmap_extract(file);")
+      expect(contents).not_to include("f = tebako_fs_dlmap2file(file);")
+      # the sanitized host tail: the drive-letter colon flattens
+      expect(contents).to include("if (c == ':') c = '_';")
+    end
+
+    it "names the extraction errno instead of the bare goto failed (the '(null)' LoadError)" do
+      contents = File.read(dln_c)
+      expect(contents).to include("cannot extract the in-image extension to a host file for LoadLibrary (errno=%d)")
+      expect(contents).not_to include("    else {\n      goto failed;\n    }")
+    end
+
+    it "is idempotent across the msys pass-2 overlay prepare re-run" do
+      expect do
+        described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc")
+      end.not_to raise_error
+      contents = File.read(dln_c)
+      expect(contents.scan("tfs_dlmap_extract(const char *path)").length).to eq(1)
+      expect(contents.scan("f = tfs_dlmap_extract(file);").length).to eq(1)
+    end
+
+    it "fails loudly when a dlmap anchor drifted (the pre-patched dln.c changed)" do
+      File.write(dln_c, "no dlmap block here\n")
+      expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc") }
+        .to raise_error(TebakoRuntimeBuilder::Error, /dlmap anchor/)
+    end
+
+    it "fails when dln.c does not exist" do
+      FileUtils.rm(dln_c)
       expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc") }
         .to raise_error(TebakoRuntimeBuilder::Error, /does not exist/)
     end

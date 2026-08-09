@@ -699,9 +699,41 @@ jobs:
             echo "== $1: ruby.exe link rule region:"; grep -n -B4 -A6 "EXTOBJS.*-o \$@)" "$1" || true
             echo "== $1: LIBS/MAINLIBS definitions:"; grep -n "^LIBS\|^MAINLIBS\|^EXTLIBS" "$1" || true
           ' _ {} \; || true
+          # the static-ext state at the finalize relink (the undefined
+          # Init_* class): the exts.mk recursion wiring (EXTOBJS macro +
+          # the ruby.exe submake rule), the symbol presence at each link
+          # layer (static archive / def / import lib), and the mtimes that
+          # decide whether the exe relinks top-level (extinit.o in, Init_*
+          # unresolvable by design — mkexports' PrivateNames)
+          find .build/deps/src -maxdepth 2 -name exts.mk -exec sh -c '
+            echo "== $1: $(wc -l < "$1") lines; key macros:"
+            grep -n "^EXTOBJS\|^EXTLIBS\|^EXTSO\|^SUBMAKEOPTS\|^ruby" "$1" | cut -c1-200 | head -12
+            echo "== $1: recursion rule present: $(grep -c "SUBMAKEOPTS.*ruby" "$1" || true)"
+          ' _ {} \; || true
+          find .build/deps/src -maxdepth 2 -name Makefile -exec sh -c '
+            echo "== $1: link vars:"; grep -n "^EXTOBJS\|^DLDOBJS\|^INITOBJS\|^LIBRUBYARG " "$1" | cut -c1-160
+          ' _ {} \; || true
+          for d in .build/deps/src/_ruby_*; do
+            [ -d "$d" ] || continue
+            echo "== $d symbol/mtime state:"
+            a=$(ls "$d"/libx64-ucrt-ruby*-static.a "$d"/libruby*-static.a 2>/dev/null | head -1 || true)
+            [ -n "$a" ] && echo "   static archive Init_bigdecimal: $(nm "$a" 2>/dev/null | grep -c "T Init_bigdecimal" || true)"
+            def=$(ls "$d"/x64-ucrt-ruby*.def 2>/dev/null | head -1 || true)
+            [ -n "$def" ] && echo "   def Init_ exports: $(grep -c "Init_" "$def" || true)"
+            imp=$(ls "$d"/libx64-ucrt-ruby*.dll.a 2>/dev/null | head -1 || true)
+            [ -n "$imp" ] && echo "   import-lib Init_bigdecimal: $(nm -g "$imp" 2>/dev/null | grep -c "Init_bigdecimal" || true)"
+            (cd "$d" && ls -la --time-style=full-iso ruby.exe exts.mk ext/extinit.o ext/extinit.c rbconfig.rb x64-mingw-ucrt-fake.rb .revision.time revision.h x64-ucrt-ruby*.def libx64-ucrt-ruby*.dll.a x64-ucrt-ruby*.dll 2>/dev/null | awk "{print \$6, \$7, \$NF}") || true
+            echo "   make --debug=basic ruby -n (decision trace, first 30):"
+            (cd "$d" && make --debug=basic ruby -n 2>&1 | grep -E "Must remake|is newer than|Prerequisite|^\s*(gcc|\.|generating|linking|compiling)" | head -30) || true
+            echo "   make -f exts.mk ruby -n (first 8):"; (cd "$d" && make -f exts.mk ruby -n 2>/dev/null | head -8) || true
+          done
+          find .build/deps/src -maxdepth 3 -name "extinit.c" -exec sh -c '
+            echo "== $1: init calls: $(grep -c "init(Init_" "$1" || true)"
+          ' _ {} \; || true
+          echo "== ext archives on disk:"; find .build/deps/src -path "*/ext/*" -name "*.a" -exec ls -la {} \; 2>/dev/null | head -10 || true
           # the ExternalProject-swallowed inner build log (the make error's
           # real stderr never reaches the CI output otherwise)
-          find .build/deps/src -name "*-build-*.log" -o -name "*-err.log" | while read -r f; do
+          find .build -name "*-build-*.log" -o -name "*-err.log" 2>/dev/null | while read -r f; do
             echo "=== $f (tail) ==="; tail -60 "$f" || true
           done
 
@@ -738,6 +770,23 @@ jobs:
             timeout --preserve-status 25 "$exe" < /dev/null 2>&1 | tail -15; echo "probe exit: ${PIPESTATUS[0]}"
           echo "== image boot (no probe), stdin closed, 25s:"
           TEBAKO_RUNTIME_IMAGE="$exe.tfs" timeout --preserve-status 25 "$exe" < /dev/null 2>&1 | tail -15; echo "image exit: ${PIPESTATUS[0]}"
+          # The native-ext bind (issue 40, the 3.3+ cparse.so LoadError
+          # class): the exact smoke case, with the PE-named DLL materialized
+          # next to the exe first (the boot smoke does it in-step; here it
+          # is manual), plus the build tree's cparse.so import table — the
+          # DLL Name it binds must be the shipped x64-ucrt-ruby<ABI>.dll,
+          # and the extraction errno now names the failure class.
+          echo "== cparse.so import tables (build tree):"
+          find .build -name "cparse.so" -exec sh -c 'echo "-- $1"; objdump -p "$1" | grep -i "DLL Name"' _ {} \; 2>/dev/null || true
+          echo "== racc ext link evidence (mkmf.log/Makefile):"
+          find .build -path "*racc*" \( -name "Makefile" -o -name "mkmf.log" \) -exec sh -c '
+            echo "-- $1"; grep -hiE "LIBRUBYARG|-lx64-ucrt|^LIBS" "$1" | sort -u | head -6
+          ' _ {} \; 2>/dev/null || true
+          pedll=$(find .build/deps/src -maxdepth 2 -name "x64-*-ruby*.dll" 2>/dev/null | head -1 || true)
+          [ -n "$pedll" ] && [ -f "$pkgdll" ] && cp "$pkgdll" "runtime-packages/$(basename "$pedll")"
+          echo "== native_ext probe boot (smoke case), stdin closed, 60s:"
+          TEBAKO_RUNTIME_IMAGE="$exe.tfs" RUBYOPT="-r$probe" TEBAKO_BOOT_PROBE=native_ext TEBAKO_BOOT_MOUNT_POINT=A:/t \
+            timeout --preserve-status 60 "$exe" < /dev/null 2>&1 | tail -8; echo "native_ext exit: ${PIPESTATUS[0]}"
           exit 0
 
       # The build emits TWO artifacts per leg since item 30: the runtime

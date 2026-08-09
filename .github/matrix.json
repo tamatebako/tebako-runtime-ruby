@@ -46,7 +46,7 @@
         { "host": "windows-2022", "container": null, "os": "windows", "arch": "x86_64" }
     ],
     "defer": {
-      "_comment": "Per-platform availability: a version is DEFERRED for a platform (never scheduled, never expected, never promised) when it starts with a listed minor-line prefix. windows 3.3+ fails the boot smoke's native-extension bind (the cparse.so LoadLibrary layer, issue 40) — deferred until the sandboxed fix lands. Remove a prefix to re-admit that line to the platform's catalog.",
-      "windows": ["3.3", "3.4", "4.0"]
+      "_comment": "Per-platform availability: a version is DEFERRED for a platform (never scheduled, never expected, never promised) when it starts with a listed minor-line prefix. Remove a prefix to re-admit that line to the platform's catalog. (windows 3.3+ was deferred for the boot smoke's native-extension bind — the cparse.so LoadError: (null) class, issue 40 — and is re-admitted with the dln.c C-side dlmap extraction fix.)",
+      "windows": []
     }
 }
