@@ -533,6 +533,10 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     puts "#{filename}: the landed asset's content disagrees — deleting the partial/stale asset before the retry"
     with_transient_retries { @client.delete_release_asset(asset.id) }
     invalidate_assets_memo
+    # The name stays 422-blocked until the delete propagates — poll for
+    # the absence so the retry's POST actually lands (the v0.16.3 gnu
+    # publish looped blind POSTs into the held name).
+    wait_for_absence(release, filename)
   end
 
   # Did an earlier attempt's POST land despite the error? Accepts (loudly)
