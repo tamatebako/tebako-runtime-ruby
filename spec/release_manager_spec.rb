@@ -26,7 +26,7 @@ SPEC_CONTRACT = {
 # Recording octokit stand-ins: ReleaseManager accepts any client object
 # (client:), and every publish interaction becomes observable through the
 # store's public collections; transient failures are scriptable per call.
-FakeAsset = Struct.new(:id, :name, :browser_download_url)
+FakeAsset = Struct.new(:id, :name, :browser_download_url, :digest)
 
 # A page of the asset listing: data plus a Sawyer-shaped rels whose
 # :next link serves the following page (the real API's shape — raw rel
@@ -136,8 +136,10 @@ class FakeAssetStore
   end
 
   # A landed upload becomes servable: the edge (and the asset's own
-  # browser url) serve exactly the bytes that landed.
+  # browser url) serve exactly the bytes that landed, and the listing's
+  # digest is their sha256 (the real API's shape).
   def register_upload(asset, bytes)
+    asset.digest = "sha256:#{Digest::SHA256.hexdigest(bytes)}"
     @contents[asset.browser_download_url] = bytes
     tag = ENV.fetch("TEBAKO_VERSION", nil)
     return unless tag
@@ -675,6 +677,24 @@ RSpec.describe ReleaseManager do
         .to output(/already on the release with matching content/).to_stdout
       expect(store.attempts[:upload]).to eq(1)
       expect(store.uploads).to be_empty
+    end
+
+    # The listing's digest is the authority: the download edge can serve
+    # a deleted partial for hours — a matching digest accepts without a
+    # byte read, and never deletes a good upload on a stale edge (the
+    # v0.16.3 gnu publish looped exactly so).
+    it "accepts a landed asset whose listing digest matches, even with a stale edge" do
+      exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
+      url = "https://download.test/#{exe.basename}"
+      asset = FakeAsset.new(7, exe.basename.to_s, url)
+      asset.digest = "sha256:#{Digest::SHA256.hexdigest(exe.read)}"
+      store.assets << asset
+      store.set_content(url, "stale partial bytes")
+      store.fail_next(:upload, Octokit::UnprocessableEntity.new)
+
+      expect { fake_manager.perform_upload(release, exe, exe.basename.to_s) }
+        .to output(/already on the release with matching content/).to_stdout
+      expect(store.deletes).to be_empty
     end
 
     # The same 422 with DIFFERENT landed bytes is a partial (a timed-out

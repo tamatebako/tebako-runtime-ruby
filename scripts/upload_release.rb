@@ -238,7 +238,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   # resolve by content inside perform_upload), then verify what the edge
   # serves. true when the release serves our bytes.
   def metadata_converged?(release, file, filename, sha)
-    return true if served_content_matches?(filename, sha)
+    return true if served_content_matches?(release, filename, sha)
 
     remove_existing_asset(release, filename) if find_asset(release, filename)
     begin
@@ -246,12 +246,27 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     rescue Octokit::UnprocessableEntity
       # the name is still taken server-side; the next cycle re-reads
     end
-    served_content_matches?(filename, sha)
+    served_content_matches?(release, filename, sha)
   end
 
-  # Does the canonical download URL already serve these exact bytes?
-  # (An unreadable edge proves nothing → false → the mutation path runs.)
-  def served_content_matches?(filename, sha)
+  # Does the release already hold these exact bytes? The listing's
+  # server-computed digest is the authority (never edge-lagged); the
+  # download-edge read is the fallback for digest-less listings (an
+  # unreadable edge proves nothing → false → the mutation path runs).
+  def served_content_matches?(release, filename, sha)
+    digest = listed_digest(release, filename)
+    unless digest.nil?
+      matched = digest == sha
+      puts "#{filename} is already current on the release — no metadata rewrite needed" if matched
+      return matched
+    end
+
+    edge_content_matches?(filename, sha)
+  end
+
+  # The download-edge fallback for digest-less listings: an unreadable
+  # edge proves nothing → false → the mutation path runs.
+  def edge_content_matches?(filename, sha)
     served = safely_served_content(filename)
     return false if served.nil? || served.empty?
 
@@ -531,17 +546,31 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   end
 
   # Truthful by content: the landed asset's sha256 vs the local file's.
-  # Reads the listing's asset URL first, then the canonical download URL
-  # (the listing lags behind the edge on mutations — an asset can serve
-  # bytes while unlisted, and vice versa). Anything unreadable proves
-  # nothing: treat as not landed and keep backing off.
+  # The API listing's digest is the authority (the download edge lags
+  # behind mutations — it served a deleted partial for hours on the
+  # v0.16.3 publish, and a stale read must never delete a good upload);
+  # the byte read is only the pre-digest fallback. Anything unreadable
+  # proves nothing: treat as not landed and keep backing off.
   def landed_with_same_content?(release, filename, package)
+    sha = Digest::SHA256.file(package).hexdigest
+    digest = listed_digest(release, filename)
+    return digest == sha unless digest.nil?
+
     landed = landed_content(release, filename)
     return false if landed.nil? || landed.empty?
 
-    Digest::SHA256.hexdigest(landed) == Digest::SHA256.file(package).hexdigest
+    Digest::SHA256.hexdigest(landed) == sha
   rescue StandardError
     false
+  end
+
+  # The API listing's server-computed sha256 (the asset `digest` field) —
+  # the authority that never lags the way the download edge does. nil
+  # when the listing carries no digest (a pre-digest API or a fake).
+  def listed_digest(release, filename)
+    asset = find_asset(release, filename)
+    digest = asset.respond_to?(:digest) ? asset.digest : nil
+    digest&.start_with?("sha256:") ? digest.delete_prefix("sha256:") : nil
   end
 
   def landed_content(release, filename)
