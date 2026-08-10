@@ -90,7 +90,7 @@ class MatrixComputer # rubocop:disable Metrics/ClassLength
   }.freeze
   # Asset name → [version, scenario]: the source release's naming
   # contract (unsuffixed = the linux-gnu scenario).
-  ASSET_SCENARIO = /\Atfs-ruby-(\d+\.\d+\.\d+)-src(?:-(linux-musl|msys))?(?:-pass[12])?\.tar\.gz\z/.freeze
+  ASSET_SCENARIO = /\Atfs-ruby-(\d+\.\d+\.\d+)-src(?:-(linux-musl|msys))?(?:-pass[12])?\.tar\.gz\z/
 
   def initialize(argv, fetcher_factory: nil, differ: nil)
     @platform = parse_platform(argv)

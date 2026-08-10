@@ -96,7 +96,7 @@ RSpec.describe "build-platform reusable workflow" do
     expect(builders).not_to be_empty
     builders.each do |step|
       expect(step["if"].to_s).to include("steps.published.outputs.hit != 'true'"),
-                                 "#{step['name']} must be gated on the download missing"
+                                 "#{step["name"]} must be gated on the download missing"
       expect(names.index(step["name"])).to be > download_index
     end
   end

@@ -230,15 +230,15 @@ module TebakoRuntimeBuilder
 
     def linux_gnu_libraries(ruby_ver, with_compression)
       libraries = linux_libraries_base(rust_libdir ? LINUX_GNU_LIBRARIES : nil) ||
-                  ["-Wl,--start-group"] + COMMON_LINUX_LIBRARIES + COMMON_ARCHIEVE_LIBRARIES +
-                  ["-Wl,--end-group"] + LINUX_GNU_LIBRARIES
+                  (["-Wl,--start-group"] + COMMON_LINUX_LIBRARIES + COMMON_ARCHIEVE_LIBRARIES +
+                  ["-Wl,--end-group"] + LINUX_GNU_LIBRARIES)
       linux_libraries(libraries, ruby_ver, with_compression)
     end
 
     def linux_musl_libraries(ruby_ver, with_compression)
       libraries = linux_libraries_base(rust_libdir ? LINUX_MUSL_LIBRARIES : nil) ||
-                  ["-Wl,--start-group"] + COMMON_LINUX_LIBRARIES + COMMON_ARCHIEVE_LIBRARIES +
-                  ["-Wl,--end-group"] + LINUX_MUSL_LIBRARIES
+                  (["-Wl,--start-group"] + COMMON_LINUX_LIBRARIES + COMMON_ARCHIEVE_LIBRARIES +
+                  ["-Wl,--end-group"] + LINUX_MUSL_LIBRARIES)
       linux_libraries(libraries, ruby_ver, with_compression)
     end
 
@@ -273,7 +273,7 @@ module TebakoRuntimeBuilder
     # ruby's ext/openssl compiles against exactly those headers, so the
     # platform copy is also the better-matched one).
     def linux_covered(platform_libraries)
-      platform_libraries.filter_map { |lib| lib[%r{^-l:(lib.+\.a)$}, 1] } + ["libz.a"]
+      platform_libraries.filter_map { |lib| lib[/^-l:(lib.+\.a)$/, 1] } + ["libz.a"]
     end
 
     def linux_libraries(libraries, ruby_ver, _with_compression)
@@ -326,10 +326,12 @@ module TebakoRuntimeBuilder
 
       [File.join(rust_libdir, "libtebako_driver.a")].tap do |libs|
         libs.each do |path|
+          next if File.file?(path)
+
           raise TebakoRuntimeBuilder::Error.new(
             "missing v2 link input: #{path} — run tebako-arscope (tebako-rs) and stage the scoped staticlibs",
             112
-          ) unless File.file?(path)
+          )
         end
       end
     end
@@ -387,7 +389,7 @@ module TebakoRuntimeBuilder
       brew_libs.each { |lib| libs << "#{@prefix_resolver.call(lib[0])}/lib/lib#{lib[1]}.a " }
     end
 
-    def darwin_libraries(ruby_ver)
+    def darwin_libraries(ruby_ver) # rubocop:disable Metrics/AbcSize
       libs = String.new
 
       # The v2 link (image era): the sealed Rust driver + tfs objects
@@ -395,7 +397,7 @@ module TebakoRuntimeBuilder
       # squashfs, botan, rnp, codecs) — no C++ libtfs, no vcpkg closure.
       # The brew libs below stay: they are ruby's own dependencies (and
       # v1-proven to satisfy dwarfs-t's openssl references).
-      libs << "#{rust_link_libraries.join(' ')} " if rust_libdir
+      libs << "#{rust_link_libraries.join(" ")} " if rust_libdir
       DARWIN_DEP_LIBS_1.each { |lib| libs << "#{@deps_lib_dir}/lib#{lib}.a " } unless rust_libdir
       process_brew_libs!(libs, ruby_ver.ruby31? ? DARWIN_BREW_LIBS_31 : DARWIN_BREW_LIBS_PRE_31)
       process_brew_libs!(libs, DARWIN_BREW_LIBS)
@@ -434,21 +436,25 @@ module TebakoRuntimeBuilder
     # staged by tebako-rs (a release artifact, or a local
     # TEBAKO_RUST_LIBDIR with libtebako_driver.a + libtfs.a +
     # closure/*.a).
-    def rust_link_libraries
+    def rust_link_libraries # rubocop:disable Metrics/MethodLength
       libs = %w[libtebako_driver.a libtfs.a].map do |name|
         path = File.join(rust_libdir, name)
-        raise TebakoRuntimeBuilder::Error.new(
-          "missing v2 link input: #{path} — run tebako-arscope (tebako-rs) and stage the scoped staticlibs",
-          112
-        ) unless File.file?(path)
+        unless File.file?(path)
+          raise TebakoRuntimeBuilder::Error.new(
+            "missing v2 link input: #{path} — run tebako-arscope (tebako-rs) and stage the scoped staticlibs",
+            112
+          )
+        end
 
         path
       end
-      closure = Dir.glob(File.join(rust_libdir, "closure", "*.a")).sort
-      raise TebakoRuntimeBuilder::Error.new(
-        "TEBAKO_RUST_LIBDIR (#{rust_libdir}) carries no closure/*.a — stage the scoped link unit first",
-        112
-      ) if closure.empty?
+      closure = Dir.glob(File.join(rust_libdir, "closure", "*.a"))
+      if closure.empty?
+        raise TebakoRuntimeBuilder::Error.new(
+          "TEBAKO_RUST_LIBDIR (#{rust_libdir}) carries no closure/*.a — stage the scoped link unit first",
+          112
+        )
+      end
 
       libs + closure
     end
@@ -461,7 +467,7 @@ module TebakoRuntimeBuilder
     # (proven on the windows 3.1.6 leg: 36 staged archives invisible).
     def rust_libdir
       dir = ENV.fetch("TEBAKO_RUST_LIBDIR", nil)
-      dir&.tr('\\', '/') unless dir.to_s.empty?
+      dir&.tr("\\", "/") unless dir.to_s.empty?
     end
 
     # .....................................................

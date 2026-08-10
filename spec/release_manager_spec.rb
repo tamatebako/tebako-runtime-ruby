@@ -239,12 +239,14 @@ RSpec.describe ReleaseManager do
   def package(name, contents = name)
     @dir.join(name).tap do |path|
       path.write(contents)
-      write_contract_sidecar(path) unless name.end_with?(".tfs", ".dll", ".abi", ReleaseManager::CONTRACT_SIDECAR_SUFFIX)
+      unless name.end_with?(".tfs", ".dll", ".abi", ReleaseManager::CONTRACT_SIDECAR_SUFFIX)
+        write_contract_sidecar(path)
+      end
     end
   end
 
   def write_contract_sidecar(path, contract = SPEC_CONTRACT)
-    File.write("#{path.to_s.sub(%r{\.exe\z}, '')}#{ReleaseManager::CONTRACT_SIDECAR_SUFFIX}", YAML.dump(contract))
+    File.write("#{path.to_s.sub(/\.exe\z/, "")}#{ReleaseManager::CONTRACT_SIDECAR_SUFFIX}", YAML.dump(contract))
   end
 
   def with_packages(&block)
@@ -439,7 +441,7 @@ RSpec.describe ReleaseManager do
 
     with_packages do
       packages = manager.validate_packages_directory
-      expect(packages.map { |p| p.extname }).not_to include(".abi")
+      expect(packages.map(&:extname)).not_to include(".abi")
     end
   end
 

@@ -61,7 +61,7 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
       end
     end
 
-    it "ignores the sidecar markers (abi facet + era-2 contract card + sha256/origin trust markers + the package-named ruby DLL)" do
+    it "ignores the sidecar markers (abi facet, era-2 contract card, trust markers, the package-named ruby DLL)" do
       Dir.mktmpdir do |dir|
         exe = File.join(dir, "tebako-runtime-0.15.9-3.1.6-windows-ucrt64")
         FileUtils.touch(exe)
@@ -389,5 +389,5 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
         end
       end
     end
-end
+  end
 end
