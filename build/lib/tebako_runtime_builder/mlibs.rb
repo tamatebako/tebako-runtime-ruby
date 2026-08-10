@@ -142,9 +142,14 @@ module TebakoRuntimeBuilder
     # The pacman-provided archives rust_link_libraries_msys dedupes OUT of
     # the closure (they ride the exe's MSYS_LIBRARIES): the DLL link shares
     # no libraries with the exe link, so the closure's own zlib/lzma/openssl
-    # references need the pacman copies here. Static archives cost nothing
-    # when unreferenced (no members get pulled).
-    MSYS_DLL_PACMAN_PROVIDERS = ["-l:libz.a", "-l:liblzma.a", "-l:libssl.a", "-l:libcrypto.a"].freeze
+    # references need the pacman copies here. The extension deps ride too —
+    # fiddle's libffi, dl's dlfcn, psych's libyaml — STATICALLY: a dynamic
+    # reference makes the DLL unloadable on a bare windows machine (the
+    # 0.16.3 defect: libdl.dll/libffi-8.dll/libyaml-0-2.dll imports → exit
+    # 127 everywhere outside an msys2 install). Static archives cost
+    # nothing when unreferenced (no members get pulled).
+    MSYS_DLL_PACMAN_PROVIDERS = ["-l:libz.a", "-l:liblzma.a", "-l:libssl.a", "-l:libcrypto.a",
+                                 "-l:libffi.a", "-l:libdl.a", "LIBYAML"].freeze
 
     # prefix_resolver maps a Homebrew package name to its prefix (darwin);
     # injectable so the list computation is spec-able off macOS

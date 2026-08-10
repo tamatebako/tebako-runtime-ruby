@@ -136,6 +136,14 @@ RSpec.describe TebakoRuntimeBuilder::Mlibs do
       expect(result).to include("-lshell32")
       expect(result).to include("-lntdll")
       expect(result).not_to include("libtebako-fs.a")
+      # The DLL is self-contained on a bare windows machine: the fiddle /
+      # dl / psych deps link STATICALLY. 0.16.3's DLL imported
+      # libdl.dll / libffi-8.dll / libyaml-0-2.dll — present nowhere but
+      # an msys2 install, so the runtime could not start (exit 127, the
+      # loader mis-naming api-ms-win-crt-utility).
+      expect(result).to include("-l:libffi.a")
+      expect(result).to include("-l:libdl.a")
+      expect(result).to include("-l:libyaml.a")
     end
 
     context "with tagged boost archives in the vcpkg triplet" do
