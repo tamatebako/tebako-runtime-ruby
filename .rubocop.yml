@@ -3,7 +3,7 @@ inherit_mode:
     - Include
 
 AllCops:
-  TargetRubyVersion: 2.7
+  TargetRubyVersion: 3.3
   SuggestExtensions: false
   NewCops: enable
 

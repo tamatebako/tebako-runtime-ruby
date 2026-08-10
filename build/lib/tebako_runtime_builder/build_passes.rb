@@ -134,7 +134,7 @@ module TebakoRuntimeBuilder
     MSYS_DLL_EXPORTS_FRAGMENT = "tebako-dll-exports.def"
     MSYS_DLL_EXPORTS_ANCHOR = "\t$(Q) $(BOOTSTRAPRUBY_COMMAND) $(srcdir)/win32/mkexports.rb -output=$@ $(LIBRUBY_A)\n"
     MSYS_DLL_EXPORTS_PATCHED =
-      "#{MSYS_DLL_EXPORTS_ANCHOR}\t$(Q) cat #{MSYS_DLL_EXPORTS_FRAGMENT} >> $@ # tebako patched (issue 40)\n"
+      "#{MSYS_DLL_EXPORTS_ANCHOR}\t$(Q) cat #{MSYS_DLL_EXPORTS_FRAGMENT} >> $@ # tebako patched (issue 40)\n".freeze
 
     # The ruby.exe link rule (msys shared build): the fs TU (libtebako-fs.a,
     # in MAINLIBS) calls the driver's tebako_driver_boot /
@@ -712,7 +712,7 @@ module TebakoRuntimeBuilder
       # Derived by nm at prepare time -- a hand list would drift against
       # the link unit silently. Functions go bare, data symbols with the
       # DATA keyword (PE imports of data need it).
-      def write_dll_exports_fragment!(ruby_source_dir, deps_lib_dir) # rubocop:disable Metrics/MethodLength
+      def write_dll_exports_fragment!(ruby_source_dir, deps_lib_dir) # rubocop:disable Metrics/MethodLength, Metrics/AbcSize, Metrics/CyclomaticComplexity
         lines = dll_export_source_archives(deps_lib_dir).flat_map do |archive|
           out = TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["nm", "-g", "--defined-only", archive])
           out.lines.filter_map do |line|
@@ -753,8 +753,8 @@ module TebakoRuntimeBuilder
       # Mlibs#rust_libdir -- the workflow passes a Windows-form path), else
       # the deps provisioning's C++ libtfs.a (the v1 link, whose C++ driver
       # is exe code and exports nothing).
-      def dll_export_source_archives(deps_lib_dir)
-        rust_libdir = ENV.fetch("TEBAKO_RUST_LIBDIR", nil)&.tr('\\', "/")
+      def dll_export_source_archives(deps_lib_dir) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
+        rust_libdir = ENV.fetch("TEBAKO_RUST_LIBDIR", nil)&.tr("\\", "/")
         candidates = []
         if rust_libdir && !rust_libdir.empty?
           candidates << File.join(rust_libdir, "libtfs.a")
@@ -914,7 +914,7 @@ module TebakoRuntimeBuilder
       def substitute_solibs!(contents, solibs)
         puts "   ... substituting SOLIBS (the ruby DLL closure, issue 40)"
         subst = "S[\"SOLIBS\"]=\"#{solibs}\""
-        done = contents.include?(subst) || !contents.sub!(%r{^S\["SOLIBS"\]=.*$}, subst).nil?
+        done = contents.include?(subst) || !contents.sub!(/^S\["SOLIBS"\]=.*$/, subst).nil?
         puts "Warning: no config.status SOLIBS line matched; the DLL closure substitution did not happen" unless done
       end
 
@@ -966,7 +966,7 @@ module TebakoRuntimeBuilder
       # <deps_lib_dir>/libtebako-fs.a (the deps lib dir precedes the CMake
       # binary dir in the ruby link flags, so the stub wins the toolchain
       # link; it is removed by the toolchain pass)
-      def build_toolchain_stub(platform, deps_lib_dir, mount_point, cc, ruby_ver) # rubocop:disable Metrics/MethodLength
+      def build_toolchain_stub(platform, deps_lib_dir, mount_point, cc, ruby_ver) # rubocop:disable Metrics/MethodLength, Metrics/AbcSize, Metrics/CyclomaticComplexity
         puts "   ... building the toolchain stub libtebako-fs.a"
         FileUtils.mkdir_p(deps_lib_dir)
         obj = File.join(deps_lib_dir, "tebako-toolchain-stub.o")
@@ -979,7 +979,7 @@ module TebakoRuntimeBuilder
         # compat getters; the stub drops its copies so the toolchain link
         # has exactly one definition (issue 40, the ld multiple-definition
         # failure). Normalized like Mlibs#rust_libdir (Windows-form paths).
-        rust_libdir = ENV.fetch("TEBAKO_RUST_LIBDIR", nil)&.tr('\\', "/")
+        rust_libdir = ENV.fetch("TEBAKO_RUST_LIBDIR", nil)&.tr("\\", "/")
         defines << "-DTEBAKO_STUB_MINIMAL" if platform.msys? && rust_libdir && !rust_libdir.empty?
         TebakoRuntimeBuilder::BuildHelpers.run_with_capture(
           [cc, "-c", TOOLCHAIN_STUB_C, *defines, "-o", obj]
@@ -1055,7 +1055,7 @@ module TebakoRuntimeBuilder
       # regressed, several means a stale tree; a differently named one
       # means ruby configure's RUBY_SO_NAME moved (update
       # RubyVersion#msys_dll_name, its single owner in the factory).
-      def stage_ruby_dll(ruby_ver, ruby_source_dir, output) # rubocop:disable Metrics/MethodLength
+      def stage_ruby_dll(ruby_ver, ruby_source_dir, output) # rubocop:disable Metrics/MethodLength, Metrics/AbcSize
         candidates = Dir.glob(File.join(ruby_source_dir, "x64-*-ruby*.dll"))
         expected = ruby_ver.msys_dll_name
         unless candidates.length == 1 && File.basename(candidates.first) == expected

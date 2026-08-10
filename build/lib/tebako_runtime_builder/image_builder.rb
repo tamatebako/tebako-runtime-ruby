@@ -190,14 +190,15 @@ module TebakoRuntimeBuilder
     # ships inside the link unit (tools/stage_link_unit); its absence
     # only means an older link unit — the exec path degrades to
     # VFS-less children with a note, never a hard failure.
-    def deploy_preload
+    def deploy_preload # rubocop:disable Metrics/MethodLength
       libdir = ENV.fetch("TEBAKO_RUST_LIBDIR", nil)
       return if libdir.nil?
 
       name = @platform.macos? ? "libtfs_preload.dylib" : "libtfs_preload.so"
       src = File.join(libdir, name)
       unless File.file?(src)
-        puts "   ... no #{name} in TEBAKO_RUST_LIBDIR (#{libdir}) — spawned children of memfs binaries get no VFS (an older link unit)"
+        puts "   ... no #{name} in TEBAKO_RUST_LIBDIR (#{libdir}) — " \
+             "spawned children of memfs binaries get no VFS (an older link unit)"
         return
       end
       dest = File.join(@data_src_dir, "lib", "tebako")

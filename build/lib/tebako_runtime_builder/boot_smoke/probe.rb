@@ -205,7 +205,7 @@ module BootSmokeProbe
   # run -- the 0.16.2 deploy-time incident; the zero-copy guard landed in
   # tamatebako/ruby v0.2.15. A byte-exact copy is the only acceptable
   # outcome.
-  def self.copy_stream_check
+  def self.copy_stream_check # rubocop:disable Metrics/MethodLength
     require "tmpdir"
     Dir.mktmpdir do |dir|
       dst = File.join(dir, "copy-stream.out")
@@ -227,12 +227,12 @@ module BootSmokeProbe
   # host-side), the era-2 contract set, and the interpreter api line. A
   # pre-era image (no layout) or a mismatched pair fails the check by
   # name — the factory-side surface of the driver's exit-78 verdict.
-  def self.layout_yaml_check
+  def self.layout_yaml_check # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
     require "yaml"
     path = File.join(MOUNT_POINT, "lib", "tebako", "layout.yaml")
     raise "missing #{path} in the env image (pre-era image — rebuild with the current factory)" unless File.file?(path)
 
-    layout = YAML.safe_load(File.read(path))
+    layout = YAML.safe_load_file(path)
     api = "#{RUBY_VERSION.split(".")[0, 2].join(".")}.0"
     expected = {
       "schema" => "layout",
@@ -243,7 +243,9 @@ module BootSmokeProbe
       "interpreter_api_version" => api
     }
     mismatched = expected.reject { |key, value| layout.is_a?(Hash) && layout[key] == value }
-    raise "#{path} declares #{layout.inspect} — expected #{mismatched.inspect} (mismatched exe↔image pair)" unless mismatched.empty?
+    unless mismatched.empty?
+      raise "#{path} declares #{layout.inspect} — expected #{mismatched.inspect} (mismatched exe↔image pair)"
+    end
 
     "era=2 mount_root=#{layout["mount_root"]} api=#{api}"
   end
@@ -336,7 +338,7 @@ module BootSmokeProbe
   # take. A pure-ruby fallback would mask an unbindable .so, so the check
   # asserts the .so itself landed in $LOADED_FEATURES. Off-msys the
   # runtime's own exts are static and there is nothing to bind.
-  def self.native_extension_check
+  def self.native_extension_check # rubocop:disable Metrics/MethodLength
     host_os = RbConfig::CONFIG["host_os"]
     unless host_os =~ /mswin|mingw/
       raise NotImplementedError, "dynamic extension binding is a windows-runtime check (host_os=#{host_os})"

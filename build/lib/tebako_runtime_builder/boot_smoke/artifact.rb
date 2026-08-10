@@ -32,7 +32,7 @@ module TebakoRuntimeBuilder
     # platform id itself carries dashes (linux-gnu-x86_64), so the versions
     # anchor the parse from the front.
     class Artifact
-      NAME_RE = /\Atebako-runtime-(?<tebako>\d+\.\d+\.\d+)-(?<ruby>\d+\.\d+\.\d+)-(?<platform>.+?)(?:\.exe)?\z/.freeze
+      NAME_RE = /\Atebako-runtime-(?<tebako>\d+\.\d+\.\d+)-(?<ruby>\d+\.\d+\.\d+)-(?<platform>.+?)(?:\.exe)?\z/
 
       def initialize(basename)
         match = NAME_RE.match(basename)

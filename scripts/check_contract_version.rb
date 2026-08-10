@@ -47,10 +47,10 @@ class ContractVersionCheck
   SCHEMA_YML = REPO_ROOT.join("schema", "contract.schema.yml").freeze
   DRIVER_SRC = REPO_ROOT.join("build", "src", "tebako-main.cpp").freeze
 
-  DEFINE_PATTERN = /^\s*#\s*define\s+TEBAKO_CONTRACT_VERSION\s+(\d+)u?\s*$/.freeze
+  DEFINE_PATTERN = /^\s*#\s*define\s+TEBAKO_CONTRACT_VERSION\s+(\d+)u?\s*$/
   # The Rust form (crates/tebako-driver/src/lib.rs in the tebako product
   # repo — the contract-2 driver, consumed as libtebako_driver.a).
-  RUST_PATTERN = /pub const TEBAKO_CONTRACT_VERSION: u32 = (\d+);/.freeze
+  RUST_PATTERN = /pub const TEBAKO_CONTRACT_VERSION: u32 = (\d+);/
 
   def initialize(contract_yml: CONTRACT_YML, schema_yml: SCHEMA_YML, driver_src: nil)
     @contract_yml = Pathname.new(contract_yml)

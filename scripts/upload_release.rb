@@ -98,7 +98,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   # (roadmap 45) follows the same compat rule, and so does the windows
   # ruby DLL (<package>.dll, issue 40) folded as `dll` with the PE name
   # the store entry materializes (`install_as`).
-  def build_manifest_entries(packages)
+  def build_manifest_entries(packages) # rubocop:disable Metrics/AbcSize
     executables, images, dlls = partition_packages(packages)
     executables.sort_by { |package| package.basename.to_s }.map do |package|
       image = images.find { |candidate| candidate.basename.to_s == image_name_for(package) }
@@ -376,7 +376,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     { "windows" => [], "macos" => [], "linux-gnu" => [], "linux-musl" => [] }
   end
 
-  def manifest_entry(package, image = nil, dll = nil)
+  def manifest_entry(package, image = nil, dll = nil) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
     ruby_version, platform = parse_package_filename(package.basename.to_s)
     contract = contract_sidecar(package)
     filename = package.basename.to_s
@@ -401,7 +401,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
       # The additive abi line (spec 05 §5): the runtime's own platform
       # string, emitted by build_runtime as <package>.abi. Consumers that
       # predate the key ignore it (the compat window).
-      sidecar = Pathname.new("#{package.sub(%r{\.exe\z}, '')}.abi")
+      sidecar = Pathname.new("#{package.sub(/\.exe\z/, "")}.abi")
       entry[:abi] = sidecar.read.strip if sidecar.file?
       entry[:image] = image_entry(image) if image
       entry[:dll] = dll_entry(dll, ruby_version) if dll
@@ -416,8 +416,8 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   # card's provenance half), fail-closed: a missing file, missing keys,
   # or a declared era this pipeline does not speak are named refusals —
   # never a silently under-declared manifest entry (spec 18 C2/S11/S16).
-  def contract_sidecar(package)
-    path = Pathname.new("#{package.sub(%r{\.exe\z}, '')}#{CONTRACT_SIDECAR_SUFFIX}")
+  def contract_sidecar(package) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
+    path = Pathname.new("#{package.sub(/\.exe\z/, "")}#{CONTRACT_SIDECAR_SUFFIX}")
     unless path.file?
       raise "runtime package #{package.basename} carries no #{CONTRACT_SIDECAR_SUFFIX} contract sidecar — " \
             "it was built by a pre-era factory; rebuild it with the current tebako-runtime-ruby (spec 18 C2)"
@@ -779,7 +779,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   # removes); another actor's mutations are invisible by design — the
   # global publish serialization means none exist within a run.
   def all_assets(release)
-    @assets_memo ||= begin
+    @all_assets ||= begin
       page = with_transient_retries { release.rels[:assets].get }
       assets = page.data
       while (nxt = page.rels[:next])
@@ -791,7 +791,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   end
 
   def invalidate_assets_memo
-    @assets_memo = nil
+    @all_assets = nil
   end
 
   def find_asset(release, filename)
@@ -866,7 +866,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     file.basename.to_s.sub(/\.(txt|json)\z/, "-#{sha8}.\\1")
   end
 
-  def upload_package(release, package)
+  def upload_package(release, package) # rubocop:disable Metrics/MethodLength
     filename = package.basename.to_s
     puts "Processing #{filename}..."
     return filename if skip_existing_asset?(release, filename)
@@ -897,7 +897,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
 
     entries.map do |entry|
       names = [entry[:filename], entry.dig(:image, :filename), entry.dig(:dll, :filename)].compact
-      names.any? { |name| kept.include?(name) } ? previous_entry_for(entry[:filename]) || entry : entry
+      names.intersect?(kept) ? previous_entry_for(entry[:filename]) || entry : entry
     end
   end
 

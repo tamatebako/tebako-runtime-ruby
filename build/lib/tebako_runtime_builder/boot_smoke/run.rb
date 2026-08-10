@@ -34,7 +34,7 @@ module TebakoRuntimeBuilder
     # reported (mount failure, crash, timeout) is !booted? and fails every
     # example of its scenario with the stderr/context intact.
     class Run
-      LINE_RE = /\ABOOT-SMOKE (?<name>\S+) (?<state>ok|fail|unsupported)(?:\s+(?<detail>.*))?\z/.freeze
+      LINE_RE = /\ABOOT-SMOKE (?<name>\S+) (?<state>ok|fail|unsupported)(?:\s+(?<detail>.*))?\z/
 
       def initialize(scenario:, stdout:, stderr:, status:)
         @scenario = scenario

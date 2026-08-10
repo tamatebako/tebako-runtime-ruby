@@ -26,7 +26,7 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
   # shared-build set (issue 40): the mkexports rule in cygwin/GNUmakefile.in,
   # the pipe-string mkexports.rb (the 3.3-line spelling), and the miniruby
   # recipe in template/Makefile.in.
-  def write_msys_source_fixtures(dir)
+  def write_msys_source_fixtures(dir) # rubocop:disable Metrics/MethodLength
     glob = TebakoRuntimeBuilder::BuildPasses::MSYS_GLOB_OPENDIR_ANCHOR
     fd_text = TebakoRuntimeBuilder::BuildPasses::MSYS_FD_IS_TEXT_ANCHOR
     File.write(File.join(dir, "dir.c"), "#{glob}\n")
@@ -36,7 +36,8 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
     File.write(File.join(dir, "cygwin", "GNUmakefile.in"),
                "rule-a\n#{TebakoRuntimeBuilder::BuildPasses::MSYS_DLL_EXPORTS_ANCHOR}rule-b\n" \
                "ruby$(EXEEXT):\n" \
-               "\t  $(WINMAINOBJ) $(EXTOBJS) $(LIBRUBYARG) -Wl,--start-group $(MAINLIBS) -Wl,--end-group -o $@  # tebako patched\n")
+               "\t  $(WINMAINOBJ) $(EXTOBJS) $(LIBRUBYARG) -Wl,--start-group $(MAINLIBS) " \
+               "-Wl,--end-group -o $@  # tebako patched\n")
     FileUtils.mkdir_p(File.join(dir, "win32"))
     File.write(File.join(dir, "win32", "mkexports.rb"),
                "#{TebakoRuntimeBuilder::BuildPasses::MSYS_MKEXPORTS_FOREACH_ANCHORS.last}\n")
@@ -44,7 +45,8 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
     File.write(File.join(dir, "template", "Makefile.in"),
                "MAINLIBS = @MAINLIBS@\n" \
                "ruby$(EXEEXT):\n" \
-               "\t\t$(Q) $(PURIFY) $(CC) $(EXE_LDFLAGS) $(XLDFLAGS) $(MAINOBJ) $(EXTOBJS) $(LIBRUBYARG) -Wl,--start-group $(MAINLIBS) $(LIBS) $(EXTLIBS) -Wl,--end-group $(OUTFLAG)$@ # tebako patched\n" \
+               "\t\t$(Q) $(PURIFY) $(CC) $(EXE_LDFLAGS) $(XLDFLAGS) $(MAINOBJ) $(EXTOBJS) $(LIBRUBYARG) " \
+               "-Wl,--start-group $(MAINLIBS) $(LIBS) $(EXTLIBS) -Wl,--end-group $(OUTFLAG)$@ # tebako patched\n" \
                "miniruby$(EXEEXT):\n" \
                "\t$(Q) $(PURIFY) $(CC) $(EXE_LDFLAGS) $(XLDFLAGS) #{miniruby_recipe} $(OUTFLAG)$@\n")
   end
@@ -252,7 +254,7 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
     it "fails loudly when the libtfs archive defines no tebako_* symbols" do
       FileUtils.rm(File.join(deps_lib_dir, "libtfs.a"))
       expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc") }
-        .to raise_error(TebakoRuntimeBuilder::Error, /no libtfs\/driver archive to derive the DLL export fragment/)
+        .to raise_error(TebakoRuntimeBuilder::Error, %r{no libtfs/driver archive to derive the DLL export fragment})
     end
 
     it "merges the scoped libtfs.a AND libtebako_driver.a surfaces in the fragment (the v2 link)" do
@@ -425,8 +427,6 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
     # ruby's stock msys MAINLIBS default (any value matches now — the
     # substitution is key-anchored); pinned literally so a configure-side
     # drift is visible in the diff.
-    msys_mainlibs =
-      "-lshell32 -lws2_32 -liphlpapi -limagehlp -lshlwapi -lbcrypt -lcrypt32 -ladvapi32 -luser32"
 
     # ruby's stock msys MAINLIBS default (any value matches now — the
     # substitution is key-anchored); pinned literally so a configure-side
@@ -457,7 +457,8 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
       # the probe side: LIBRUBYARG_STATIC feeds the mkmf conftest link the
       # full static closure (miniruby's set), else every link-type probe
       # fails on libruby-static's tebako_fs_* references
-      expect(contents).to include('S["LIBRUBYARG_STATIC"]="-Wl,-rpath,$(libdir) -L$(libdir) -l$(RUBY_SO_NAME)-static -Wl,--start-group')
+      expect(contents).to include('S["LIBRUBYARG_STATIC"]="-Wl,-rpath,$(libdir) -L$(libdir) ' \
+                                  "-l$(RUBY_SO_NAME)-static -Wl,--start-group")
       expect(contents).not_to include('$(MAINLIBS)"')
     end
 

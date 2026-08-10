@@ -52,7 +52,7 @@ module TebakoRuntimeBuilder
       @platform = TebakoRuntimeBuilder::Platform.new
     end
 
-    def run
+    def run # rubocop:disable Metrics/MethodLength
       check_image_shape!
       assets = fetcher.fetch_assets(@ruby_version, @platform)
       puts "-- Building tebako runtime for ruby #{@ruby_version} " \
@@ -148,7 +148,7 @@ module TebakoRuntimeBuilder
       @mount_root_override ||= TebakoRuntimeBuilder::MountRoot.new(tarball).override?
     end
 
-    def cmake_configure(assets) # rubocop:disable Metrics/AbcSize,Metrics/MethodLength
+    def cmake_configure(assets) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength, Metrics/CyclomaticComplexity
       (tarball, sha256) = assets[0]
       args = ["cmake",
               "-DCMAKE_BUILD_TYPE=Release",
@@ -214,11 +214,14 @@ module TebakoRuntimeBuilder
     def write_abi_sidecar
       tree = File.join(output_folder, "s")
       rbconfig = Dir[File.join(tree, "lib", "ruby", "*", "*", "rbconfig.rb")].first
-      raise TebakoRuntimeBuilder::Error.new("no rbconfig.rb under #{tree} — the layout tree is incomplete", 105) unless rbconfig
+      unless rbconfig
+        raise TebakoRuntimeBuilder::Error.new("no rbconfig.rb under #{tree} — the layout tree is incomplete",
+                                              105)
+      end
 
       arch = File.basename(File.dirname(rbconfig))
       abi = arch.gsub(/darwin(\d+)/, 'darwin-\1')
-      File.write("#{output.sub(/\.exe\z/, '')}.abi", "#{abi}\n")
+      File.write("#{output.sub(/\.exe\z/, "")}.abi", "#{abi}\n")
     end
 
     # The era-2 contract provenance (spec 18 C2) as `<output>.contract.yaml`,
@@ -236,7 +239,7 @@ module TebakoRuntimeBuilder
           "sources" => assets.map { |(path, sha256)| { "name" => File.basename(path), "sha256" => sha256 } }
         }
       )
-      File.write("#{output.sub(/\.exe\z/, '')}.contract.yaml", YAML.dump(card))
+      File.write("#{output.sub(/\.exe\z/, "")}.contract.yaml", YAML.dump(card))
     end
   end
 end
