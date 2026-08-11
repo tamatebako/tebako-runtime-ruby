@@ -595,6 +595,7 @@ jobs:
           # fatal — the fixture falls back to tfs when one resolves).
           if ! docker run -v ${{github.workspace}}:/mnt/w \
             -e TEBAKO_RUST_LIBDIR=/mnt/w/.build/link-unit \
+            -e runtime="$runtime" \
             -t $container \
             bash -c '
             /mnt/w/tools/build_runtime --ruby "${{ matrix.ruby.version }}" --output "/mnt/w/runtime-packages/$runtime" \
