@@ -583,21 +583,28 @@ jobs:
           # TEBAKO_RUST_LIBDIR: the staged v2 link unit (downloaded from
           # the link-unit job above) — the builder's rust_driver? switch
           # then links the scoped Rust staticlibs instead of the C++ driver.
-          # On failure, surface the ext extconf probe logs (mkmf.log) — the
-          # container's build tree is ephemeral, so copy them to the
-          # workspace first. These show exactly which probe failed and why.
-          if ! docker run -v ${{github.workspace}}:/mnt/w \
+          # On failure, surface the ext extconf probe logs (mkmf.log) —
+          # they live in the FAILED container's build tree (/root/.build/o),
+          # so commit the stopped container and run the dump inside its
+          # image (a fresh container only ever has the image-baked trees —
+          # the 0.16.4 linux legs' dump showed exactly that mismatch).
+          cid="leg-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ matrix.ruby.version }}-${{ matrix.env.arch }}"
+          if ! docker run --name "$cid" -v ${{github.workspace}}:/mnt/w \
             -e TEBAKO_RUST_LIBDIR=/mnt/w/.build/link-unit \
             -t $container \
             /mnt/w/tools/build_runtime --ruby "${{ matrix.ruby.version }}" --output "/mnt/w/runtime-packages/$runtime" \
-            --prefix /root/.build ${{ matrix.env.os == 'linux-gnu' && '--patchelf' || '' }}; then
+            --prefix /root/.build ${{ matrix.env.os == 'linux-gnu' && '--patchelf' || ''}}; then
             echo "::warning::build failed — dumping ext extconf probe logs"
-            docker run --rm -v ${{github.workspace}}:/mnt/w $container bash -c '
-              find /root/.build/deps/src -path "*/ext/*/mkmf.log" | while read -r f; do
-                echo "=== $f ==="; tail -40 "$f"
-              done' || true
+            docker commit "$cid" "tebako-failed-leg:$cid" >/dev/null 2>&1 && \
+              docker run --rm "tebako-failed-leg:$cid" bash -c '
+                find /root/.build/o -path "*/ext/*/mkmf.log" | while read -r f; do
+                  echo "=== $f ==="; tail -40 "$f"
+                done' || true
+            docker rm -f "$cid" >/dev/null 2>&1 || true
+            docker rmi -f "tebako-failed-leg:$cid" >/dev/null 2>&1 || true
             exit 1
           fi
+          docker rm -f "$cid" >/dev/null 2>&1 || true
 
       - name: Select XCode
         if: matrix.env.os == 'macos'
