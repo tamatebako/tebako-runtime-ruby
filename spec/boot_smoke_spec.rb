@@ -92,6 +92,41 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
     end
   end
 
+  describe TebakoRuntimeBuilder::BootSmoke::InterposeFixture do
+    def with_env(vars)
+      old = vars.to_h { |key, _| [key, ENV.fetch(key, nil)] }
+      vars.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
+      yield
+    ensure
+      old.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
+    end
+
+    it "names every tried path when no stashed ruby headers resolve" do
+      Dir.mktmpdir do |dir|
+        Dir.chdir(dir) do
+          with_env("TEBAKO_SMOKE_RUBY_HEADERS" => nil) do
+            fixture = described_class.new
+            expect { fixture.image }.to raise_error(TebakoRuntimeBuilder::Error, /no stashed ruby headers.*tried:/m)
+          end
+        end
+      end
+    end
+
+    it "honors an explicit TEBAKO_SMOKE_RUBY_HEADERS miss with the same named error" do
+      Dir.mktmpdir do |dir|
+        with_env("TEBAKO_SMOKE_RUBY_HEADERS" => dir) do
+          fixture = described_class.new
+          expect { fixture.image }.to raise_error(TebakoRuntimeBuilder::Error, /no stashed ruby headers/)
+        end
+      end
+    end
+
+    it "refuses the windows leg by name in phase 1" do
+      fixture = described_class.new(platform: TebakoRuntimeBuilder::Platform.new("x64-mingw-ucrt"))
+      expect { fixture.image }.to raise_error(TebakoRuntimeBuilder::Error, /POSIX-only in spec 22 phase 1/)
+    end
+  end
+
   describe "against a built runtime" do
     def boot_failure(run)
       "expected the runtime to boot and report -- #{run.failure_summary}"
@@ -335,6 +370,43 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
                          "_build-platform.yml). A POSIX leg reporting 'fail' is a broken runtime -- the upload " \
                          "must not happen. A windows leg flipping to 'ok' means the issue-#40 fix landed: flip " \
                          "the recorded value to 'ok' in the same PR to enforce it from then on."
+      end
+    end
+
+    describe "the loader interposition (spec 22 phase 1, class L)" do
+      # The per-gem ffi/fiddle adapters' deletion gate: a VFS-resident
+      # native library must load through fiddle AND through a hand-rolled
+      # C extension's own dlopen with no adapter involved, and a failed
+      # materialization must surface the tebako verdict line. The probe
+      # fixture (BootSmoke::InterposeFixture) builds a probe payload
+      # image at boot-smoke time from the leg's own stashed headers and
+      # mounts it at /probe for this scenario. POSIX-only in phase 1.
+      let(:run) { smoke.run("loader_interpose") }
+
+      it "loads a VFS-resident library through Fiddle.dlopen, closure included" do
+        skip "the loader-interpose scenario is POSIX-only in spec 22 phase 1" if smoke.platform.msys?
+
+        expect(run).to be_booted, boot_failure(run)
+        expect(run.state("fiddle_vfs_dlopen")).to eq("ok"),
+                                                  "probe fiddle_vfs_dlopen detail: #{run.detail("fiddle_vfs_dlopen")}"
+        expect(run.detail("fiddle_vfs_dlopen")).to include("probe_answer=42")
+      end
+
+      it "a hand-rolled C extension self-dlopens the VFS library (no adapter can mask it)" do
+        skip "the loader-interpose scenario is POSIX-only in spec 22 phase 1" if smoke.platform.msys?
+
+        expect(run).to be_booted, boot_failure(run)
+        expect(run.state("cext_self_dlopen")).to eq("ok"),
+                                                 "probe cext_self_dlopen detail: #{run.detail("cext_self_dlopen")}"
+        expect(run.detail("cext_self_dlopen")).to include("ProbeExt.answer=42")
+      end
+
+      it "a failed materialization raises through the dlerror channel (the verdict line post-adapter)" do
+        skip "the loader-interpose scenario is POSIX-only in spec 22 phase 1" if smoke.platform.msys?
+
+        expect(run).to be_booted, boot_failure(run)
+        expect(run.state("named_error")).to eq("ok"),
+                                            "probe named_error detail: #{run.detail("named_error")}"
       end
     end
 

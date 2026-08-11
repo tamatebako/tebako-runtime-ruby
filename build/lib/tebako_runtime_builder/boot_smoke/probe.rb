@@ -40,6 +40,9 @@
 module BootSmokeProbe
   MOUNT_POINT = ENV.fetch("TEBAKO_BOOT_MOUNT_POINT", "/__tfs__").freeze
   STUB = File.join(MOUNT_POINT, "local", "stub.rb").freeze
+  # The spec-22 probe fixture's mount point (BootSmoke::InterposeFixture's
+  # MOUNT — the probe is standalone, so the constant rides the env).
+  PROBE_MOUNT = ENV.fetch("TEBAKO_BOOT_PROBE_MOUNT", "/probe").freeze
 
   def self.report(name)
     detail = yield
@@ -109,16 +112,26 @@ module BootSmokeProbe
     report("load_native_extension") { native_extension_check }
   end
 
+  # Spec 22 phase 1 (class L, POSIX): the loader interposition proves the
+  # per-gem ffi/fiddle adapters unnecessary — a VFS-resident native
+  # library loads through fiddle AND through a hand-rolled C extension's
+  # own dlopen, with no adapter involved (the C-ext leg is
+  # adapter-proof: no adapter wraps a C extension's own dlopen). The
+  # fixture image (InterposeFixture) rides the boot's --tebako-image
+  # triple at PROBE_MOUNT.
+  def self.loader_interpose
+    report("fiddle_vfs_dlopen") { fiddle_vfs_dlopen_check }
+    report("cext_self_dlopen") { cext_self_dlopen_check }
+    report("named_error") { named_error_check }
+  end
+
+  SCENARIO_NAMES = %w[boot stat io bundler locks native_ext loader_interpose].freeze
+
   def self.run
-    case ENV.fetch("TEBAKO_BOOT_PROBE", "")
-    when "boot" then boot
-    when "stat" then stat
-    when "io" then io
-    when "bundler" then bundler
-    when "locks" then locks
-    when "native_ext" then native_ext
-    else exit 2
-    end
+    scenario = ENV.fetch("TEBAKO_BOOT_PROBE", "")
+    exit 2 unless SCENARIO_NAMES.include?(scenario)
+
+    public_send(scenario)
     exit 0
   end
 
@@ -352,6 +365,84 @@ module BootSmokeProbe
     end
 
     feature
+  end
+
+  # --- spec 22 phase 1 (class L) checks ---------------------------------
+
+  # The VFS path of the fixture's probe library (InterposeFixture's
+  # library_vfs_path — the two homes compute it independently).
+  def self.probe_library_path
+    File.join(PROBE_MOUNT, "lib", "libvfsprobe.#{RbConfig::CONFIG["host_os"] =~ /darwin/ ? "dylib" : "so"}")
+  end
+
+  # The deleted fiddle adapter's call path: Fiddle.dlopen of a
+  # VFS-resident library. The load only succeeds when the interposition
+  # (or, during the adapter era, the adapter) materializes the library AND
+  # its dependency closure — libvfsprobe links libvfsdep, so loading the
+  # one file alone fails the call. probe_answer returns 42.
+  def self.fiddle_vfs_dlopen_check
+    posix_only!
+    require "fiddle"
+    handle = Fiddle.dlopen(probe_library_path)
+    func = Fiddle::Function.new(handle["probe_answer"], [], Fiddle::TYPE_INT)
+    answer = func.call
+    unless answer == 42
+      raise "probe_answer in #{probe_library_path} returned #{answer}, want 42 " \
+            "(the dependency-closure walk did not extract libvfsdep next to it)"
+    end
+
+    "probe_answer=42 via #{probe_library_path}"
+  end
+
+  # The adapter-proof leg: a hand-rolled ruby C extension whose Init
+  # self-dlopens the VFS-resident probe library (bypassing dln_load and
+  # every Ruby-level adapter) and answers 42 through dlsym on the real
+  # handle. The require below rides dln_load (pre-existing coverage); the
+  # dlopen INSIDE Init is the interposition's proof.
+  def self.cext_self_dlopen_check
+    posix_only!
+    ext = RbConfig::CONFIG["DLEXT"]
+    require File.join(PROBE_MOUNT, "lib", "probe_ext.#{ext}")
+    answer = ProbeExt.answer
+    raise "ProbeExt.answer returned #{answer}, want 42" unless answer == 42
+
+    "ProbeExt.answer=42 (self-dlopen of #{probe_library_path})"
+  end
+
+  # The spec-22 §5 error model: a failed materialization surfaces the
+  # tebako verdict line (the library, the mount, the verdict) through the
+  # dlerror channel — never a silent host fallback. During the adapter era
+  # the fiddle adapter extracts first, so the channel carries the raw OS
+  # loader text instead: the era-correct expectation is an error either
+  # way, the verdict line once the adapters are gone.
+  def self.named_error_check
+    posix_only!
+    require "fiddle"
+    dir = File.join(PROBE_MOUNT, "lib")
+    begin
+      Fiddle.dlopen(dir)
+    rescue Fiddle::DLError => e
+      return named_error_verdict(dir, e)
+    end
+    raise "Fiddle.dlopen('#{dir}') (a directory) did not raise Fiddle::DLError"
+  end
+
+  def self.named_error_verdict(dir, error)
+    return "legacy adapter-era channel: #{error.message[0, 60]}" if Fiddle.respond_to?(:dlopen_orig)
+
+    want = "cannot materialize VFS-resident library '#{dir}' (mount '#{PROBE_MOUNT}')"
+    unless error.message.include?(want)
+      raise "the dlerror channel lacks the tebako verdict line: #{error.message.inspect}"
+    end
+
+    error.message
+  end
+
+  def self.posix_only!
+    host_os = RbConfig::CONFIG["host_os"]
+    return unless host_os =~ /mswin|mingw/
+
+    raise NotImplementedError, "the loader-interpose scenario is POSIX-only in spec 22 phase 1 (host_os=#{host_os})"
   end
 end
 

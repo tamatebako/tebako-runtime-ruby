@@ -44,10 +44,11 @@ module TebakoRuntimeBuilder
   # the executable path itself. A bare layout tree or a mounted filesystem
   # image carries no interpreter, so it is never a valid root.
   class BootSmoke
-    autoload :Artifact, File.expand_path("boot_smoke/artifact", __dir__)
-    autoload :Run,      File.expand_path("boot_smoke/run", __dir__)
+    autoload :Artifact,         File.expand_path("boot_smoke/artifact", __dir__)
+    autoload :Run,              File.expand_path("boot_smoke/run", __dir__)
+    autoload :InterposeFixture, File.expand_path("boot_smoke/interpose_fixture", __dir__)
 
-    SCENARIOS = %w[boot stat io bundler locks native_ext].freeze
+    SCENARIOS = %w[boot stat io bundler locks native_ext loader_interpose].freeze
     BOOT_TIMEOUT = 60
     IMAGE_SUFFIXES = %w[.tfs .dwarfs].freeze
     # Sidecar markers the artifact set carries next to the executable (the
@@ -105,6 +106,9 @@ module TebakoRuntimeBuilder
     # the probe's expectation (TEBAKO_BOOT_MOUNT_POINT) follows it, so the
     # whole chain (driver mount + rbconfig fallback + layout grant) is
     # asserted end-to-end under the override root.
+    # The loader_interpose scenario additionally mounts the spec-22 probe
+    # fixture image at /probe (the driver triple form; no --tebako-entry —
+    # the smoke form still starts the interpreter with the RUBYOPT probe).
     def run(scenario, mount_root_override: nil)
       unless SCENARIOS.include?(scenario)
         raise TebakoRuntimeBuilder::Error.new(
@@ -113,7 +117,8 @@ module TebakoRuntimeBuilder
       end
 
       materialize_ruby_dll
-      out, err, status = boot(scenario, mount_root_override: mount_root_override)
+      extra_argv = scenario == "loader_interpose" ? interpose_argv : []
+      out, err, status = boot(scenario, mount_root_override: mount_root_override, extra_argv: extra_argv)
       Run.new(scenario: scenario, stdout: out, stderr: err, status: status)
     end
 
@@ -190,10 +195,17 @@ module TebakoRuntimeBuilder
     # would not boot otherwise; an item-30b embedded executable proves the
     # variable wins over its incbin image). A runtime root without the
     # image boots the v1 embedded way, byte-identical to before.
-    def boot(scenario, mount_root_override: nil)
+    # The spec-22 probe fixture mount triple (the image builds once per
+    # process, off every other scenario's path).
+    def interpose_argv
+      ["--tebako-image", "#{InterposeFixture.new(platform: @platform).image}:-:#{InterposeFixture::MOUNT}"]
+    end
+
+    def boot(scenario, mount_root_override: nil, extra_argv: [])
       Dir.mktmpdir("tebako-boot-smoke") do |cwd|
         return Timeout.timeout(BOOT_TIMEOUT) do
-          Open3.capture3(boot_env(scenario, mount_root_override: mount_root_override), executable, chdir: cwd)
+          Open3.capture3(boot_env(scenario, mount_root_override: mount_root_override),
+                         executable, *extra_argv, chdir: cwd)
         end
       end
     rescue Timeout::Error
