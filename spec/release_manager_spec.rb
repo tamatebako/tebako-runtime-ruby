@@ -26,7 +26,7 @@ SPEC_CONTRACT = {
 # Recording octokit stand-ins: ReleaseManager accepts any client object
 # (client:), and every publish interaction becomes observable through the
 # store's public collections; transient failures are scriptable per call.
-FakeAsset = Struct.new(:id, :name, :browser_download_url, :digest)
+FakeAsset = Struct.new(:id, :name, :browser_download_url, :digest, :state)
 
 # A page of the asset listing: data plus a Sawyer-shaped rels whose
 # :next link serves the following page (the real API's shape — raw rel
@@ -1025,6 +1025,40 @@ RSpec.describe ReleaseManager do
       expect do
         expect(fake_manager.upload_package(release, exe)).to eq(exe.basename.to_s)
       end.to output(/could not read the previous manifest/).to_stdout
+      expect(store.uploads).to be_empty
+      expect(store.deletes).to be_empty
+    end
+
+    it "re-uploads a listed asset whose upload never committed (state \"starter\")" do
+      exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
+      store.assets << FakeAsset.new(7, exe.basename.to_s, nil, nil, "starter")
+      previous_manifest([previous_entry(exe.basename.to_s, "macos-arm64", Digest::SHA256.file(exe).hexdigest)])
+      fake_manager.build_manifest_entries([exe])
+
+      fake_manager.upload_package(release, exe)
+
+      expect(store.deletes).to eq([7])
+      expect(store.uploads).to eq([exe.basename.to_s])
+    end
+
+    it "re-uploads a listed asset with no previous manifest entry when the listing digest differs" do
+      exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
+      store.assets << FakeAsset.new(7, exe.basename.to_s).tap { |a| a.digest = "sha256:#{"0" * 64}" }
+      fake_manager.build_manifest_entries([exe])
+
+      fake_manager.upload_package(release, exe)
+
+      expect(store.deletes).to eq([7])
+      expect(store.uploads).to eq([exe.basename.to_s])
+    end
+
+    it "keeps a listed asset with no previous manifest entry when the listing digest matches" do
+      exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
+      store.assets << FakeAsset.new(7, exe.basename.to_s)
+                               .tap { |a| a.digest = "sha256:#{Digest::SHA256.file(exe).hexdigest}" }
+      fake_manager.build_manifest_entries([exe])
+
+      expect(fake_manager.upload_package(release, exe)).to eq(exe.basename.to_s)
       expect(store.uploads).to be_empty
       expect(store.deletes).to be_empty
     end
