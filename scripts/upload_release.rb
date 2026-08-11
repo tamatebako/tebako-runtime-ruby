@@ -905,13 +905,48 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     previous_manifest_entries.find { |entry| entry[:filename] == filename }
   end
 
-  # An asset with the same name AND the same sha256 (the previous
-  # manifest's entry) is kept — an unchanged artifact never re-uploads.
+  # An asset with the same name AND the same sha256 is kept — an
+  # unchanged artifact never re-uploads. Presence in the listing alone
+  # proves nothing (the v0.16.3 publish kept a never-committed
+  # "starter" stub as "unchanged"): uncommitted stubs and
+  # digest-mismatched entries force the replace first.
   def skip_existing_asset?(release, filename)
     return false unless find_asset(release, filename)
+    return false if uncommitted_asset?(release, filename)
     return false if replace_existing_asset?(release, filename)
+    return false if digest_mismatch_without_previous_entry?(release, filename)
 
     puts "Skipping upload of existing asset #{filename} (unchanged)"
+    true
+  end
+
+  # A listed asset whose upload never committed (state "starter" — the
+  # stub an interrupted publisher leaves behind) holds the name but
+  # serves no bytes: delete it so the caller re-uploads.
+  def uncommitted_asset?(release, filename)
+    asset = find_asset(release, filename)
+    return false unless asset.respond_to?(:state) && asset.state == "starter"
+
+    puts "Re-uploading #{filename}: the listed asset never committed (state \"starter\") — it serves no bytes"
+    remove_existing_asset(release, filename)
+    true
+  end
+
+  # A name the previous manifest carries no entry for (a first publish,
+  # an unreadable manifest, or a .tfs/.dll facet the manifest keys under
+  # its package) is verified against the listing's server-computed
+  # digest instead of trusted on presence; a digest-less listing keeps
+  # (conservative, as before).
+  def digest_mismatch_without_previous_entry?(release, filename)
+    return false unless previous_entry_for(filename).nil?
+
+    digest = listed_digest(release, filename)
+    current = current_shas[filename]
+    return false unless digest && current && digest != current
+
+    puts "Re-uploading #{filename}: no previous manifest entry and the listed digest " \
+         "differs (#{digest[0, 12]}… → #{current[0, 12]}…)"
+    remove_existing_asset(release, filename)
     true
   end
 
