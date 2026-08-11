@@ -597,7 +597,7 @@ jobs:
             echo "::warning::build failed — dumping ext extconf probe logs"
             docker commit "$cid" "tebako-failed-leg:$cid" >/dev/null 2>&1 && \
               docker run --rm "tebako-failed-leg:$cid" bash -c '
-                find /root/.build/o -path "*/ext/*/mkmf.log" | while read -r f; do
+                find /root/.build -path "*/ext/*/mkmf.log" | while read -r f; do
                   echo "=== $f ==="; tail -40 "$f"
                 done' || true
             docker rm -f "$cid" >/dev/null 2>&1 || true
