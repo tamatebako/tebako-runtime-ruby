@@ -410,11 +410,12 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
       expect(File.read(config_status)).to include("S[\"MAINLIBS\"]=\"-Wl,-ld_classic -ltebako-fs ")
     end
 
-    it "is a no-op for ruby < 3.3 off msys" do
-      original = "S[\"MAINLIBS\"]=\"-lz -lrt -lrt -ldl -lcrypt -lm -lpthread \"\n"
-      File.write(config_status, original)
+    it "substitutes MAINLIBS for ruby < 3.3 off msys too (the dln_c_loader_interpose era)" do
+      File.write(config_status, "S[\"MAINLIBS\"]=\"-lz -lrt -lrt -ldl -lcrypt -lm -lpthread \"\n")
       described_class.postconfigure("x86_64-linux-gnu", ruby_src, deps_lib_dir, "3.2.7")
-      expect(File.read(config_status)).to eq(original)
+      contents = File.read(config_status)
+      expect(contents).to include("S[\"MAINLIBS\"]=\"-Wl,--start-group")
+      expect(contents).not_to include("-lz -lrt -lrt -ldl -lcrypt -lm -lpthread")
     end
 
     it "warns instead of raising when the MAINLIBS line is absent" do
