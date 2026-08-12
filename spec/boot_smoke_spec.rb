@@ -105,7 +105,10 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
       Dir.mktmpdir do |dir|
         Dir.chdir(dir) do
           with_env("TEBAKO_SMOKE_RUBY_HEADERS" => nil) do
-            fixture = described_class.new
+            # a POSIX platform pin: the header-resolution naming is the
+            # behavior under test, and on an msys host the leg's own
+            # platform is refused by the phase-1 POSIX gate first
+            fixture = described_class.new(platform: TebakoRuntimeBuilder::Platform.new("x86_64-linux-gnu"))
             expect { fixture.image }.to raise_error(TebakoRuntimeBuilder::Error, /no stashed ruby headers.*tried:/m)
           end
         end
@@ -115,7 +118,7 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
     it "honors an explicit TEBAKO_SMOKE_RUBY_HEADERS miss with the same named error" do
       Dir.mktmpdir do |dir|
         with_env("TEBAKO_SMOKE_RUBY_HEADERS" => dir) do
-          fixture = described_class.new
+          fixture = described_class.new(platform: TebakoRuntimeBuilder::Platform.new("x86_64-linux-gnu"))
           expect { fixture.image }.to raise_error(TebakoRuntimeBuilder::Error, /no stashed ruby headers/)
         end
       end
