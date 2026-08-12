@@ -413,6 +413,48 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
       end
     end
 
+    describe "the exec interposition (spec 22, class E)" do
+      # The Class-B gem adapters' (jing/mn2pdf/mnconvert) deletion gate: a
+      # spawned JVM reads a VFS-resident jar through the inherited preload
+      # shim + mounts — no adapter extracts anything. The jar rides the
+      # InterposeFixture image next to the class-L libraries. Per the §3.1
+      # delivery matrix the shell-string form is an ELF capability: SIP
+      # strips the insertion at /bin/sh on macOS, and the probe pins that
+      # honest failure so a moved boundary fails loud. The array form with
+      # the absolute java path is the macOS consumption pattern. A leg
+      # with no JRE reports unsupported (sensed, never faked). Deferred on
+      # windows with windows class L.
+      let(:run) { smoke.run("class_e_exec") }
+
+      it "shell-string exec of a VFS-resident jar operand (ELF capability; SIP boundary pinned on macOS)" do
+        skip "class E is deferred on windows with windows class L" if smoke.platform.msys?
+
+        expect(run).to be_booted, boot_failure(run)
+        state = run.state("shell_string_exec")
+        expect(%w[ok unsupported]).to include(state),
+                                      "probe shell_string_exec detail: #{run.detail("shell_string_exec")}"
+        next if state == "unsupported" # no JRE on this leg
+
+        if smoke.platform.macos?
+          expect(run.detail("shell_string_exec")).to include("SIP boundary holds")
+        else
+          expect(run.detail("shell_string_exec")).to include("CLASS-E-EXEC-OK")
+        end
+      end
+
+      it "array-form exec with the absolute java path (the consumption pattern on every POSIX leg)" do
+        skip "class E is deferred on windows with windows class L" if smoke.platform.msys?
+
+        expect(run).to be_booted, boot_failure(run)
+        state = run.state("array_form_exec")
+        expect(%w[ok unsupported]).to include(state),
+                                      "probe array_form_exec detail: #{run.detail("array_form_exec")}"
+        next if state == "unsupported" # no JRE on this leg
+
+        expect(run.detail("array_form_exec")).to include("CLASS-E-EXEC-OK")
+      end
+    end
+
     describe "the era-2 release card (spec 18 C2, gated pre-upload)" do
       # Host-side validation of the manifest entry's contract fields
       # BEFORE the artifacts leave the leg -- the 0.16.2 corrupt-manifest

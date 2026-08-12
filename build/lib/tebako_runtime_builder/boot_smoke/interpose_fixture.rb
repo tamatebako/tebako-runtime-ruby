@@ -33,10 +33,12 @@ require "tmpdir"
 
 module TebakoRuntimeBuilder
   class BootSmoke
-    # The spec-22 phase-1 (class L, POSIX) boot-smoke fixture: a probe
-    # payload image carrying a VFS-resident native library with a
-    # dependency, and a hand-rolled ruby C extension that self-dlopens it.
-    # Mounted at /probe for the loader_interpose scenario (see
+    # The spec-22 boot-smoke fixture: a probe payload image carrying a
+    # VFS-resident native library with a dependency and a hand-rolled ruby
+    # C extension that self-dlopens it (class L, POSIX), plus the
+    # precompiled probe.jar a spawned JVM reads through the interposed
+    # surface (class E, §3.3 — a data file; no leg needs a JDK). Mounted at
+    # /probe for the loader_interpose and class_e_exec scenarios (see
     # boot_smoke/probe.rb for the checks it enables). The .c sources
     # mirror tamatebako/ruby ci/spec22/fixtures (the acceptance harness of
     # the dln_c_loader_interpose patch family); separate release chains,
@@ -84,9 +86,18 @@ module TebakoRuntimeBuilder
         lib_dir = File.join(dir, "tree", "lib")
         FileUtils.mkdir_p(lib_dir)
         compile_commands(lib_dir).each { |args| cc(args) }
+        stage_jar(lib_dir)
         image_path = File.join(dir, "spec22-probe.tfs")
         pack_image(File.join(dir, "tree"), image_path)
         image_path
+      end
+
+      # The class-E proof fixture (spec 22 §3.3): the PRECOMPILED jar rides
+      # as a data file next to its .java source and regeneration note — no
+      # CI leg needs a JDK to build it (running the check only needs a JRE,
+      # which the probe senses and skips on honestly when absent).
+      def stage_jar(lib_dir)
+        FileUtils.cp(File.join(FIXTURES_DIR, "probe.jar"), File.join(lib_dir, "probe.jar"))
       end
 
       def keep_image(image_path, tag)

@@ -37,7 +37,7 @@
 # line on stdout; the host-side BootSmoke::Run model and the spec class
 # judge. A check raises on a violated invariant rather than reporting a
 # false-looking ok, so "fail" always names the drifted syscall.
-module BootSmokeProbe
+module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
   MOUNT_POINT = ENV.fetch("TEBAKO_BOOT_MOUNT_POINT", "/__tfs__").freeze
   STUB = File.join(MOUNT_POINT, "local", "stub.rb").freeze
   # The spec-22 probe fixture's mount point (BootSmoke::InterposeFixture's
@@ -125,7 +125,16 @@ module BootSmokeProbe
     report("named_error") { named_error_check }
   end
 
-  SCENARIO_NAMES = %w[boot stat io bundler locks native_ext loader_interpose].freeze
+  # Spec 22 class E (§3): exec interposition — a spawned JVM reads a
+  # VFS-resident jar through the inherited preload shim + TEBAKO_TFS_MOUNTS
+  # (the handoff env), with no gem adapter extracting anything. The jar
+  # rides the InterposeFixture image next to the class-L libraries.
+  def self.class_e_exec
+    report("shell_string_exec") { shell_string_exec_check }
+    report("array_form_exec") { array_form_exec_check }
+  end
+
+  SCENARIO_NAMES = %w[boot stat io bundler locks native_ext loader_interpose class_e_exec].freeze
 
   def self.run
     scenario = ENV.fetch("TEBAKO_BOOT_PROBE", "")
@@ -443,6 +452,78 @@ module BootSmokeProbe
     return unless host_os =~ /mswin|mingw/
 
     raise NotImplementedError, "the loader-interpose scenario is POSIX-only in spec 22 phase 1 (host_os=#{host_os})"
+  end
+
+  # --- spec 22 class E checks -------------------------------------------
+
+  PROBE_JAR = File.join(PROBE_MOUNT, "lib", "probe.jar").freeze
+  JAR_MARKER = "CLASS-E-EXEC-OK"
+
+  # mnconvert's form: a shell string with a bare command name and a
+  # VFS-resident operand. Per the §3.1 delivery matrix this is an ELF
+  # capability: the handoff env's LD_PRELOAD injects /bin/sh itself, so
+  # the shell's execvp child inherits the VFS view. On macOS /bin/sh is
+  # an Apple platform binary — SIP strips DYLD_INSERT_LIBRARIES at its
+  # exec, the JVM never sees the memfs, and the jarfile answer is the
+  # honest host failure, pinned here so a moved boundary fails loud.
+  # Deferred on windows with windows class L (§7 order).
+  def self.shell_string_exec_check
+    class_e_posix_only!
+    java_or_skip!
+    out = `java -jar #{PROBE_JAR} 2>&1`.to_s
+    return jar_ran!(out, "shell-string") unless macos_host?
+
+    raise "the SIP boundary moved: a shell-string VFS operand RAN on macOS: #{out[0, 120]}" if out.include?(JAR_MARKER)
+
+    "SIP boundary holds (honest failure): #{out.strip[0, 100]}"
+  end
+
+  # The macOS consumption pattern (§3.1): the array form with the
+  # absolute interpreter path — no /bin/sh link, so the inherited
+  # DYLD_INSERT_LIBRARIES/LD_PRELOAD reaches the JVM directly (openjdk
+  # builds carry allow-dyld-environment-variables). JAVA_HOME wins over
+  # the PATH search: the macOS /usr/bin/java shim is an Apple binary and
+  # strips the insertion exactly like /bin/sh.
+  def self.array_form_exec_check
+    class_e_posix_only!
+    require "open3"
+    java = java_or_skip!
+    out, = Open3.capture2e(java, "-jar", PROBE_JAR)
+    jar_ran!(out, "array-form #{java}")
+  end
+
+  def self.jar_ran!(out, form)
+    unless out.include?(JAR_MARKER)
+      raise "the #{form} spawn did not run the VFS jar (the child saw no memfs): #{out.strip[0, 160]}"
+    end
+
+    "#{form}: #{out.strip[0, 100]}"
+  end
+
+  def self.java_or_skip!
+    java = host_java
+    raise NotImplementedError, "no java on this leg (JAVA_HOME unset, PATH search empty)" if java.nil?
+
+    java
+  end
+
+  def self.host_java
+    candidates = []
+    home = ENV.fetch("JAVA_HOME", nil)
+    candidates << File.join(home, "bin", "java") if home
+    candidates += ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).map { |dir| File.join(dir, "java") }
+    candidates.find { |candidate| File.executable?(candidate) && !File.directory?(candidate) }
+  end
+
+  def self.macos_host?
+    !(RbConfig::CONFIG["host_os"] =~ /darwin/).nil?
+  end
+
+  def self.class_e_posix_only!
+    host_os = RbConfig::CONFIG["host_os"]
+    return unless host_os =~ /mswin|mingw/
+
+    raise NotImplementedError, "class E is deferred on windows with windows class L (spec 22 §7 order)"
   end
 end
 

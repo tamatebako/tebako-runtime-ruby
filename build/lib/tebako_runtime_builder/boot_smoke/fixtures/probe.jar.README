@@ -1,0 +1,22 @@
+# probe.jar — spec 22 class-E proof fixture (§3.3), PRECOMPILED
+
+The boot-smoke fixture jar is a DATA FILE to the smoke: no CI leg needs a
+JDK. It rides the InterposeFixture image at `/probe/lib/probe.jar`; the
+probe spawns `java -jar` on it (shell-string and array-form) and asserts
+the `CLASS-E-EXEC-OK` marker, which only prints when the JVM read the jar
+through the interposed surface.
+
+Pinned content (verify after any checkout-level doubt):
+
+    sha256  124bd2d63eab9968722a75d6c71b349c9e4788a486d98b957b545c719f08ab6c
+
+Regeneration (from ProbeJar.java in this directory):
+
+    javac --release 11 ProbeJar.java
+    jar cfe probe.jar ProbeJar ProbeJar.class
+    java -jar probe.jar    # must print: CLASS-E-EXEC-OK file:/…/probe.jar
+
+`--release 11` keeps the bytecode loadable on every JVM the legs and the
+openjdk payload carry (class file 55). Jar metadata (mtimes) is NOT
+deterministic: a regenerated jar's sha256 differs — update the pin above
+in the same commit, and never regenerate on a leg.

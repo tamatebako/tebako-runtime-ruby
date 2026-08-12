@@ -43,12 +43,15 @@ module TebakoRuntimeBuilder
   # build leg's runtime-packages/, a tebako-home runtime cache dir -- or
   # the executable path itself. A bare layout tree or a mounted filesystem
   # image carries no interpreter, so it is never a valid root.
-  class BootSmoke
+  class BootSmoke # rubocop:disable Metrics/ClassLength
     autoload :Artifact,         File.expand_path("boot_smoke/artifact", __dir__)
     autoload :Run,              File.expand_path("boot_smoke/run", __dir__)
     autoload :InterposeFixture, File.expand_path("boot_smoke/interpose_fixture", __dir__)
 
-    SCENARIOS = %w[boot stat io bundler locks native_ext loader_interpose].freeze
+    SCENARIOS = %w[boot stat io bundler locks native_ext loader_interpose class_e_exec].freeze
+    # The scenarios that boot with the spec-22 probe fixture image mounted
+    # at /probe (class L's libraries + class E's jar ride the same image).
+    INTERPOSE_SCENARIOS = %w[loader_interpose class_e_exec].freeze
     BOOT_TIMEOUT = 60
     IMAGE_SUFFIXES = %w[.tfs .dwarfs].freeze
     # Sidecar markers the artifact set carries next to the executable (the
@@ -106,9 +109,9 @@ module TebakoRuntimeBuilder
     # the probe's expectation (TEBAKO_BOOT_MOUNT_POINT) follows it, so the
     # whole chain (driver mount + rbconfig fallback + layout grant) is
     # asserted end-to-end under the override root.
-    # The loader_interpose scenario additionally mounts the spec-22 probe
-    # fixture image at /probe (the driver triple form; no --tebako-entry —
-    # the smoke form still starts the interpreter with the RUBYOPT probe).
+    # The INTERPOSE_SCENARIOS additionally mount the spec-22 probe fixture
+    # image at /probe (the driver triple form; no --tebako-entry — the
+    # smoke form still starts the interpreter with the RUBYOPT probe).
     def run(scenario, mount_root_override: nil)
       unless SCENARIOS.include?(scenario)
         raise TebakoRuntimeBuilder::Error.new(
@@ -117,7 +120,7 @@ module TebakoRuntimeBuilder
       end
 
       materialize_ruby_dll
-      extra_argv = scenario == "loader_interpose" ? interpose_argv : []
+      extra_argv = INTERPOSE_SCENARIOS.include?(scenario) ? interpose_argv : []
       out, err, status = boot(scenario, mount_root_override: mount_root_override, extra_argv: extra_argv)
       Run.new(scenario: scenario, stdout: out, stderr: err, status: status)
     end
