@@ -182,9 +182,16 @@ jobs:
               rm -rf "$work"
               TFS_CACHE_DIR="$pristine" tools/apply "$v" "$work" --platform "$platform" --pass "$p"
               # The chain gate's whole point: the interpose block MUST be
-              # in every rolled tree (it is scenario-independent source).
-              grep -q tfs_dlopen_route "$work/tfs-ruby-$v-src/dln.c" || {
-                echo "::error::$asset rolled without the loader-interpose block"; exit 1; }
+              # in every ELF rolled tree (it is scenario-independent
+              # source). msys is exempt BY DESIGN: PatchSelection drops a
+              # generic patch when an msys-specific one targets the same
+              # file (dln_c_dlmap_msys owns dln.c there), and the block is
+              # dead code on Windows anyway (no USE_DLN_DLOPEN) — Windows
+              # native loading is a different spec-22 class.
+              if [ "${{ inputs.platform }}" != "windows" ]; then
+                grep -q tfs_dlopen_route "$work/tfs-ruby-$v-src/dln.c" || {
+                  echo "::error::$asset rolled without the loader-interpose block"; exit 1; }
+              fi
               tar -czf "$out/$asset" -C "$work" "tfs-ruby-$v-src"
               rm -rf "$work"
               echo "rolled $asset"
