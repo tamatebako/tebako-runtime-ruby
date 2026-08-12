@@ -371,7 +371,14 @@ module TebakoRuntimeBuilder
         hotfix_msys!(ruby_source_dir, deps_lib_dir, rv) if platform.msys?
         pin_autotools_timestamps!(ruby_source_dir)
         build_toolchain_stub(platform, deps_lib_dir, mount_point, cc, rv)
-        stage_static_libffi!(deps_lib_dir, cc) if platform.linux_gnu? || platform.linux_musl?
+        # gnu only: alpine's libffi.a is non-PIC (R_X86_64_PC32 against
+        # ffi_type_sint32 at the fiddle.so link), so musl keeps the shared
+        # link -- the musl runtime is host-dynamic BY DESIGN (PT_INTERP
+        # ld-musl + the documented musl >= 1.2.3 / alpine >= 3.17 symbol
+        # floor, TODO.v2-1/11); a PIC static libffi is a deps-build
+        # decision of its own. msys stages nothing (the SOLIBS
+        # substitution absorbs libffi into the DLL).
+        stage_static_libffi!(deps_lib_dir, cc) if platform.linux_gnu?
       end
 
       def postconfigure(ostype, ruby_source_dir, deps_lib_dir, ruby_ver)
@@ -1001,19 +1008,18 @@ module TebakoRuntimeBuilder
         TebakoRuntimeBuilder::BuildHelpers.run_with_capture(params)
       end
 
-      # spec 22 phase 1 (the gnu/musl boot smoke runs OUTSIDE the build
-      # container -- on the ubuntu host / in a plain alpine): ruby 4.0's
-      # fiddle is a bundled gem, not an in-tree ext the exe's -l:libffi.a
-      # absorbs, and its extconf links the toolchain's SHARED libffi --
-      # DT_NEEDED libffi.so.N makes the shipped runtime depend on the
-      # host's libffi, which the audience rule forbids (the ubuntu-24.04
-      # smoke host has no libffi.so.7; the alpine smoke container masks
-      # the same defect on musl). RUBY_L_FLAGS puts the deps lib dir
+      # spec 22 phase 1 (the gnu boot smoke runs OUTSIDE the build
+      # container -- on the ubuntu host): ruby 4.0's fiddle is a bundled
+      # gem, not an in-tree ext the exe's -l:libffi.a absorbs, and its
+      # extconf links the toolchain's SHARED libffi -- DT_NEEDED
+      # libffi.so.N makes the shipped runtime depend on the host's
+      # libffi, which the audience rule forbids (the ubuntu-24.04 smoke
+      # host has no libffi.so.7). RUBY_L_FLAGS puts the deps lib dir
       # first on every ext link line, so staging the toolchain's STATIC
       # archive here makes fiddle.so embed libffi instead of importing
       # it. The toolchain query is compiler-driven (-print-file-name):
-      # no hardcoded per-platform library paths. msys stages nothing --
-      # the shared DLL absorbs libffi via the SOLIBS substitution.
+      # no hardcoded per-platform library paths. Called for linux-gnu
+      # only (see the call site for the musl/msys exclusions).
       def stage_static_libffi!(deps_lib_dir, cc)
         resolved = TebakoRuntimeBuilder::BuildHelpers.run_with_capture([cc, "-print-file-name=libffi.a"]).strip
         unless resolved.start_with?("/") && File.file?(resolved)

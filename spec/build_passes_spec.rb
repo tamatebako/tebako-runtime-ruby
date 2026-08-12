@@ -134,9 +134,16 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
       expect(File.binread(File.join(deps_lib_dir, "libffi.a"))).to eq("fixture-static-libffi")
     end
 
-    it "stages the static libffi archive on linux-musl as well (the alpine container masks it)" do
+    it "stages no libffi on musl (alpine's libffi.a is non-PIC; the musl runtime is host-dynamic by design)" do
+      # The alpine smoke container carries libffi.so.8, masking the shared
+      # link; embedding the archive instead fails the fiddle.so link
+      # (R_X86_64_PC32 against ffi_type_sint32). The musl runtime already
+      # requires a musl host userland of the right generation (PT_INTERP
+      # ld-musl, the documented musl >= 1.2.3 / alpine >= 3.17 symbol
+      # floor, TODO.v2-1/11) -- its libffi rides that same documented
+      # host dynamism until a PIC static libffi deps-build is decided.
       described_class.prepare("x86_64-linux-musl", ruby_src, deps_lib_dir, "3.3.7", "/__tfs__", cc_shim)
-      expect(File.binread(File.join(deps_lib_dir, "libffi.a"))).to eq("fixture-static-libffi")
+      expect(File.file?(File.join(deps_lib_dir, "libffi.a"))).to be(false)
     end
 
     it "fails loudly when the toolchain carries no static libffi" do
