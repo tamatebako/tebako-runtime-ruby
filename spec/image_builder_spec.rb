@@ -174,4 +174,44 @@ RSpec.describe TebakoRuntimeBuilder::ImageBuilder do
       expect(layout_for("4.0.6", mount_point: "A:/t")).not_to have_key("mount_root_override")
     end
   end
+
+  # Spec 22 §3: when the link unit provides the preload shim, deploy_preload
+  # stages it at lib/tebako/ and the layout declares exactly that in-image
+  # path (schema_minor 2 — the driver refuses a declaration whose file the
+  # image does not hold); an older link unit (no shim) declares nothing.
+  describe "#deploy_preload" do
+    def rust_libdir(with_shim: true)
+      dir = File.join(@dir, "rustlib")
+      FileUtils.mkdir_p(dir)
+      File.write(File.join(dir, "libtfs_preload.dylib"), "shim") if with_shim
+      dir
+    end
+
+    def staged_layout(libdir)
+      builder = builder_for("3.3.7")
+      TebakoRuntimeBuilder::BuildHelpers.with_env("TEBAKO_RUST_LIBDIR" => libdir) do
+        builder.deploy_preload
+      end
+      builder.deploy_layout
+      YAML.load_file(File.join(data_src_dir, "lib", "tebako", "layout.yaml"))
+    end
+
+    it "stages the shim and declares its in-image path in the layout" do
+      layout = staged_layout(rust_libdir)
+
+      expect(File.file?(File.join(data_src_dir, "lib", "tebako", "libtfs_preload.dylib"))).to be(true)
+      expect(layout["preload_shim"]).to eq("lib/tebako/libtfs_preload.dylib")
+    end
+
+    it "declares nothing when the link unit carries no shim" do
+      expect(staged_layout(rust_libdir(with_shim: false))).not_to have_key("preload_shim")
+    end
+
+    it "stages nothing and declares nothing when TEBAKO_RUST_LIBDIR is unset" do
+      layout = staged_layout(nil)
+
+      expect(layout).not_to have_key("preload_shim")
+      expect(File.exist?(File.join(data_src_dir, "lib", "tebako", "libtfs_preload.dylib"))).to be(false)
+    end
+  end
 end

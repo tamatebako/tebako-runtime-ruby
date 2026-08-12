@@ -83,6 +83,10 @@ module TebakoRuntimeBuilder
       @tbd = File.join(@data_src_dir, "bin")
       @tgd = File.join(@data_src_dir, "lib", "ruby", "gems", @ruby_ver.api_version)
       @tld = File.join(@data_src_dir, "local")
+      # The preload shim's in-image path once deploy_preload has staged it
+      # (nil when absent): deploy_layout declares exactly what was staged —
+      # truthful by construction (spec 22 §3, layout schema_minor 2).
+      @preload_shim_in_image = nil
     end
 
     def build(stub_dir)
@@ -102,7 +106,10 @@ module TebakoRuntimeBuilder
     # interpreter_api_version; the additive mount_root_override grant
     # (schema_minor 1) is emitted by deploy_layout only when the source
     # tarball declares the capability (the loadpath patch — the grant
-    # must be true exactly when the interpreter follows TEBAKO_MOUNT_ROOT).
+    # must be true exactly when the interpreter follows TEBAKO_MOUNT_ROOT);
+    # the additive preload_shim grant (schema_minor 2) is emitted only
+    # when deploy_preload actually staged the shim — the driver refuses
+    # (exit 78) a declaration whose file the image does not hold.
     LAYOUT_DECLARATION = {
       "schema" => "layout",
       "schema_version" => 1,
@@ -119,8 +126,35 @@ module TebakoRuntimeBuilder
         "interpreter_api_version" => @ruby_ver.api_version
       )
       declaration["mount_root_override"] = true if @mount_root_override
+      declaration["preload_shim"] = @preload_shim_in_image if @preload_shim_in_image
       File.write(path, YAML.dump(declaration))
       puts "   ... env image layout declaration: #{path}"
+    end
+
+    # The v2 preload shim rides the env image at /lib/tebako/ (the ruby
+    # spawn hook materializes it into spawned children — spec 07 §8; its
+    # in-image path is declared to the driver via the layout's
+    # preload_shim grant, which flows to the hook as TEBAKO_PRELOAD_SHIM —
+    # spec 22 §3). It ships inside the link unit (tools/stage_link_unit);
+    # its absence only means an older link unit — the exec path degrades
+    # to VFS-less children with a note, never a hard failure, and the
+    # layout then declares nothing.
+    def deploy_preload # rubocop:disable Metrics/MethodLength
+      libdir = ENV.fetch("TEBAKO_RUST_LIBDIR", nil)
+      return if libdir.nil?
+
+      name = @platform.macos? ? "libtfs_preload.dylib" : "libtfs_preload.so"
+      src = File.join(libdir, name)
+      unless File.file?(src)
+        puts "   ... no #{name} in TEBAKO_RUST_LIBDIR (#{libdir}) — " \
+             "spawned children of memfs binaries get no VFS (an older link unit)"
+        return
+      end
+      dest = File.join(@data_src_dir, "lib", "tebako")
+      FileUtils.mkdir_p(dest)
+      FileUtils.cp(src, File.join(dest, name))
+      @preload_shim_in_image = File.join("lib", "tebako", name)
+      puts "   ... preload shim: #{File.join(dest, name)}"
     end
 
     private
@@ -183,28 +217,6 @@ module TebakoRuntimeBuilder
       deploy_preload
       deploy_layout
       TebakoRuntimeBuilder::Stripper.strip(@platform, @data_src_dir)
-    end
-
-    # The v2 preload shim rides the env image at /lib/tebako/ (the ruby
-    # spawn hook materializes it into spawned children — spec 07 §8). It
-    # ships inside the link unit (tools/stage_link_unit); its absence
-    # only means an older link unit — the exec path degrades to
-    # VFS-less children with a note, never a hard failure.
-    def deploy_preload # rubocop:disable Metrics/MethodLength
-      libdir = ENV.fetch("TEBAKO_RUST_LIBDIR", nil)
-      return if libdir.nil?
-
-      name = @platform.macos? ? "libtfs_preload.dylib" : "libtfs_preload.so"
-      src = File.join(libdir, name)
-      unless File.file?(src)
-        puts "   ... no #{name} in TEBAKO_RUST_LIBDIR (#{libdir}) — " \
-             "spawned children of memfs binaries get no VFS (an older link unit)"
-        return
-      end
-      dest = File.join(@data_src_dir, "lib", "tebako")
-      FileUtils.mkdir_p(dest)
-      FileUtils.cp(src, File.join(dest, name))
-      puts "   ... preload shim: #{File.join(dest, name)}"
     end
 
     # The deploy gem commands run the toolchain ruby from the recreated
