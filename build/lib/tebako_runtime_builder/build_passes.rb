@@ -347,7 +347,7 @@ module TebakoRuntimeBuilder
     MSYS_DLN_DLMAP_MARKER = "tfs_dlmap_extract"
 
     class << self # rubocop:disable Metrics/ClassLength
-      def prepare(ostype, ruby_source_dir, deps_lib_dir, ruby_ver, mount_point, cc = "cc") # rubocop:disable Metrics/ParameterLists
+      def prepare(ostype, ruby_source_dir, deps_lib_dir, ruby_ver, mount_point, cc = "cc") # rubocop:disable Metrics/ParameterLists,Metrics/MethodLength
         puts "-- Running prepare script"
 
         platform = TebakoRuntimeBuilder::Platform.new(ostype)
@@ -371,6 +371,7 @@ module TebakoRuntimeBuilder
         hotfix_msys!(ruby_source_dir, deps_lib_dir, rv) if platform.msys?
         pin_autotools_timestamps!(ruby_source_dir)
         build_toolchain_stub(platform, deps_lib_dir, mount_point, cc, rv)
+        stage_static_libffi!(deps_lib_dir, cc) if platform.linux_gnu? || platform.linux_musl?
       end
 
       def postconfigure(ostype, ruby_source_dir, deps_lib_dir, ruby_ver)
@@ -998,6 +999,30 @@ module TebakoRuntimeBuilder
 
         params = [patchelf, "--remove-needed-version", "libpthread.so.0", "GLIBC_PRIVATE", src_name]
         TebakoRuntimeBuilder::BuildHelpers.run_with_capture(params)
+      end
+
+      # spec 22 phase 1 (the gnu/musl boot smoke runs OUTSIDE the build
+      # container -- on the ubuntu host / in a plain alpine): ruby 4.0's
+      # fiddle is a bundled gem, not an in-tree ext the exe's -l:libffi.a
+      # absorbs, and its extconf links the toolchain's SHARED libffi --
+      # DT_NEEDED libffi.so.N makes the shipped runtime depend on the
+      # host's libffi, which the audience rule forbids (the ubuntu-24.04
+      # smoke host has no libffi.so.7; the alpine smoke container masks
+      # the same defect on musl). RUBY_L_FLAGS puts the deps lib dir
+      # first on every ext link line, so staging the toolchain's STATIC
+      # archive here makes fiddle.so embed libffi instead of importing
+      # it. The toolchain query is compiler-driven (-print-file-name):
+      # no hardcoded per-platform library paths. msys stages nothing --
+      # the shared DLL absorbs libffi via the SOLIBS substitution.
+      def stage_static_libffi!(deps_lib_dir, cc)
+        resolved = TebakoRuntimeBuilder::BuildHelpers.run_with_capture([cc, "-print-file-name=libffi.a"]).strip
+        unless resolved.start_with?("/") && File.file?(resolved)
+          raise TebakoRuntimeBuilder::Error.new(
+            "the toolchain carries no static libffi (`#{cc} -print-file-name=libffi.a` resolved '#{resolved}') -- " \
+            "the bundled-gem fiddle would link the host's shared libffi into the shipped runtime", 130
+          )
+        end
+        FileUtils.cp(resolved, File.join(deps_lib_dir, "libffi.a"))
       end
 
       def verify_tarball!(tarball, sha256)
