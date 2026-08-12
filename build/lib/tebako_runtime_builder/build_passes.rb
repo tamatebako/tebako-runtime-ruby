@@ -378,9 +378,11 @@ module TebakoRuntimeBuilder
 
         platform = TebakoRuntimeBuilder::Platform.new(ostype)
         rv = TebakoRuntimeBuilder::RubyVersion.new(ruby_ver)
-        # The gem gates the config.status substitution to ruby 3.3+ off msys
-        # (Pass2NonMSysPatch); msys always substitutes (Pass2MSysPatch)
-        return unless platform.msys? || rv.ruby33?
+        # Every platform now substitutes. The gem gated non-msys to ruby
+        # 3.3+ (Pass2NonMSysPatch), but the dln_c_loader_interpose era
+        # (tamatebako/ruby v0.2.19+) put unresolved tebako_fs_* references
+        # into libruby-static.a on every line, so every mkmf link probe —
+        # regardless of ruby version — needs the closure in MAINLIBS.
 
         mlibs_model = TebakoRuntimeBuilder::Mlibs.new(platform, deps_lib_dir)
         mlibs = mlibs_model.compute(rv, with_compression: false)
