@@ -158,9 +158,13 @@ module TebakoRuntimeBuilder
     end
 
     def read_file_url(uri)
-      File.binread(uri.path)
+      # RFC 8089: a Windows drive letter rides the file URL path as
+      # /D:/...; a mingw/ucrt ruby needs D:/... (the slashed form is
+      # EINVAL to File.binread). This is URL decoding, not a fallback.
+      path = uri.path.sub(%r{\A/([A-Za-z]:/)}, '\1')
+      File.binread(path)
     rescue Errno::ENOENT
-      raise TebakoRuntimeBuilder::Error.new("not found: #{uri.path}", 122)
+      raise TebakoRuntimeBuilder::Error.new("not found: #{path}", 122)
     end
 
     def http_get(uri)

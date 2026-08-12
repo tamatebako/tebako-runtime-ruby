@@ -56,6 +56,12 @@ RSpec.describe TebakoRuntimeBuilder::SourceFetcher do
     expect { fetcher.fetch("3.3.7") }.to raise_error(TebakoRuntimeBuilder::Error, /not found/)
   end
 
+  it "decodes an RFC 8089 drive-letter file URL (file:///D:/...) as the Windows path" do
+    drive_fetcher = described_class.new(mirror: "file:///D:/spec22-nonexistent", cache_dir: cache_dir)
+    expect { drive_fetcher.fetch("3.3.7") }
+      .to raise_error(TebakoRuntimeBuilder::Error, %r{not found: D:/spec22-nonexistent/SHA256SUMS})
+  end
+
   it "names assets per the tamatebako/ruby release contract" do
     expect(fetcher.asset_name("4.0.6")).to eq("tfs-ruby-4.0.6-src.tar.gz")
   end
