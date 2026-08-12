@@ -139,7 +139,7 @@ jobs:
     # repository_dispatch) and at least one platform actually built.
     if: ${{ always() && !cancelled() && (github.event_name == 'repository_dispatch' || inputs.publish || inputs.audit) && (needs.windows.result == 'success' || needs.linux-gnu.result == 'success' || needs.linux-musl.result == 'success' || needs.macos.result == 'success') }}
     env:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_TOKEN: ${{ secrets.TEBAKO_CI_PAT_TOKEN || secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
