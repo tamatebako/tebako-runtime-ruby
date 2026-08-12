@@ -102,9 +102,15 @@ class MatrixComputer # rubocop:disable Metrics/ClassLength
 
   # The production fetcher seam: one SourceFetcher per pinned release (the
   # pin owns its SHA256SUMS). release nil = the repo's current pin.
+  # TEBAKO_SRC_MIRROR redirects ONLY the current pin's reads (the spec-22
+  # chain gate: the matrix's src_sha256 keys come from the workflow's own
+  # source roll). Previous-pin diff reads keep the published release URL —
+  # the mirror carries one roll, not a release history.
   def default_fetcher(release)
     args = { cache_dir: Dir.mktmpdir("tfs-sums-") }
     args[:release] = release if release
+    mirror = ENV.fetch("TEBAKO_SRC_MIRROR", nil)
+    args[:mirror] = mirror if release.nil? && mirror && !mirror.empty?
     TebakoRuntimeBuilder::SourceFetcher.new(**args)
   end
 

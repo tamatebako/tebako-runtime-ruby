@@ -107,8 +107,161 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # CHAIN GATE (spec 22 phase 1): this branch's legs build against the
+  # DRAFT chain, never the published pins — the ruby source roll from
+  # tamatebako/ruby@feat/dln-c-loader-interpose (PR #55), the v2 driver /
+  # link unit from tamatebako/tebako@feat/tfs-mount-of (PR #396), and the
+  # adapter-less tebako-runtime gem 0.8.2 from
+  # tamatebako/tebako-runtime@feat/drop-class-l-adapters (PR #28). Replace
+  # with the published pins when the chain lands (in order: ruby release,
+  # tebako release, gem release — then this file's chain jobs and the
+  # --src-mirror / GEMRC plumbing come out again).
+  #
+  # The ruby source roll for THIS platform's scenario, packed exactly as a
+  # tamatebako/ruby release lays out its assets (the asset naming mirrors
+  # SourceFetcher.scenario_asset_names — the consumer-side owner). Cached
+  # on the ruby branch's head sha: a re-run without a ruby-branch move is
+  # a restore, never a re-roll.
+  roll-source:
+    name: Roll the chain-gated ruby source (${{ inputs.platform }})
+    runs-on: ubuntu-24.04
+    outputs:
+      ruby-sha: ${{ steps.chain-sha.outputs.ruby }}
+    steps:
+      - name: Resolve the chain branch heads
+        id: chain-sha
+        run: |
+          ruby_sha=$(git ls-remote https://github.com/tamatebako/ruby.git refs/heads/feat/dln-c-loader-interpose | cut -f1)
+          [ -n "$ruby_sha" ] || { echo "::error::cannot resolve tamatebako/ruby@feat/dln-c-loader-interpose"; exit 1; }
+          echo "ruby=$ruby_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the roll
+        id: roll-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .build/spec22-roll
+          key: spec22-src-roll-v1-${{ inputs.platform }}-${{ steps.chain-sha.outputs.ruby }}
+
+      - name: Checkout tamatebako/ruby (the chain source)
+        if: steps.roll-cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: tamatebako/ruby
+          ref: feat/dln-c-loader-interpose
+          path: ruby-src
+
+      - name: Setup Ruby
+        if: steps.roll-cache.outputs.cache-hit != 'true'
+        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+        with:
+          ruby-version: 3.3
+          bundler-cache: false
+
+      - name: Roll the source tarballs
+        if: steps.roll-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          out="$PWD/.build/spec22-roll/dist"
+          pristine="$PWD/.build/spec22-roll/pristine"
+          mkdir -p "$out" "$pristine"
+          case "${{ inputs.platform }}" in
+            windows)    platform=msys;       passes="1 2" ;;
+            linux-musl) platform=linux-musl; passes="2" ;;
+            *)          platform=linux-gnu;  passes="2" ;;
+          esac
+          cd ruby-src
+          for v in $(ruby -ryaml -e 'puts YAML.load_file("versions.yml")["versions"].keys'); do
+            for p in $passes; do
+              case "${{ inputs.platform }}" in
+                windows)    asset="tfs-ruby-$v-src-msys-pass$p.tar.gz" ;;
+                linux-musl) asset="tfs-ruby-$v-src-linux-musl.tar.gz" ;;
+                *)          asset="tfs-ruby-$v-src.tar.gz" ;;
+              esac
+              [ -f "$out/$asset" ] && continue
+              work="$PWD/.roll-work/$v-p$p"
+              rm -rf "$work"
+              TFS_CACHE_DIR="$pristine" tools/apply "$v" "$work" --platform "$platform" --pass "$p"
+              # The chain gate's whole point: the interpose block MUST be
+              # in every rolled tree (it is scenario-independent source).
+              grep -q tfs_dlopen_route "$work/tfs-ruby-$v-src/dln.c" || {
+                echo "::error::$asset rolled without the loader-interpose block"; exit 1; }
+              tar -czf "$out/$asset" -C "$work" "tfs-ruby-$v-src"
+              rm -rf "$work"
+              echo "rolled $asset"
+            done
+          done
+          ( cd "$out" && sha256sum *.tar.gz > SHA256SUMS )
+
+      - name: Upload the roll
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: spec22-src-roll-${{ inputs.platform }}
+          path: .build/spec22-roll/dist
+          retention-days: 1
+
+  # The adapter-less tebako-runtime gem (PR #28) staged as a file:// gem
+  # repo: the legs' deploy does an unpinned `gem install tebako-runtime`
+  # and rubygems.org still serves the adapter-ful 0.8.1 — GEMRC points the
+  # install here instead. Cached on the gem branch's head sha.
+  gem-repo:
+    name: Stage the adapter-less gem repo
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Resolve the gem branch head
+        id: chain-sha
+        run: |
+          gem_sha=$(git ls-remote https://github.com/tamatebako/tebako-runtime.git refs/heads/feat/drop-class-l-adapters | cut -f1)
+          [ -n "$gem_sha" ] || { echo "::error::cannot resolve tamatebako/tebako-runtime@feat/drop-class-l-adapters"; exit 1; }
+          echo "gem=$gem_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the gem repo
+        id: gem-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .build/spec22-gem-repo
+          key: spec22-gem-repo-v1-${{ steps.chain-sha.outputs.gem }}
+
+      - name: Checkout tamatebako/tebako-runtime (the chain gem)
+        if: steps.gem-cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: tamatebako/tebako-runtime
+          ref: feat/drop-class-l-adapters
+          path: gem-src
+
+      - name: Setup Ruby
+        if: steps.gem-cache.outputs.cache-hit != 'true'
+        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+        with:
+          ruby-version: 3.3
+          bundler-cache: false
+
+      - name: Build + index the gem repo
+        if: steps.gem-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          repo="$PWD/.build/spec22-gem-repo"
+          mkdir -p "$repo/gems"
+          cd gem-src
+          gem build tebako-runtime.gemspec
+          built=$(ls tebako-runtime-*.gem | head -1)
+          # The chain identity: adapter-less is the 0.8.2 line, never 0.8.1.
+          [ "${built#tebako-runtime-}" != "0.8.1.gem" ] || {
+            echo "::error::the chain gem must not carry the published 0.8.1 identity"; exit 1; }
+          cp "$built" "$repo/gems/"
+          gem generate_index --directory "$repo"
+          ls "$repo/gems"
+
+      - name: Upload the gem repo
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: spec22-gem-repo
+          path: .build/spec22-gem-repo
+          retention-days: 1
+
   compute:
     name: Compute ${{ inputs.platform }} matrix
+    needs: roll-source
     runs-on: ubuntu-latest
     outputs:
       run: ${{ steps.matrix.outputs.run }}
@@ -190,7 +343,8 @@ jobs:
         with:
           repository: tamatebako/tebako
           path: tebako-product
-          ref: main
+          # CHAIN GATE: the spec-22 driver (PR #396) until the chain lands.
+          ref: feat/tfs-mount-of
 
       - name: Check contract version agreement
         env:
@@ -198,11 +352,25 @@ jobs:
         run: |
           ./scripts/check_contract_version.rb
 
+      # CHAIN GATE: the matrix's per-version src_sha256 cache keys must
+      # come from the roll-source job's SHA256SUMS (the draft chain's
+      # bytes), never the published pin's — a key computed from the
+      # published sha would restore prefixes built from the WRONG source.
+      # compute_matrix.rb reads TEBAKO_SRC_MIRROR for the CURRENT pin only;
+      # previous-pin diff reads stay on the published release.
+      - name: Download the chain-gated source roll
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: spec22-src-roll-${{ inputs.platform }}
+          path: .build/spec22-src-roll
+
       - name: Compute the platform matrix from the dependency tree
         id: matrix
         env:
           MATRIX_RUBY_FILTER: ${{ inputs.ruby_filter }}
           MATRIX_ARCH_FILTER: ${{ inputs.arch_filter }}
+          # CHAIN GATE: src_sha256 from the roll, not the published pin.
+          TEBAKO_SRC_MIRROR: file://${{ github.workspace }}/.build/spec22-src-roll
         run: |
           ./scripts/compute_matrix.rb --platform ${{ inputs.platform }}
 
@@ -288,7 +456,8 @@ jobs:
         with:
           repository: tamatebako/tebako
           path: tebako-rs
-          ref: main
+          # CHAIN GATE: the spec-22 driver (PR #396) until the chain lands.
+          ref: feat/tfs-mount-of
       - name: Checkout dwarfs-rs (link-unit sibling path dep)
         if: steps.published.outputs.hit != 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -472,7 +641,7 @@ jobs:
 
   build:
     name: Build runtime package for ${{ matrix.env.os }} / ${{ matrix.env.arch }} / Ruby ${{ matrix.ruby.version }}
-    needs: [compute, preflight-containers, link-unit]
+    needs: [compute, preflight-containers, link-unit, roll-source, gem-repo]
     # Audit runs publish-shaped verification without spending a build.
     # always() + the explicit result check: a skipped link-unit (the
     # audit path) must not take the legs down with it, and a link-unit
@@ -565,6 +734,42 @@ jobs:
           compgen -G "$unit/closure/*.a" > /dev/null || { echo "::error::$unit carries no closure/*.a — the link-unit job's artifact is incomplete"; exit 1; }
           echo "staged link unit OK: $(find "$unit/closure" -name '*.a' | wc -l) closure archives"
 
+      # CHAIN GATE: the draft chain's source roll + the adapter-less gem
+      # repo (the roll-source / gem-repo jobs above). build_runtime takes
+      # the roll via --src-mirror; the deploy's unpinned `gem install
+      # tebako-runtime` resolves the adapter-less 0.8.2 via GEMRC (per-leg
+      # variants: the container reads /mnt/w paths, msys needs a drive
+      # path).
+      - name: Download the chain-gated source roll
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: spec22-src-roll-${{ inputs.platform }}
+          path: .build/spec22-src-roll
+
+      - name: Download the adapter-less gem repo
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: spec22-gem-repo
+          path: .build/spec22-gem-repo
+
+      - name: Assert the chain artifacts are complete
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s .build/spec22-src-roll/SHA256SUMS || { echo "::error::the source roll carries no SHA256SUMS"; exit 1; }
+          compgen -G ".build/spec22-src-roll/tfs-ruby-${{ matrix.ruby.version }}-src*.tar.gz" > /dev/null || {
+            echo "::error::the source roll carries no tarball for ruby ${{ matrix.ruby.version }} (${{ inputs.platform }} scenario)"; exit 1; }
+          compgen -G ".build/spec22-gem-repo/gems/tebako-runtime-0.8.2.gem" > /dev/null || {
+            echo "::error::the gem repo carries no tebako-runtime 0.8.2 gem"; exit 1; }
+          echo "chain artifacts OK: $(grep -c 'tar.gz' .build/spec22-src-roll/SHA256SUMS) rolled tarballs"
+
+      - name: Write the chain gemrc variants
+        shell: bash
+        run: |
+          printf ':sources:\n- file:///mnt/w/.build/spec22-gem-repo\ngem: --no-document\n' > .build/gemrc-container
+          printf ':sources:\n- file://%s/.build/spec22-gem-repo\ngem: --no-document\n' "$PWD" > .build/gemrc-host
+          echo "wrote .build/gemrc-{container,host}"
+
       - name: Build runtime using ci container
         if: matrix.env.container != null
         run: |
@@ -598,11 +803,13 @@ jobs:
           cid="leg-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ matrix.ruby.version }}-${{ matrix.env.arch }}"
           if ! docker run --name "$cid" -v ${{github.workspace}}:/mnt/w \
             -e TEBAKO_RUST_LIBDIR=/mnt/w/.build/link-unit \
+            -e GEMRC=/mnt/w/.build/gemrc-container \
             -e runtime="$runtime" \
             -t $container \
             bash -c '
             /mnt/w/tools/build_runtime --ruby "${{ matrix.ruby.version }}" --output "/mnt/w/runtime-packages/$runtime" \
-            --prefix /root/.build ${{ matrix.env.os == 'linux-gnu' && '--patchelf' || '' }} && \
+            --prefix /root/.build --src-mirror file:///mnt/w/.build/spec22-src-roll --src-release spec22-chain \
+            ${{ matrix.env.os == 'linux-gnu' && '--patchelf' || '' }} && \
             mkdir -p /mnt/w/.build/smoke-headers /mnt/w/.build/smoke-tools && \
             cp -a /root/.build/deps/stash_*/include/. /mnt/w/.build/smoke-headers/ && \
             { cp -a /root/.build/deps/bin/mkdwarfs /mnt/w/.build/smoke-tools/ 2>/dev/null || true; }'; then
@@ -669,21 +876,30 @@ jobs:
         env:
           # The staged v2 link unit (downloaded from the link-unit job above).
           TEBAKO_RUST_LIBDIR: ${{ github.workspace }}/.build/link-unit
+          # CHAIN GATE: the adapter-less gem from the staged file:// repo.
+          GEMRC: ${{ github.workspace }}/.build/gemrc-host
         run: |
           echo "Building runtime for Ruby ${{ matrix.ruby.version }} on ${{ matrix.env.os }}/${{ matrix.env.arch }}"
           runtime="tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
-          tools/build_runtime --ruby "${{ matrix.ruby.version }}" --output "runtime-packages/$runtime" --prefix .build
+          tools/build_runtime --ruby "${{ matrix.ruby.version }}" --output "runtime-packages/$runtime" --prefix .build \
+            --src-mirror "file://${{ github.workspace }}/.build/spec22-src-roll" --src-release spec22-chain
 
       - name: Build runtime on Windows
         if: matrix.env.container == null && matrix.env.os == 'windows'
         shell: msys2 {0}
-        env:
-          TEBAKO_RUST_LIBDIR: ${{ github.workspace }}/.build/link-unit
         run: |
           git config --global core.longpaths true
           echo "Building runtime for Ruby ${{ matrix.ruby.version }} on ${{ matrix.env.os }}/${{ matrix.env.arch }}"
           runtime="tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
-          tools/build_runtime --ruby "${{ matrix.ruby.version }}" --output "runtime-packages/$runtime" --prefix .build
+          # CHAIN GATE: the gemrc's file:// URL and GEMRC itself ride the
+          # drive-letter path (the deploy's gem is the built ucrt ruby — an
+          # msys /c/... path is unreadable to it).
+          wpath=$(pwd -W | tr '\\' '/')
+          printf ':sources:\n- file:///%s/.build/spec22-gem-repo\ngem: --no-document\n' "$wpath" > .build/gemrc-windows
+          GEMRC="$wpath/.build/gemrc-windows" \
+          TEBAKO_RUST_LIBDIR="${{ github.workspace }}/.build/link-unit" \
+          tools/build_runtime --ruby "${{ matrix.ruby.version }}" --output "runtime-packages/$runtime" --prefix .build \
+            --src-mirror "file:///$wpath/.build/spec22-src-roll" --src-release spec22-chain
 
       # Diagnostics for tamatebako/tebako#345: on failure, surface the
       # ext/openssl mkmf log (which lib/header did extconf pick, and why did
