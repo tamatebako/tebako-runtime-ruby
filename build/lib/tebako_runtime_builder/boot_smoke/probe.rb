@@ -133,6 +133,7 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
     report("shell_string_exec") { shell_string_exec_check }
     report("array_form_exec") { array_form_exec_check }
     report("host_shell_string") { host_shell_string_check }
+    report("jailed_exec") { jailed_exec_check }
   end
 
   SCENARIO_NAMES = %w[boot stat io bundler locks native_ext loader_interpose class_e_exec].freeze
@@ -528,6 +529,42 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
     java = java_or_skip!
     out, = Open3.capture2e(java, "-jar", PROBE_JAR)
     jar_ran!(out, "array-form #{java}")
+  end
+
+  # The platform floor's acceptance probe (spec 08 §2.1, spec 22 §3.4):
+  # the array form under a deny-default jail carrying the booted-child
+  # stack the journal-pinned chain names — a scratch rw + the JRE tree
+  # ro + the user-domain home read. Pre-floor this shape died with a
+  # SIGSEGV at getMacOSXLocale (phase-E dogfood, 2026-08-13); post-floor
+  # the JVM boots and runs the VFS jar, and every remaining journal
+  # denial is a non-fatal fallback (/etc/localtime, hsperfdata, the
+  # TMPDIR parent). The VFS jar needs no host grant (the shim serves it
+  # from the image); the JRE and home grants are the authored
+  # ingredients the floor deliberately never covers. The java path may
+  # be a symlink (PATH-discovered): the grant names the REAL JRE root.
+  # On linux the floor list is empty today — this leg is the evidence
+  # run that proves whether an entry is needed there.
+  def self.jailed_exec_check
+    class_e_posix_only!
+    require "open3"
+    require "tmpdir"
+    java = java_or_skip!
+    Dir.mktmpdir("tebako-jail-scratch") do |scratch|
+      jail = jailed_exec_jail_spec(scratch, java)
+      out, = Open3.capture2e({ "TEBAKO_JAIL" => jail }, java, "-jar", PROBE_JAR)
+      jar_ran!(out, "jailed array-form #{java}")
+    end
+  end
+
+  # The deny-default spec the jailed_exec probe binds: scratch rw + the
+  # real JRE root ro (the java path may be a PATH-discovered symlink) +
+  # the passwd-entry home read — the booted-child stack spec 22 §3.4's
+  # journal-pinned chain names over the floor's automatic surface.
+  def self.jailed_exec_jail_spec(scratch, java)
+    require "etc"
+    jre = File.expand_path("..", File.dirname(File.realpath(java)))
+    home = Etc.getpwuid ? Etc.getpwuid.dir : Dir.home
+    "deny;#{scratch}:#{scratch}:rw;#{jre}:#{jre}:ro;#{home}:#{home}:ro"
   end
 
   def self.jar_ran!(out, form)
