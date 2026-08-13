@@ -548,17 +548,116 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
     }
   C
 
+  # The macOS v2 walker: a byte-exact replay of jdk21u JLI_ParseManifest's
+  # full syscall walk (find_positions END scan → CEN directory scan →
+  # inflate_file's local-header + data reads), compiled in BOTH dyld binding
+  # vintages — chained fixups (the modern default) and classic-bound
+  # (`-mmacosx-version-min=10.13` forces LC_DYLD_INFO_ONLY, temurin's own
+  # vintage). darwin23 runs both green against the staged shim; the CI leg
+  # (darwin24) is where the real JLI_ParseManifest fails AFTER a successful
+  # interposed open, so the per-step prints + the vintage A/B name the exact
+  # syscall and whether the gap is binding-vintage-specific. Links -lz for
+  # the inflate replay (libz is always present on macOS).
+  XWALK_MAC_C = <<~C.freeze
+    #include <stdio.h>
+    #include <stdlib.h>
+    #include <string.h>
+    #include <fcntl.h>
+    #include <unistd.h>
+    #include <errno.h>
+    #include <zlib.h>
+    static unsigned int get2(const unsigned char *p) { return p[0] | ((unsigned int)p[1] << 8); }
+    static unsigned long get4(const unsigned char *p) {
+        return (unsigned long)p[0] | ((unsigned long)p[1] << 8) |
+               ((unsigned long)p[2] << 16) | ((unsigned long)p[3] << 24);
+    }
+    int main(int argc, char **argv) {
+        if (argc < 2) return 64;
+        int fd = open(argv[1], O_RDONLY);
+        if (fd < 0) { printf("XWALK-FAIL:open:errno=%d\\n", errno); return 66; }
+        printf("open-fd:%d\\n", fd);
+        off_t pos = lseek(fd, -22, SEEK_END);
+        if (pos < 0) { printf("XWALK-FAIL:lseek-end:errno=%d\\n", errno); return 65; }
+        unsigned char eb[22];
+        ssize_t n = read(fd, eb, 22);
+        if (n != 22) { printf("XWALK-FAIL:read-end:n=%zd:errno=%d\\n", n, errno); return 65; }
+        printf("lseek-end:%lld:end-sig:%02x%02x%02x%02x\\n", (long long)pos, eb[0], eb[1], eb[2], eb[3]);
+        if (get4(eb) != 0x06054b50UL) { printf("XWALK-FAIL:end-sig\\n"); return 65; }
+        unsigned long cenoff = get4(eb + 16);
+        unsigned long cenlen = get4(eb + 12);
+        if (lseek(fd, (off_t)cenoff, SEEK_SET) < 0) { printf("XWALK-FAIL:lseek-cen:errno=%d\\n", errno); return 65; }
+        unsigned char *cen = malloc(cenlen);
+        ssize_t got = read(fd, cen, cenlen);
+        if (got < 0 || (unsigned long)got != cenlen) { printf("XWALK-FAIL:read-cen:n=%zd:errno=%d\\n", got, errno); return 65; }
+        printf("cen:off=%lu:len=%lu:sig=%02x%02x%02x%02x\\n", cenoff, cenlen, cen[0], cen[1], cen[2], cen[3]);
+        if (get4(cen) != 0x02014b50UL) { printf("XWALK-FAIL:cen-sig\\n"); return 65; }
+        const char *want = "META-INF/MANIFEST.MF";
+        size_t wantlen = strlen(want);
+        unsigned char *p = cen, *end = cen + cenlen;
+        unsigned long lho = 0, csize = 0, usize = 0;
+        unsigned int method = 0;
+        int found = 0;
+        while (p + 46 <= end && get4(p) == 0x02014b50UL) {
+            unsigned int nl = get2(p + 28), el = get2(p + 30), cl = get2(p + 32);
+            if (nl == wantlen && memcmp(p + 46, want, wantlen) == 0) {
+                method = get2(p + 10); csize = get4(p + 20); usize = get4(p + 24);
+                lho = get4(p + 42); found = 1; break;
+            }
+            p += 46 + nl + el + cl;
+        }
+        if (!found) { printf("XWALK-FAIL:no-manifest\\n"); return 65; }
+        printf("entry:method=%u:csize=%lu:usize=%lu:lho=%lu\\n", method, csize, usize, lho);
+        if (lseek(fd, (off_t)lho, SEEK_SET) < 0) { printf("XWALK-FAIL:lseek-loc:errno=%d\\n", errno); return 65; }
+        unsigned char loc[30];
+        if (read(fd, loc, 30) != 30) { printf("XWALK-FAIL:read-loc:errno=%d\\n", errno); return 65; }
+        if (get4(loc) != 0x04034b50UL) { printf("XWALK-FAIL:loc-sig:%02x%02x%02x%02x\\n", loc[0], loc[1], loc[2], loc[3]); return 65; }
+        unsigned long dataoff = lho + 30 + get2(loc + 26) + get2(loc + 28);
+        if (lseek(fd, (off_t)dataoff, SEEK_SET) < 0) { printf("XWALK-FAIL:lseek-data:errno=%d\\n", errno); return 65; }
+        unsigned char *inb = malloc(csize);
+        ssize_t dn = read(fd, inb, csize);
+        if (dn < 0 || (unsigned long)dn != csize) { printf("XWALK-FAIL:read-data:n=%zd:errno=%d\\n", dn, errno); return 65; }
+        if (method == 8) {
+            unsigned char *outb = malloc(usize + 1);
+            z_stream zs; memset(&zs, 0, sizeof zs);
+            zs.next_in = inb; zs.avail_in = (unsigned int)csize;
+            if (inflateInit2(&zs, -MAX_WBITS) < 0) { printf("XWALK-FAIL:inflate-init\\n"); return 65; }
+            zs.next_out = outb; zs.avail_out = (unsigned int)usize;
+            if (inflate(&zs, Z_PARTIAL_FLUSH) < 0) { printf("XWALK-FAIL:inflate\\n"); return 65; }
+            outb[usize] = 0;
+            inflateEnd(&zs);
+            printf("inflated:%.40s\\n", outb);
+        }
+        close(fd);
+        puts("XWALK-OK");
+        return 0;
+    }
+  C
+
   def self.xwalk_probe
     require "open3"
     require "tmpdir"
     Dir.mktmpdir do |dir|
-      src = File.join(dir, "xwalk.c")
-      bin = File.join(dir, "xwalk")
-      File.write(src, XWALK_C)
       # the walker must be the runtime's own arch: on a Rosetta leg the
       # runner's cc defaults to the NATIVE arch, whose binaries cannot
       # load the staged shim slice at all (a useless diagnosis).
-      arch = macos_host? ? ["-arch", RbConfig::CONFIG.fetch("host_cpu", "x86_64")] : []
+      host_cpu = RbConfig::CONFIG.fetch("host_cpu", "x86_64")
+      arch = macos_host? ? ["-arch", host_cpu] : []
+      if macos_host?
+        src = File.join(dir, "xwalk.c")
+        File.write(src, XWALK_MAC_C)
+        chained = xwalk_compile(src, File.join(dir, "xwalk"), ["-O2", *arch], dir)
+        verdicts = ["xwalk-chained=#{xwalk_run(chained)}"]
+        if host_cpu == "x86_64"
+          classic = xwalk_compile(src, File.join(dir, "xwalk-classic"),
+                                  ["-O2", *arch, "-mmacosx-version-min=10.13"], dir)
+          verdicts << "xwalk-classic=#{xwalk_run(classic)}"
+        end
+        return verdicts.join(" ")
+      end
+
+      src = File.join(dir, "xwalk.c")
+      bin = File.join(dir, "xwalk")
+      File.write(src, XWALK_C)
       cc_out, cc_status = Open3.capture2e("cc", "-O2", *arch, "-o", bin, src)
       return "xwalk=cc-failed(#{cc_out.strip[0, 120]} rc=#{cc_status.exitstatus})" unless File.executable?(bin)
 
@@ -567,6 +666,27 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
     end
   rescue StandardError => e
     "xwalk=unknown(#{e.class}: #{e.message[0, 80]})"
+  end
+
+  def self.xwalk_compile(src, bin, flags, _dir)
+    require "open3"
+    cc_out, cc_status = Open3.capture2e("cc", *flags, "-o", bin, src, "-lz")
+    return "cc-failed(#{cc_out.strip[0, 100]} rc=#{cc_status.exitstatus})" unless File.executable?(bin)
+
+    bin
+  end
+
+  def self.xwalk_run(compiled)
+    require "open3"
+    return compiled unless compiled.is_a?(String) && File.executable?(compiled.to_s)
+
+    out, = Open3.capture2e(compiled, PROBE_JAR)
+    # the verdict is the last printed line: XWALK-OK or XWALK-FAIL:<step>;
+    # keep the fd too — it proves the open was interposed (flagged) or not.
+    lines = out.strip.lines.map(&:strip)
+    verdict = lines.last.to_s[0, 120]
+    fd = lines.find { |line| line.start_with?("open-fd:") }.to_s
+    [fd, verdict].reject(&:empty?).join(" ")
   end
 
   def self.java_or_skip!
