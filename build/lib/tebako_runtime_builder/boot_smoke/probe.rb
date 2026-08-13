@@ -494,10 +494,29 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
 
   def self.jar_ran!(out, form)
     unless out.include?(JAR_MARKER)
-      raise "the #{form} spawn did not run the VFS jar (the child saw no memfs): #{out.strip[0, 160]}"
+      # 400 chars: a failing JVM prints stage lines BEFORE the final Error
+      # (libzip's "mmap failed for CEN and END part of zip file" precedes
+      # the launcher's abort) — the window must keep the first of them.
+      raise "the #{form} spawn did not run the VFS jar (the child saw no memfs): #{out.strip[0, 400]} [#{shim_insertion_probe}]"
     end
 
     "#{form}: #{out.strip[0, 100]}"
+  end
+
+  # The one-bit fact that splits every class-E failure into "insertion
+  # stripped" (SIP/entitlement ate the preload var at the child's exec)
+  # vs "inserted but mis-serving" (a gap in the shim's interpose surface):
+  # re-run java -version with the loader's diagnostics on and look for the
+  # shim dylib in the load trace.
+  def self.shim_insertion_probe
+    require "open3"
+    java = host_java or return "shim-inserted=unknown(no-java)"
+    var = macos_host? ? "DYLD_PRINT_LIBRARIES" : "LD_DEBUG"
+    val = macos_host? ? "1" : "libs"
+    out, = Open3.capture2e({ var => val }, java, "-version")
+    out.include?("tfs_preload") ? "shim-inserted=yes" : "shim-inserted=NO"
+  rescue StandardError => e
+    "shim-inserted=unknown(#{e.class})"
   end
 
   def self.java_or_skip!
