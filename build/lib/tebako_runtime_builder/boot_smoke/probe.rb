@@ -497,7 +497,7 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
       # 400 chars: a failing JVM prints stage lines BEFORE the final Error
       # (libzip's "mmap failed for CEN and END part of zip file" precedes
       # the launcher's abort) — the window must keep the first of them.
-      raise "the #{form} spawn did not run the VFS jar (the child saw no memfs): #{out.strip[0, 400]} [#{shim_insertion_probe}]"
+      raise "the #{form} spawn did not run the VFS jar (the child saw no memfs): #{out.strip[0, 400]} [#{shim_insertion_probe}] [#{xwalk_probe}]"
     end
 
     "#{form}: #{out.strip[0, 100]}"
@@ -517,6 +517,56 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
     out.include?("tfs_preload") ? "shim-inserted=yes" : "shim-inserted=NO"
   rescue StandardError => e
     "shim-inserted=unknown(#{e.class})"
+  end
+
+  # The C walker, compiled at probe time: replays the launcher's exact
+  # jar-open pattern (open → lseek(-ENDHDR, SEEK_END) → read → END
+  # signature) through a small C binary under the same inherited env the
+  # JVM spawn gets. Splits "inserted but mis-serving" further: walker
+  # green + java red = the JVM binary's own binding vintage is the
+  # interpose gap; both red = the shim/engine mis-serves this arch.
+  XWALK_C = <<~C.freeze
+    #include <stdio.h>
+    #include <string.h>
+    #include <fcntl.h>
+    #include <unistd.h>
+    int main(int argc, char **argv) {
+        unsigned char eb[22];
+        if (argc < 2) return 64;
+        int fd = open(argv[1], O_RDONLY);
+        if (fd < 0) { perror("xwalk-open"); return 66; }
+        printf("open-fd:%d\\n", fd);
+        off_t pos = lseek(fd, -22, SEEK_END);
+        if (pos < 0) { perror("xwalk-lseek"); return 65; }
+        printf("lseek-end:%lld\\n", (long long)pos);
+        ssize_t n = read(fd, eb, 22);
+        if (n != 22) { perror("xwalk-read"); return 65; }
+        printf("end-sig:%02x%02x%02x%02x\\n", eb[0], eb[1], eb[2], eb[3]);
+        puts(memcmp(eb, "PK\\005\\006", 4) == 0 ? "XWALK-OK" : "XWALK-BAD-SIG");
+        close(fd);
+        return 0;
+    }
+  C
+
+  def self.xwalk_probe
+    require "open3"
+    require "tmpdir"
+    Dir.mktmpdir do |dir|
+      src = File.join(dir, "xwalk.c")
+      bin = File.join(dir, "xwalk")
+      File.write(src, XWALK_C)
+      # the walker must be the runtime's own arch: on a Rosetta leg the
+      # runner's cc defaults to the NATIVE arch, whose binaries cannot
+      # load the staged shim slice at all (a useless diagnosis).
+      arch = macos_host? ? ["-arch", RbConfig::CONFIG.fetch("host_cpu", "x86_64")] : []
+      cc_out, cc_status = Open3.capture2e("cc", "-O2", *arch, "-o", bin, src)
+      return "xwalk=cc-failed(#{cc_out.strip[0, 120]} rc=#{cc_status.exitstatus})" unless File.executable?(bin)
+
+      out, = Open3.capture2e(bin, PROBE_JAR)
+      "xwalk=#{out.strip.tr("\n", ' ')[0, 200]}"
+    end
+  rescue StandardError => e
+    "xwalk=unknown(#{e.class}: #{e.message[0, 80]})"
   end
 
   def self.java_or_skip!
