@@ -460,22 +460,33 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
   JAR_MARKER = "CLASS-E-EXEC-OK"
 
   # mnconvert's form: a shell string with a bare command name and a
-  # VFS-resident operand. Per the §3.1 delivery matrix this is an ELF
-  # capability: the handoff env's LD_PRELOAD injects /bin/sh itself, so
-  # the shell's execvp child inherits the VFS view. On macOS /bin/sh is
-  # an Apple platform binary — SIP strips DYLD_INSERT_LIBRARIES at its
-  # exec, the JVM never sees the memfs, and the jarfile answer is the
-  # honest host failure, pinned here so a moved boundary fails loud.
-  # Deferred on windows with windows class L (§7 order).
+  # VFS-resident operand. On ELF the handoff env's LD_PRELOAD injects
+  # /bin/sh itself, so the shell's execvp child inherits the VFS view.
+  # On macOS /bin/sh is an Apple platform binary and the outcome is
+  # host-version dependent (§3.1): darwin23 strips DYLD_INSERT_LIBRARIES
+  # at sh's exec (the JVM answers "Unable to access jarfile" — the
+  # honest host failure); darwin24 GitHub x86_64 runners HONOR the
+  # insertion into sh's exec child and the jar runs (factory runs
+  # 31685052887/31692800485 on the same runner image 20260727.0377.1:
+  # the leg flipped from jar.error1 to running the jar when the x86_64
+  # plain-close interpose shipped — /bin/sh was injected all along; the
+  # old pin had been measuring the close bug, not the boundary). Both
+  # are named outcomes; any third shape (the shim reached the JVM and
+  # mis-served) fails loud. Deferred on windows with windows class L
+  # (§7 order).
   def self.shell_string_exec_check
     class_e_posix_only!
     java_or_skip!
     out = `java -jar #{PROBE_JAR} 2>&1`.to_s
     return jar_ran!(out, "shell-string") unless macos_host?
+    return jar_ran!(out, "shell-string darwin (the insertion survives /bin/sh)") if out.include?(JAR_MARKER)
 
-    raise "the SIP boundary moved: a shell-string VFS operand RAN on macOS: #{out[0, 120]}" if out.include?(JAR_MARKER)
+    if out.include?("Unable to access jarfile")
+      return "SIP boundary holds (the insertion is stripped at /bin/sh): #{out.strip[0, 100]}"
+    end
 
-    "SIP boundary holds (honest failure): #{out.strip[0, 100]}"
+    raise "the shell-string darwin spawn saw the memfs but did not run the VFS jar: " \
+          "#{out.strip[0, 400]} [#{shim_insertion_probe}] [#{xwalk_probe}]"
   end
 
   # The macOS consumption pattern (§3.1): the array form with the
