@@ -419,16 +419,17 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
       # shim + mounts — no adapter extracts anything. The jar rides the
       # InterposeFixture image next to the class-L libraries. Per the §3.1
       # delivery matrix the shell-string form is an ELF capability; on
-      # macOS the outcome at /bin/sh is host-version dependent (darwin23
-      # strips the insertion, darwin24 CI runners honor it into sh's exec
-      # child) and the probe names both shapes so a third fails loud. The
-      # array form with the absolute java path is the consumption pattern
-      # that works on every POSIX leg. A leg with no JRE reports
+      # macOS the spawn hook drops the inherited insertion for restricted
+      # targets (darwin24 dyld TERMINATES platform binaries under it —
+      # run 31699651270), so the JVM behind /bin/sh answers the honest
+      # jarfile error everywhere and a marker means the scrub regressed.
+      # The array form with the absolute java path is the consumption
+      # pattern that works on every POSIX leg. A leg with no JRE reports
       # unsupported (sensed, never faked). Deferred on windows with
       # windows class L.
       let(:run) { smoke.run("class_e_exec") }
 
-      it "shell-string exec of a VFS-resident jar operand (ELF capability; both SIP outcomes named on macOS)" do
+      it "shell-string exec of a VFS-resident jar operand (ELF capability; the scrub boundary pinned on macOS)" do
         skip "class E is deferred on windows with windows class L" if smoke.platform.msys?
 
         expect(run).to be_booted, boot_failure(run)
@@ -438,11 +439,10 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
         next if state == "unsupported" # no JRE on this leg
 
         if smoke.platform.macos?
-          # darwin24 GitHub x86_64 runners honor the insertion into
-          # /bin/sh's exec child (factory runs 31685052887/31692800485);
-          # darwin23 strips it (spec 22 §3.1). Both are named outcomes —
-          # the probe fails loud on any third shape.
-          expect(run.detail("shell_string_exec")).to match(/SIP boundary holds|CLASS-E-EXEC-OK/)
+          # The spawn hook drops the inherited insertion for restricted
+          # targets (spec 22 §3.1) — the JVM behind /bin/sh must answer
+          # the honest jarfile error. A marker means the scrub regressed.
+          expect(run.detail("shell_string_exec")).to include("SIP boundary holds")
         else
           expect(run.detail("shell_string_exec")).to include("CLASS-E-EXEC-OK")
         end

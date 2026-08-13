@@ -463,27 +463,35 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
   # mnconvert's form: a shell string with a bare command name and a
   # VFS-resident operand. On ELF the handoff env's LD_PRELOAD injects
   # /bin/sh itself, so the shell's execvp child inherits the VFS view.
-  # On macOS /bin/sh is an Apple platform binary and the outcome is
-  # host-version dependent (§3.1): darwin23 strips DYLD_INSERT_LIBRARIES
-  # at sh's exec (the JVM answers "Unable to access jarfile" — the
-  # honest host failure); darwin24 GitHub x86_64 runners HONOR the
-  # insertion into sh's exec child and the jar runs (factory runs
-  # 31685052887/31692800485 on the same runner image 20260727.0377.1:
-  # the leg flipped from jar.error1 to running the jar when the x86_64
-  # plain-close interpose shipped — /bin/sh was injected all along; the
-  # old pin had been measuring the close bug, not the boundary). Both
-  # are named outcomes; any third shape (the shim reached the JVM and
-  # mis-served) fails loud. Deferred on windows with windows class L
-  # (§7 order).
+  # On macOS the spawn hook drops the inherited insertion for restricted
+  # targets (spec 22 §3.1) and the JVM behind the shell answers the
+  # honest jarfile error — darwin_shell_string_verdict names every
+  # outcome. Deferred on windows with windows class L (§7 order).
   def self.shell_string_exec_check
     class_e_posix_only!
     java_or_skip!
     out = `java -jar #{PROBE_JAR} 2>&1`.to_s
     return jar_ran!(out, "shell-string") unless macos_host?
-    return jar_ran!(out, "shell-string darwin (the insertion survives /bin/sh)") if out.include?(JAR_MARKER)
 
+    darwin_shell_string_verdict(out)
+  end
+
+  # The macOS verdict (§3.1): the spawn hook DROPS the inherited
+  # DYLD_INSERT_LIBRARIES for every restricted target — dyld TERMINATES
+  # platform binaries under a foreign insertion on darwin24 (run
+  # 31699651270 — /bin/sh and /usr/bin/cc died under the armed env;
+  # darwin23 stripped instead), so the scrub is what lets /bin/sh live at
+  # all. The JVM behind the shell then answers "Unable to access
+  # jarfile" — the honest host failure. A marker means the scrub
+  # REGRESSED (the insertion reached the JVM past /bin/sh); any other
+  # shape means the shim reached the JVM and mis-served — both fail loud.
+  def self.darwin_shell_string_verdict(out)
+    if out.include?(JAR_MARKER)
+      raise "the restricted-target scrub failed: a shell-string VFS operand RAN on macOS " \
+            "(the insertion reached the JVM past /bin/sh): #{out[0, 120]}"
+    end
     if out.include?("Unable to access jarfile")
-      return "SIP boundary holds (the insertion is stripped at /bin/sh): #{out.strip[0, 100]}"
+      return "SIP boundary holds (restricted targets run uninjected): #{out.strip[0, 100]}"
     end
 
     raise "the shell-string darwin spawn saw the memfs but did not run the VFS jar: " \
