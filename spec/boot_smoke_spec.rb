@@ -459,6 +459,19 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
 
         expect(run.detail("array_form_exec")).to include("CLASS-E-EXEC-OK")
       end
+
+      it "a host-only shell string runs (the armed env never kills /bin/sh)" do
+        skip "class E is deferred on windows with windows class L" if smoke.platform.msys?
+
+        expect(run).to be_booted, boot_failure(run)
+        # darwin24 dyld TERMINATES an Apple platform binary under a
+        # foreign DYLD_INSERT_LIBRARIES (run 31699651270): pre-scrub
+        # every backtick/system of a packaged interpreter killed /bin/sh
+        # there. The spawn hook unsets the inherited variable for
+        # restricted targets; this example is the regression pin.
+        expect(run.state("host_shell_string")).to eq("ok"),
+                                                  "probe host_shell_string detail: #{run.detail("host_shell_string")}"
+      end
     end
 
     describe "the era-2 release card (spec 18 C2, gated pre-upload)" do

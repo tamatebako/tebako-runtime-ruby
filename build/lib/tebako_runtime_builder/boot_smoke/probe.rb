@@ -132,6 +132,7 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
   def self.class_e_exec
     report("shell_string_exec") { shell_string_exec_check }
     report("array_form_exec") { array_form_exec_check }
+    report("host_shell_string") { host_shell_string_check }
   end
 
   SCENARIO_NAMES = %w[boot stat io bundler locks native_ext loader_interpose class_e_exec].freeze
@@ -489,6 +490,24 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
           "#{out.strip[0, 400]} [#{shim_insertion_probe}] [#{xwalk_probe}]"
   end
 
+  # The armed-env regression pin (spec 22 §3.1, run 31699651270): darwin24
+  # dyld TERMINATES an Apple platform binary at exec when the inherited
+  # DYLD_INSERT_LIBRARIES names a foreign dylib — pre-scrub every
+  # system()/backtick of a packaged interpreter killed /bin/sh there (the
+  # shell-string example answered with empty output). The spawn hook now
+  # unsets the inherited variable for restricted targets. A host-only
+  # shell string carries no VFS operand: the shell must run on every leg,
+  # armed env or not.
+  def self.host_shell_string_check
+    class_e_posix_only!
+    out = `echo TEBAKO-SH-OK 2>&1`.to_s
+    unless out.include?("TEBAKO-SH-OK")
+      raise "a host-only shell string lost its shell under the armed env: #{out.strip[0, 200].inspect}"
+    end
+
+    "host shell-string ok: #{out.strip[0, 40]}"
+  end
+
   # The macOS consumption pattern (§3.1): the array form with the
   # absolute interpreter path — no /bin/sh link, so the inherited
   # DYLD_INSERT_LIBRARIES/LD_PRELOAD reaches the JVM directly (openjdk
@@ -670,7 +689,11 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
       bin = File.join(dir, "xwalk")
       File.write(src, XWALK_C)
       cc_out, cc_status = Open3.capture2e("cc", "-O2", *arch, "-o", bin, src)
-      return "xwalk=cc-failed(#{cc_out.strip[0, 120]} rc=#{cc_status.exitstatus})" unless File.executable?(bin)
+      unless File.executable?(bin)
+        # exitstatus is nil on a signal death (darwin24 dyld terminates cc under a
+        # foreign insertion) — termsig names it.
+        return "xwalk=cc-failed(#{cc_out.strip[0, 240]} rc=#{cc_status.exitstatus} sig=#{cc_status.termsig})"
+      end
 
       out, = Open3.capture2e(bin, PROBE_JAR)
       "xwalk=#{out.strip.tr("\n", ' ')[0, 200]}"
@@ -682,7 +705,12 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
   def self.xwalk_compile(src, bin, flags, _dir)
     require "open3"
     cc_out, cc_status = Open3.capture2e("cc", *flags, "-o", bin, src, "-lz")
-    return "cc-failed(#{cc_out.strip[0, 100]} rc=#{cc_status.exitstatus})" unless File.executable?(bin)
+    unless File.executable?(bin)
+      # exitstatus is nil on a signal death (darwin24 dyld terminates cc
+      # under a foreign insertion) — report termsig too, and keep enough
+      # of the loader's own words to name the dylib it refused.
+      return "cc-failed(#{cc_out.strip[0, 240]} rc=#{cc_status.exitstatus} sig=#{cc_status.termsig})"
+    end
 
     bin
   end
