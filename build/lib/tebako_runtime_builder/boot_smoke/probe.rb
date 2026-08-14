@@ -550,10 +550,31 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
     require "tmpdir"
     java = java_or_skip!
     Dir.mktmpdir("tebako-jail-scratch") do |scratch|
-      jail = jailed_exec_jail_spec(scratch, java)
-      out, = Open3.capture2e({ "TEBAKO_JAIL" => jail }, java, "-jar", PROBE_JAR)
-      jar_ran!(out, "jailed array-form #{java}")
+      env = { "TEBAKO_JAIL" => jailed_exec_jail_spec(scratch, java),
+              "TEBAKO_JAIL_JOURNAL" => File.join(scratch, "journal.log") }
+      out, = Open3.capture2e(env, java, "-jar", PROBE_JAR)
+      jailed_exec_verdict(out, scratch, java)
     end
+  end
+
+  # The verdict with the evidence attached: on a failure the jail
+  # journal the child wrote into the scratch IS the diagnosis — every
+  # denial names itself there (the scratch is the one rw path, so the
+  # journal write is guaranteed). The window flattens newlines: the
+  # BOOT-SMOKE protocol is one line per check, and a multi-line JVM
+  # error otherwise loses everything past the first line.
+  def self.jailed_exec_verdict(out, scratch, java)
+    return jar_ran!(out, "jailed array-form #{java}") if out.include?(JAR_MARKER)
+
+    journal = jailed_exec_journal_tail(File.join(scratch, "journal.log"))
+    raise "the jailed array-form #{java} spawn saw no memfs under the floor jail: " \
+          "#{out.strip[0, 300].gsub(/(\r?\n)+/, " | ")} journal{#{journal}}"
+  end
+
+  def self.jailed_exec_journal_tail(path)
+    return "no-journal-file" unless File.file?(path)
+
+    File.readlines(path).last(8).map(&:strip).join(" | ")
   end
 
   # The deny-default spec the jailed_exec probe binds: scratch rw + the
