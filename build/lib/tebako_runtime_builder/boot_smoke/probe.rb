@@ -593,10 +593,17 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
       # 400 chars: a failing JVM prints stage lines BEFORE the final Error
       # (libzip's "mmap failed for CEN and END part of zip file" precedes
       # the launcher's abort) — the window must keep the first of them.
-      raise "the #{form} spawn did not run the VFS jar (the child saw no memfs): #{out.strip[0, 400]} [#{shim_insertion_probe}] [#{xwalk_probe}]"
+      # The BOOT-SMOKE line protocol is one line per check: flatten the
+      # child's newlines or the Run model's detail ends at the first.
+      window = out.strip[0, 400].gsub(/(\r?\n)+/, " | ")
+      raise "the #{form} spawn did not run the VFS jar (the child saw no memfs): #{window} [#{shim_insertion_probe}] [#{xwalk_probe}]"
     end
 
-    "#{form}: #{out.strip[0, 100]}"
+    # The marker leads the success detail explicitly: a JVM warning line
+    # (e.g. the gnu runner's "No monotonic clock was available") otherwise
+    # consumes the 100-char window and the marker never reaches the spec's
+    # assertion even though the jar ran (linux-gnu arm64 leg, 2026-08-14).
+    "#{form}: #{JAR_MARKER} — out: #{out.strip[0, 100].gsub(/(\r?\n)+/, " | ")}"
   end
 
   # The one-bit fact that splits every class-E failure into "insertion
