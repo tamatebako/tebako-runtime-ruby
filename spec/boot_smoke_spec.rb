@@ -92,6 +92,44 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
     end
   end
 
+  describe TebakoRuntimeBuilder::BootSmoke::InterposeFixture do
+    def with_env(vars)
+      old = vars.to_h { |key, _| [key, ENV.fetch(key, nil)] }
+      vars.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
+      yield
+    ensure
+      old.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
+    end
+
+    it "names every tried path when no stashed ruby headers resolve" do
+      Dir.mktmpdir do |dir|
+        Dir.chdir(dir) do
+          with_env("TEBAKO_SMOKE_RUBY_HEADERS" => nil) do
+            # a POSIX platform pin: the header-resolution naming is the
+            # behavior under test, and on an msys host the leg's own
+            # platform is refused by the phase-1 POSIX gate first
+            fixture = described_class.new(platform: TebakoRuntimeBuilder::Platform.new("x86_64-linux-gnu"))
+            expect { fixture.image }.to raise_error(TebakoRuntimeBuilder::Error, /no stashed ruby headers.*tried:/m)
+          end
+        end
+      end
+    end
+
+    it "honors an explicit TEBAKO_SMOKE_RUBY_HEADERS miss with the same named error" do
+      Dir.mktmpdir do |dir|
+        with_env("TEBAKO_SMOKE_RUBY_HEADERS" => dir) do
+          fixture = described_class.new(platform: TebakoRuntimeBuilder::Platform.new("x86_64-linux-gnu"))
+          expect { fixture.image }.to raise_error(TebakoRuntimeBuilder::Error, /no stashed ruby headers/)
+        end
+      end
+    end
+
+    it "refuses the windows leg by name in phase 1" do
+      fixture = described_class.new(platform: TebakoRuntimeBuilder::Platform.new("x64-mingw-ucrt"))
+      expect { fixture.image }.to raise_error(TebakoRuntimeBuilder::Error, /POSIX-only in spec 22 phase 1/)
+    end
+  end
+
   describe "against a built runtime" do
     def boot_failure(run)
       "expected the runtime to boot and report -- #{run.failure_summary}"
@@ -335,6 +373,126 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
                          "_build-platform.yml). A POSIX leg reporting 'fail' is a broken runtime -- the upload " \
                          "must not happen. A windows leg flipping to 'ok' means the issue-#40 fix landed: flip " \
                          "the recorded value to 'ok' in the same PR to enforce it from then on."
+      end
+    end
+
+    describe "the loader interposition (spec 22 phase 1, class L)" do
+      # The per-gem ffi/fiddle adapters' deletion gate: a VFS-resident
+      # native library must load through fiddle AND through a hand-rolled
+      # C extension's own dlopen with no adapter involved, and a failed
+      # materialization must surface the tebako verdict line. The probe
+      # fixture (BootSmoke::InterposeFixture) builds a probe payload
+      # image at boot-smoke time from the leg's own stashed headers and
+      # mounts it at /probe for this scenario. POSIX-only in phase 1.
+      let(:run) { smoke.run("loader_interpose") }
+
+      it "loads a VFS-resident library through Fiddle.dlopen, closure included" do
+        skip "the loader-interpose scenario is POSIX-only in spec 22 phase 1" if smoke.platform.msys?
+
+        expect(run).to be_booted, boot_failure(run)
+        expect(run.state("fiddle_vfs_dlopen")).to eq("ok"),
+                                                  "probe fiddle_vfs_dlopen detail: #{run.detail("fiddle_vfs_dlopen")}"
+        expect(run.detail("fiddle_vfs_dlopen")).to include("probe_answer=42")
+      end
+
+      it "a hand-rolled C extension self-dlopens the VFS library (no adapter can mask it)" do
+        skip "the loader-interpose scenario is POSIX-only in spec 22 phase 1" if smoke.platform.msys?
+
+        expect(run).to be_booted, boot_failure(run)
+        expect(run.state("cext_self_dlopen")).to eq("ok"),
+                                                 "probe cext_self_dlopen detail: #{run.detail("cext_self_dlopen")}"
+        expect(run.detail("cext_self_dlopen")).to include("ProbeExt.answer=42")
+      end
+
+      it "a failed materialization raises through the dlerror channel (the verdict line post-adapter)" do
+        skip "the loader-interpose scenario is POSIX-only in spec 22 phase 1" if smoke.platform.msys?
+
+        expect(run).to be_booted, boot_failure(run)
+        expect(run.state("named_error")).to eq("ok"),
+                                            "probe named_error detail: #{run.detail("named_error")}"
+      end
+    end
+
+    describe "the exec interposition (spec 22, class E)" do
+      # The Class-B gem adapters' (jing/mn2pdf/mnconvert) deletion gate: a
+      # spawned JVM reads a VFS-resident jar through the inherited preload
+      # shim + mounts — no adapter extracts anything. The jar rides the
+      # InterposeFixture image next to the class-L libraries. Per the §3.1
+      # delivery matrix the shell-string form is an ELF capability; on
+      # macOS the spawn hook drops the inherited insertion for restricted
+      # targets (darwin24 dyld TERMINATES platform binaries under it —
+      # run 31699651270), so the JVM behind /bin/sh answers the honest
+      # jarfile error everywhere and a marker means the scrub regressed.
+      # The array form with the absolute java path is the consumption
+      # pattern that works on every POSIX leg. A leg with no JRE reports
+      # unsupported (sensed, never faked). Deferred on windows with
+      # windows class L.
+      let(:run) { smoke.run("class_e_exec") }
+
+      it "shell-string exec of a VFS-resident jar operand (ELF capability; the scrub boundary pinned on macOS)" do
+        skip "class E is deferred on windows with windows class L" if smoke.platform.msys?
+
+        expect(run).to be_booted, boot_failure(run)
+        state = run.state("shell_string_exec")
+        expect(%w[ok unsupported]).to include(state),
+                                      "probe shell_string_exec detail: #{run.detail("shell_string_exec")}"
+        next if state == "unsupported" # no JRE on this leg
+
+        if smoke.platform.macos?
+          # The spawn hook drops the inherited insertion for restricted
+          # targets (spec 22 §3.1) — the JVM behind /bin/sh must answer
+          # the honest jarfile error. A marker means the scrub regressed.
+          expect(run.detail("shell_string_exec")).to include("SIP boundary holds")
+        else
+          expect(run.detail("shell_string_exec")).to include("CLASS-E-EXEC-OK")
+        end
+      end
+
+      it "array-form exec with the absolute java path (the consumption pattern on every POSIX leg)" do
+        skip "class E is deferred on windows with windows class L" if smoke.platform.msys?
+
+        expect(run).to be_booted, boot_failure(run)
+        state = run.state("array_form_exec")
+        expect(%w[ok unsupported]).to include(state),
+                                      "probe array_form_exec detail: #{run.detail("array_form_exec")}"
+        next if state == "unsupported" # no JRE on this leg
+
+        expect(run.detail("array_form_exec")).to include("CLASS-E-EXEC-OK")
+      end
+
+      it "a host-only shell string runs (the armed env never kills /bin/sh)" do
+        skip "class E is deferred on windows with windows class L" if smoke.platform.msys?
+
+        expect(run).to be_booted, boot_failure(run)
+        # darwin24 dyld TERMINATES an Apple platform binary under a
+        # foreign DYLD_INSERT_LIBRARIES (run 31699651270): pre-scrub
+        # every backtick/system of a packaged interpreter killed /bin/sh
+        # there. The spawn hook unsets the inherited variable for
+        # restricted targets; this example is the regression pin.
+        expect(run.state("host_shell_string")).to eq("ok"),
+                                                  "probe host_shell_string detail: #{run.detail("host_shell_string")}"
+      end
+
+      it "jailed exec boots the JVM under a deny default (the platform floor, spec 08 §2.1)" do
+        skip "class E is deferred on windows with windows class L" if smoke.platform.msys?
+
+        expect(run).to be_booted, boot_failure(run)
+        # The booted-child stack the journal-pinned chain (spec 22 §3.4)
+        # names: scratch rw + the real JRE tree ro + the passwd-entry
+        # home read, over the floor's automatic system surface — with the
+        # child's cwd inside the scratch (the JVM canonicalizes its cwd
+        # at VM init; the ancestor chain passes via spec 08 §2.1's
+        # bind-derived traverse set).
+        # Pre-floor this shape SIGSEGV'd at getMacOSXLocale (phase-E
+        # dogfood 2026-08-13); post-floor every missing grant is the
+        # workload's own named error, and with the three ingredients
+        # named the JVM boots and runs the VFS jar.
+        state = run.state("jailed_exec")
+        expect(%w[ok unsupported]).to include(state),
+                                      "probe jailed_exec detail: #{run.detail("jailed_exec")}"
+        next if state == "unsupported" # no JRE on this leg
+
+        expect(run.detail("jailed_exec")).to include("CLASS-E-EXEC-OK")
       end
     end
 

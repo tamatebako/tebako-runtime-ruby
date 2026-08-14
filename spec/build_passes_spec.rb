@@ -78,14 +78,37 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
     TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["ar", "rcs", File.join(dir, "libtfs.a"), obj])
   end
 
+  # A toolchain cc shim for the gnu/musl prepare examples: answers the
+  # `-print-file-name=libffi.a` query the static-libffi staging makes with
+  # a fixture archive (or with the bare name, as a real compiler does when
+  # the library is absent); every other invocation delegates to the real
+  # cc so the toolchain stub still compiles for real.
+  def write_cc_shim(dir, with_libffi: true) # rubocop:disable Metrics/MethodLength
+    archive = File.join(dir, "fixture-libffi.a")
+    File.binwrite(archive, "fixture-static-libffi") if with_libffi
+    shim = File.join(dir, "cc-shim")
+    File.write(shim, <<~SHIM)
+      #!/bin/sh
+      if [ "$1" = "-print-file-name=libffi.a" ]; then
+        echo "#{with_libffi ? archive : "libffi.a"}"
+        exit 0
+      fi
+      exec cc "$@"
+    SHIM
+    FileUtils.chmod(0o755, shim)
+    shim
+  end
+
   describe ".prepare" do
+    let(:cc_shim) { write_cc_shim(root) }
+
     before do
       File.write(File.join(ruby_src, "template", "Makefile.in"),
                  "SOLIBS = @SOLIBS@\nMAINLIBS = @TEBAKO_MLIBS@\nARCHMINIOBJS = @MINIOBJS@\n")
     end
 
     it "substitutes @TEBAKO_MLIBS@ and builds the toolchain stub library" do
-      described_class.prepare("x86_64-linux-gnu", ruby_src, deps_lib_dir, "3.3.7", "/__tfs__", "cc")
+      described_class.prepare("x86_64-linux-gnu", ruby_src, deps_lib_dir, "3.3.7", "/__tfs__", cc_shim)
 
       makefile_in = File.read(File.join(ruby_src, "template", "Makefile.in"))
       expect(makefile_in).not_to include("@TEBAKO_MLIBS@")
@@ -97,6 +120,43 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
       %w[_tebako_main _tebako_mount_point _tebako_is_running_miniruby _tebako_original_pwd].each do |symbol|
         expect(symbols).to include(symbol)
       end
+    end
+
+    it "stages the toolchain's static libffi archive into the deps lib dir (spec 22)" do
+      # ruby 4.0's fiddle is a bundled gem (no longer an in-tree ext the
+      # exe's -l:libffi.a absorbs), and its extconf links the toolchain's
+      # SHARED libffi -- DT_NEEDED libffi.so.N, a host-library dependency
+      # the audience rule forbids (the gnu boot smoke runs on the
+      # ubuntu-24.04 host, which has no libffi.so.7). RUBY_L_FLAGS puts
+      # the deps lib dir first on every ext link line, so the staged
+      # archive wins over the shared one and fiddle.so embeds libffi.
+      described_class.prepare("x86_64-linux-gnu", ruby_src, deps_lib_dir, "3.3.7", "/__tfs__", cc_shim)
+      expect(File.binread(File.join(deps_lib_dir, "libffi.a"))).to eq("fixture-static-libffi")
+    end
+
+    it "stages no libffi on musl (alpine's libffi.a is non-PIC; the musl runtime is host-dynamic by design)" do
+      # The alpine smoke container carries libffi.so.8, masking the shared
+      # link; embedding the archive instead fails the fiddle.so link
+      # (R_X86_64_PC32 against ffi_type_sint32). The musl runtime already
+      # requires a musl host userland of the right generation (PT_INTERP
+      # ld-musl, the documented musl >= 1.2.3 / alpine >= 3.17 symbol
+      # floor, TODO.v2-1/11) -- its libffi rides that same documented
+      # host dynamism until a PIC static libffi deps-build is decided.
+      described_class.prepare("x86_64-linux-musl", ruby_src, deps_lib_dir, "3.3.7", "/__tfs__", cc_shim)
+      expect(File.file?(File.join(deps_lib_dir, "libffi.a"))).to be(false)
+    end
+
+    it "fails loudly when the toolchain carries no static libffi" do
+      bare_shim = write_cc_shim(root, with_libffi: false)
+      expect { described_class.prepare("x86_64-linux-gnu", ruby_src, deps_lib_dir, "3.3.7", "/__tfs__", bare_shim) }
+        .to raise_error(TebakoRuntimeBuilder::Error, /no static libffi/)
+    end
+
+    it "stages no libffi on msys (the shared DLL absorbs it via the SOLIBS substitution)" do
+      write_msys_source_fixtures(ruby_src)
+      write_libtfs_fixture(deps_lib_dir)
+      described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc")
+      expect(File.file?(File.join(deps_lib_dir, "libffi.a"))).to be(false)
     end
 
     it "pins configure ahead of configure.ac (the recheck would wipe postconfigure's substitution)" do
@@ -111,7 +171,7 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
       past = Time.now - 3600
       FileUtils.touch(configure, mtime: past)
       FileUtils.touch(configure_ac, mtime: past + 60) # the skew: .ac newer
-      described_class.prepare("x86_64-linux-gnu", ruby_src, deps_lib_dir, "3.3.7", "/__tfs__", "cc")
+      described_class.prepare("x86_64-linux-gnu", ruby_src, deps_lib_dir, "3.3.7", "/__tfs__", cc_shim)
       expect(File.mtime(configure)).to be > File.mtime(configure_ac)
     end
 
@@ -121,7 +181,7 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
       File.write(File.join(ruby_src, "configure"), "#!/bin/sh\n")
       past = Time.now - 3600
       FileUtils.touch(config_status, mtime: past)
-      described_class.prepare("x86_64-linux-gnu", ruby_src, deps_lib_dir, "3.3.7", "/__tfs__", "cc")
+      described_class.prepare("x86_64-linux-gnu", ruby_src, deps_lib_dir, "3.3.7", "/__tfs__", cc_shim)
       expect(File.mtime(config_status)).to be > past
       expect(File.read(config_status)).to include("start-group") # content untouched
     end
@@ -133,9 +193,9 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
     end
 
     it "is idempotent across rebuild re-runs (substitutes from the .tebako-orig copy)" do
-      described_class.prepare("x86_64-linux-gnu", ruby_src, deps_lib_dir, "3.3.7", "/__tfs__", "cc")
+      described_class.prepare("x86_64-linux-gnu", ruby_src, deps_lib_dir, "3.3.7", "/__tfs__", cc_shim)
       expect do
-        described_class.prepare("x86_64-linux-gnu", ruby_src, deps_lib_dir, "3.3.7", "/__tfs__", "cc")
+        described_class.prepare("x86_64-linux-gnu", ruby_src, deps_lib_dir, "3.3.7", "/__tfs__", cc_shim)
       end.not_to raise_error
       makefile_in = File.read(File.join(ruby_src, "template", "Makefile.in"))
       expect(makefile_in).to include("MAINLIBS = -Wl,--start-group")
