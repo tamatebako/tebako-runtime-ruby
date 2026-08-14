@@ -534,7 +534,10 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
   # The platform floor's acceptance probe (spec 08 §2.1, spec 22 §3.4):
   # the array form under a deny-default jail carrying the booted-child
   # stack the journal-pinned chain names — a scratch rw + the JRE tree
-  # ro + the user-domain home read. Pre-floor this shape died with a
+  # ro + the user-domain home read, with the child's cwd inside the
+  # scratch (the JVM canonicalizes its cwd at VM init; the ancestor
+  # chain passes via the bind-derived traverse set, spec 08 §2.1).
+  # Pre-floor this shape died with a
   # SIGSEGV at getMacOSXLocale (phase-E dogfood, 2026-08-13); post-floor
   # the JVM boots and runs the VFS jar, and every remaining journal
   # denial is a non-fatal fallback (/etc/localtime, hsperfdata, the
@@ -552,7 +555,14 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
     Dir.mktmpdir("tebako-jail-scratch") do |scratch|
       env = { "TEBAKO_JAIL" => jailed_exec_jail_spec(scratch, java),
               "TEBAKO_JAIL_JOURNAL" => File.join(scratch, "journal.log") }
-      out, = Open3.capture2e(env, java, "-jar", PROBE_JAR)
+      # The child runs with its cwd INSIDE the granted scratch: the JVM
+      # canonicalizes its cwd at VM init and dies with "Could not
+      # determine current working directory" when that walk is denied
+      # (this PR's macOS legs, 2026-08-14). The scratch grant covers the
+      # cwd itself; its ancestor chain passes via the bind-derived
+      # traverse set (spec 08 §2.1). The ambient cwd (the boot-smoke
+      # tempdir) is deliberately outside the jail.
+      out, = Open3.capture2e(env, java, "-jar", PROBE_JAR, chdir: scratch)
       jailed_exec_verdict(out, scratch, java)
     end
   end

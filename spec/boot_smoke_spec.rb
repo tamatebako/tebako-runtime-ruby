@@ -479,7 +479,10 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
         expect(run).to be_booted, boot_failure(run)
         # The booted-child stack the journal-pinned chain (spec 22 §3.4)
         # names: scratch rw + the real JRE tree ro + the passwd-entry
-        # home read, over the floor's automatic system surface.
+        # home read, over the floor's automatic system surface — with the
+        # child's cwd inside the scratch (the JVM canonicalizes its cwd
+        # at VM init; the ancestor chain passes via spec 08 §2.1's
+        # bind-derived traverse set).
         # Pre-floor this shape SIGSEGV'd at getMacOSXLocale (phase-E
         # dogfood 2026-08-13); post-floor every missing grant is the
         # workload's own named error, and with the three ingredients
