@@ -74,7 +74,8 @@ entry as an additive `image` key (`filename`/`sha256`/`size_bytes`), and
 `SHA256SUMS.txt` carries both lines.
 
 Image layout (same as the embedded memfs tree): `/lib/ruby/<api>` (stdlib),
-`/lib/ruby/gems/<api>` (gem home, incl. the tebako-runtime gem),
+`/lib/ruby/gems/<api>` (gem home — spec 22 phase M2: the env image ships
+NO tebako-runtime gem; the Rust driver covers the VFS),
 `/local/stub.rb` (the runtime's compiled-in entry point), `/bin` (empty —
 the ruby executable and the bin shims are stripped from the layout; the
 interpreter is the outer driver executable that mounts the image, exactly
