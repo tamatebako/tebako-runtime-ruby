@@ -144,9 +144,9 @@ RSpec.describe TebakoRuntimeBuilder::ImageBuilder do
   # from the tarball manifest through the deploy pass; the interpreter api
   # line comes from the built ruby version.
   describe "#deploy_layout" do
-    def layout_for(ruby_version, mount_point: "/__tfs__", mount_root_override: false)
+    def layout_for(ruby_version, mount_point: "/__tfs__", mount_root_override: false, platform: nil)
       rv = TebakoRuntimeBuilder::RubyVersion.new(ruby_version)
-      platform = TebakoRuntimeBuilder::Platform.new("arm64-darwin23", "arm64")
+      platform ||= TebakoRuntimeBuilder::Platform.new("arm64-darwin23", "arm64")
       described_class.new(platform, rv, File.join(@dir, "stash"), data_src_dir, File.join(@dir, "pre"),
                           File.join(@dir, "out", "fs.bin"), File.join(@dir, "deps", "bin"),
                           mount_point: mount_point, embed: false,
@@ -172,6 +172,23 @@ RSpec.describe TebakoRuntimeBuilder::ImageBuilder do
         "interpreter_api_version" => "4.0.0"
       )
       expect(layout_for("4.0.6", mount_point: "A:/t")).not_to have_key("mount_root_override")
+    end
+
+    # The runtime's own PE module basename (schema_minor 3): MSYS builds
+    # declare it — flowed from RubyVersion#msys_dll_name, the name's
+    # single owner (invariant 10) — so the driver can export
+    # TEBAKO_RUNTIME_DLL for the tfs PE closure walk's exclusion (spec 22
+    # §2.1). POSIX builds omit the key.
+    it "emits runtime_dll for MSYS builds only, flowed from RubyVersion#msys_dll_name" do
+      msys = TebakoRuntimeBuilder::Platform.new("x64-mingw-ucrt", "x86_64")
+      expect(layout_for("3.4.8", platform: msys)).to include(
+        "runtime_dll" => "x64-ucrt-ruby340.dll",
+        "interpreter_api_version" => "3.4.0"
+      )
+      expect(layout_for("4.0.6", platform: msys)).to include("runtime_dll" => "x64-ucrt-ruby400.dll")
+      expect(layout_for("3.4.8")).not_to have_key("runtime_dll")
+      expect(layout_for("3.4.8", platform: TebakoRuntimeBuilder::Platform.new("x86_64-linux-musl", "x86_64")))
+        .not_to have_key("runtime_dll")
     end
   end
 
