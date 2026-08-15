@@ -35,8 +35,13 @@ module TebakoRuntimeBuilder
   # Packager.init + DeployHelper (simple_script scenario) + Packager.mkdwarfs.
   #
   # The image content is the stashed ruby installation plus /local/stub.rb
-  # (the runtime's compiled-in entry point) and the tebako-runtime gem, which
-  # the patched gem_prelude.rb requires at interpreter startup. For the
+  # (the runtime's compiled-in entry point). Spec 22 phase M2: the
+  # tebako-runtime gem is NO LONGER staged — its require maps ship empty
+  # (spec 22 §7) and the Rust driver covers the VFS, so the image carries
+  # no tebako-runtime gem at all. The patched gem_prelude.rb's
+  # `require 'tebako-runtime'` resolves to its warn-only LoadError branch
+  # (tamatebako/ruby's gem_prelude_tebako_runtime.patch — the patch rides
+  # along until the ruby-side harness retires it). For the
   # supported ruby matrix (>= 3.1.6) the gem's deploy gates
   # (DeployHelper#configure: '@needs_bundler = true unless ruby31?',
   # #update_rubygems: 'return if ruby31?') make the rubygems update and the
@@ -210,24 +215,22 @@ module TebakoRuntimeBuilder
       puts "-- Running deploy script"
 
       check_toolchain_ruby!
-      TebakoRuntimeBuilder::BuildHelpers.with_env(deploy_env) do
-        install_gem("tebako-runtime")
-        deploy_stub(stub_dir)
-      end
+      deploy_stub(stub_dir)
       deploy_preload
       deploy_layout
       TebakoRuntimeBuilder::Stripper.strip(@platform, @data_src_dir)
     end
 
-    # The deploy gem commands run the toolchain ruby from the recreated
-    # environment. On msys/mingw, configure forces LOAD_RELATIVE, so the
-    # toolchain ruby prepends its exe dir to the compiled-in absolute prefix
-    # and every load-path entry comes out doubled (o/sD:/a/.../o/s/lib/...).
-    # deploy_env therefore carries the real lib dirs in RUBYLIB, which lands
-    # ahead of the compiled entries; this gate probes with that same env so
-    # it validates exactly what the deploy pass gets. When stdlib still does
-    # not resolve, every gem command fails with a misleading 'cannot load
-    # such file -- rubygems/gem_runner' -- fail loud with the evidence instead.
+    # The image ships the recreated environment's toolchain ruby; this gate
+    # probes it before anything ships. On msys/mingw, configure forces
+    # LOAD_RELATIVE, so the toolchain ruby prepends its exe dir to the
+    # compiled-in absolute prefix and every load-path entry comes out
+    # doubled (o/sD:/a/.../o/s/lib/...). deploy_env therefore carries the
+    # real lib dirs in RUBYLIB, which lands ahead of the compiled entries;
+    # this gate probes with that same env. When stdlib still does not
+    # resolve, the image's rubygems is broken with a misleading 'cannot
+    # load such file -- rubygems/gem_runner' at RUN time -- fail loud with
+    # the evidence instead.
     def check_toolchain_ruby! # rubocop:disable Metrics
       ruby = File.join(@tbd, "ruby#{@platform.exe_suffix}")
       begin
@@ -303,12 +306,15 @@ module TebakoRuntimeBuilder
       raise TebakoRuntimeBuilder::Error.new("toolchain ruby cannot load rubygems from #{@data_src_dir}", 130)
     end
 
+    # The probe env for check_toolchain_ruby!: GEM_HOME/GEM_PATH aim the
+    # rubygems require at the recreated environment's gem home (the tree
+    # the image ships). Nothing gem-install-shaped runs in the deploy pass
+    # anymore (spec 22 phase M2), so the install-only plumbing
+    # (GEM_SPEC_CACHE, TEBAKO_PASS_THROUGH) is gone.
     def deploy_env
       env = {
         "GEM_HOME" => @tgd,
-        "GEM_PATH" => @tgd,
-        "GEM_SPEC_CACHE" => File.join(@data_src_dir, "spec_cache"),
-        "TEBAKO_PASS_THROUGH" => "1"
+        "GEM_PATH" => @tgd
       }
       env["RUBYLIB"] = toolchain_rubylib if @platform.msys?
       env
@@ -330,17 +336,6 @@ module TebakoRuntimeBuilder
       roots = %w[site_ruby vendor_ruby].map { |b| File.join(lib_ruby, b, api) } << File.join(lib_ruby, api)
       roots.flat_map { |r| arch ? [r, File.join(r, arch)] : [r] }
            .select { |d| File.directory?(d) }.join(";")
-    end
-
-    def install_gem(name, ver = nil)
-      puts "   ... installing #{name} gem#{" version #{ver}" if ver}"
-
-      gem_command = File.join(@tbd, "gem#{".cmd" if @platform.msys?}")
-      params = [gem_command, "install", name.to_s]
-      params += ["-v", ver.to_s] if ver
-      params += ["--no-document", "--install-dir", @tgd, "--bindir", @tbd]
-      params += ["--platform", "ruby"] if @platform.msys?
-      TebakoRuntimeBuilder::BuildHelpers.run_with_capture_v(params)
     end
 
     # simple_script scenario: the fs root (the generated stub) lands at /local
