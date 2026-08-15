@@ -109,7 +109,10 @@ module TebakoRuntimeBuilder
     # must be true exactly when the interpreter follows TEBAKO_MOUNT_ROOT);
     # the additive preload_shim grant (schema_minor 2) is emitted only
     # when deploy_preload actually staged the shim — the driver refuses
-    # (exit 78) a declaration whose file the image does not hold.
+    # (exit 78) a declaration whose file the image does not hold; the
+    # additive runtime_dll basename (schema_minor 3) is emitted for MSYS
+    # builds only — flowed from RubyVersion#msys_dll_name, the name's
+    # single owner (invariant 10); POSIX builds omit the key.
     LAYOUT_DECLARATION = {
       "schema" => "layout",
       "schema_version" => 1,
@@ -118,7 +121,7 @@ module TebakoRuntimeBuilder
     }.freeze
     LAYOUT_PATH = File.join("lib", "tebako", "layout.yaml").freeze
 
-    def deploy_layout
+    def deploy_layout # rubocop:disable Metrics/MethodLength
       path = File.join(@data_src_dir, LAYOUT_PATH)
       FileUtils.mkdir_p(File.dirname(path))
       declaration = LAYOUT_DECLARATION.merge(
@@ -127,6 +130,14 @@ module TebakoRuntimeBuilder
       )
       declaration["mount_root_override"] = true if @mount_root_override
       declaration["preload_shim"] = @preload_shim_in_image if @preload_shim_in_image
+      # The runtime's own PE module basename (MSYS builds only; layout
+      # schema_minor 3): the driver exports it as TEBAKO_RUNTIME_DLL into
+      # the handoff env, and the tfs PE closure walk excludes a bare
+      # import name matching it (spec 22 §2.1 — the OS's basename-reuse
+      # rule binds the already-loaded copy). Flowed from
+      # RubyVersion#msys_dll_name — the name's single owner; never a
+      # second formula. POSIX builds omit the key.
+      declaration["runtime_dll"] = @ruby_ver.msys_dll_name if @platform.msys?
       File.write(path, YAML.dump(declaration))
       puts "   ... env image layout declaration: #{path}"
     end
