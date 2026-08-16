@@ -38,4 +38,4 @@ container_version: "0.16.2"
 # per leg). A platform with no published unit (gnu, until the product
 # ships a floor build) misses the pin and builds from source — a miss
 # is never an error.
-link_unit_release: ""
+link_unit_release: "v0.1.9"
