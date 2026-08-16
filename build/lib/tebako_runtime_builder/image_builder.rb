@@ -38,10 +38,8 @@ module TebakoRuntimeBuilder
   # (the runtime's compiled-in entry point). Spec 22 phase M2: the
   # tebako-runtime gem is NO LONGER staged — its require maps ship empty
   # (spec 22 §7) and the Rust driver covers the VFS, so the image carries
-  # no tebako-runtime gem at all. The patched gem_prelude.rb's
-  # `require 'tebako-runtime'` resolves to its warn-only LoadError branch
-  # (tamatebako/ruby's gem_prelude_tebako_runtime.patch — the patch rides
-  # along until the ruby-side harness retires it). For the
+  # no tebako-runtime gem at all, and the gem_prelude require patch that
+  # loaded it at boot is retired (tamatebako/ruby#65). For the
   # supported ruby matrix (>= 3.1.6) the gem's deploy gates
   # (DeployHelper#configure: '@needs_bundler = true unless ruby31?',
   # #update_rubygems: 'return if ruby31?') make the rubygems update and the
