@@ -227,9 +227,14 @@ module TebakoRuntimeBuilder
     # streaming through the public c_api (tebako_fs_open/read/close). Same
     # contract as tebako_fs_dlmap2file: the returned string is heap
     # allocated (the caller frees); NULL with errno set on failure --
-    # ENOENT keeps the covered-but-not-held host passthrough. The bare
-    # `goto failed` also becomes a named error carrying the errno.
-    # Anchors ride the inserted patch block's text, identical across the
+    # ENOENT keeps the covered-but-not-held host passthrough.
+    #
+    # The named error is owned RUBY-SIDE since the W2 dlmap rework
+    # (tamatebako/ruby dln_c_dlmap_msys): the patched call site routes a
+    # failed materialization through tfs_dl_verdict and retires the v1-era
+    # bare `goto failed` there, so this hot-patch carries ONLY the
+    # extraction workaround (the helper insert + the call swap). Anchors
+    # ride the inserted patch block's text, identical across the
     # 3.1-4.0 pre-patched trees. Idempotent (the helper name is the
     # marker), loud on anchor drift (the released pre-patched dln.c
     # changed -- revisit together with the tamatebako/ruby dlmap patch).
@@ -332,18 +337,10 @@ module TebakoRuntimeBuilder
     MSYS_DLN_DLMAP_CALL_ANCHOR = "    f = tebako_fs_dlmap2file(file);"
     MSYS_DLN_DLMAP_CALL_PATCHED =
       "    f = tfs_dlmap_extract(file); /* tebako patched: the dlmap2file host-path join breaks on the A: mount root */"
-    # A bare `goto failed` leaves the LoadError detail NULL -- the UCRT
-    # prints "(null)" and the dlmap errno is lost (spec 00: named errors,
-    # never silent fallbacks)
-    MSYS_DLN_DLMAP_FAIL_ANCHOR = "    else {\n      goto failed;\n    }"
-    MSYS_DLN_DLMAP_FAIL_PATCHED = [
-      "    else {",
-      "      /* tebako patched: name the extraction errno -- a bare goto failed",
-      "         leaves the LoadError text NULL and the UCRT prints \"(null)\" */",
-      "      dln_loaderror(\"cannot extract the in-image extension to a host file " \
-      "for LoadLibrary (errno=%d) - %s\", errno, file);",
-      "    }"
-    ].join("\n")
+    # NOTE: no FAIL anchor any more -- the W2 ruby-side dlmap patch names
+    # the extraction verdict itself (tfs_dl_verdict on errno != ENOENT);
+    # the v1-era `else { goto failed; }` this hot-patch used to rewrite is
+    # retired there, so the swap above leaves the naming intact.
     MSYS_DLN_DLMAP_MARKER = "tfs_dlmap_extract"
 
     class << self # rubocop:disable Metrics/ClassLength
@@ -678,8 +675,8 @@ module TebakoRuntimeBuilder
         File.write(io_c, contents.sub(MSYS_FD_IS_TEXT_ANCHOR, MSYS_FD_IS_TEXT_REPLACEMENT))
       end
 
-      # Replace the dln.c dlmap call with the C-side extraction and name
-      # the extraction failure's errno (MSYS_DLN_DLMAP_* above). Same shape
+      # Replace the dln.c dlmap call with the C-side extraction
+      # (MSYS_DLN_DLMAP_* above). Same shape
       # as the other msys hot-patches: idempotent on re-run (the pass-2
       # overlay re-runs prepare), loud when an anchor drifts (the released
       # pre-patched dln.c changed -- the fix landed in tamatebako/ruby, or
@@ -692,7 +689,7 @@ module TebakoRuntimeBuilder
         contents = File.read(dln_c)
         return if contents.include?(MSYS_DLN_DLMAP_MARKER)
 
-        anchors = [MSYS_DLN_DLMAP_DECL_ANCHOR, MSYS_DLN_DLMAP_CALL_ANCHOR, MSYS_DLN_DLMAP_FAIL_ANCHOR]
+        anchors = [MSYS_DLN_DLMAP_DECL_ANCHOR, MSYS_DLN_DLMAP_CALL_ANCHOR]
         anchors.each do |anchor|
           anchor_count = contents.scan(anchor).length
           next if anchor_count == 1
@@ -709,7 +706,6 @@ module TebakoRuntimeBuilder
         decl_with_helper = "#{MSYS_DLN_DLMAP_DECL_ANCHOR}\n\n#{MSYS_DLN_DLMAP_HELPER}"
         patched = contents.sub(MSYS_DLN_DLMAP_DECL_ANCHOR) { decl_with_helper }
         patched = patched.sub(MSYS_DLN_DLMAP_CALL_ANCHOR) { MSYS_DLN_DLMAP_CALL_PATCHED }
-        patched = patched.sub(MSYS_DLN_DLMAP_FAIL_ANCHOR) { MSYS_DLN_DLMAP_FAIL_PATCHED }
         File.write(dln_c, patched)
       end
 
