@@ -192,7 +192,19 @@ jobs:
                 grep -q tfs_dlopen_route "$work/tfs-ruby-$v-src/dln.c" || {
                   echo "::error::$asset rolled without the loader-interpose block"; exit 1; }
               fi
-              tar -czf "$out/$asset" -C "$work" "tfs-ruby-$v-src"
+              # DETERMINISM CONTRACT (docs/build-chain.md): the tarball's
+              # sha256 is the cache key for every downstream build leg
+              # (src_sha256) and the platform-skip signal for the whole
+              # matrix. Identical rolled content MUST roll to identical
+              # bytes, or a ruby-branch move cold-caches every leg on
+              # every platform (~60 min × the matrix, wasted). Clamp all
+              # tar metadata: member order, mtimes, ownership. The gzip
+              # header is already MTIME=0 (tar pipes through gzip, no
+              # name/time to record). NEVER reintroduce a plain `tar -czf`
+              # here — and never "fix" a downstream miss by bumping
+              # CACHE_VER when the real cause is non-deterministic bytes.
+              tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
+                -czf "$out/$asset" -C "$work" "tfs-ruby-$v-src"
               rm -rf "$work"
               echo "rolled $asset"
             done
