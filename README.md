@@ -166,6 +166,9 @@ version → semantics changelog table is spec 06's.
   dependency-tree matrix computer (`compute_matrix.rb`, walking
   `.github/build-graph.yaml`) and the hardened per-platform release
   assembly (`upload_release.rb` — manifest merge, idempotent skip, audit).
+  **The architecture and the cache/determinism invariants are documented
+  in `docs/build-chain.md` — read it before touching any workflow, the
+  roll tooling, or a cache key.**
 - `Brewfile` — macOS host build dependencies (CI).
 
 ## Specs
