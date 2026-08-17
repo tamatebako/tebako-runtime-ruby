@@ -109,7 +109,8 @@ concurrency:
 jobs:
   # CHAIN GATE (spec 22 phase 1): this branch's legs build against the
   # DRAFT chain, never the published pins — the ruby source roll from
-  # tamatebako/ruby@feat/dln-c-loader-interpose (PR #55) and the v2 driver /
+  # tamatebako/ruby@main (the PR #55 branch is fully merged there, along
+  # with the msys-dogfood incident fixes) and the v2 driver /
   # link unit from tamatebako/tebako@feat/tfs-mount-of (PR #396). Replace
   # with the published pins when the chain lands (in order: ruby release,
   # tebako release — then this file's chain jobs and the --src-mirror
@@ -131,8 +132,8 @@ jobs:
       - name: Resolve the chain branch heads
         id: chain-sha
         run: |
-          ruby_sha=$(git ls-remote https://github.com/tamatebako/ruby.git refs/heads/feat/dln-c-loader-interpose | cut -f1)
-          [ -n "$ruby_sha" ] || { echo "::error::cannot resolve tamatebako/ruby@feat/dln-c-loader-interpose"; exit 1; }
+          ruby_sha=$(git ls-remote https://github.com/tamatebako/ruby.git refs/heads/main | cut -f1)
+          [ -n "$ruby_sha" ] || { echo "::error::cannot resolve tamatebako/ruby@main"; exit 1; }
           echo "ruby=$ruby_sha" >> "$GITHUB_OUTPUT"
 
       - name: Cache the roll
@@ -147,7 +148,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: tamatebako/ruby
-          ref: feat/dln-c-loader-interpose
+          ref: main
           path: ruby-src
 
       - name: Setup Ruby
