@@ -1149,3 +1149,36 @@ jobs:
             runtime-packages
             !runtime-packages/x64-*-ruby*.dll
           retention-days: 1
+
+      # The msys devkit (spec 22 C3 — the windows dogfood leg): the two
+      # pieces a probe-gem install needs to compile a native extension
+      # through the runtime's OWN mkmf on a fresh runner. The env image
+      # ships no include/ (the POSIX harnesses bridge headers from the
+      # factory stash), and an msys ext additionally links
+      # -lx64-ucrt-ruby<ABI> (the import library lives only in the ruby
+      # build tree). Staged into a deliberate layout — devkit/include/ +
+      # devkit/lib/ — so the consumer never reverse-engineers build-tree
+      # paths. Same 1-day retention as the runtime package: consumed by
+      # the dogfood leg, never by the release.
+      - name: Stage the msys devkit (windows)
+        if: matrix.env.os == 'windows'
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          hdr=$(echo .build/deps/stash_*/include)
+          [ -d "$hdr" ] || { echo "::error::stash include tree missing ($hdr)"; exit 1; }
+          imp=$(echo .build/deps/src/_ruby_*/libx64-ucrt-ruby*.dll.a)
+          [ -f "$imp" ] || { echo "::error::ruby import library missing ($imp)"; exit 1; }
+          mkdir -p devkit/lib
+          cp -a "$hdr" devkit/include
+          cp "$imp" devkit/lib/
+          echo "devkit: include/ ($(find devkit/include -type f | wc -l) files) + lib/$(basename "$imp")"
+
+      - name: Upload the msys devkit (windows)
+        if: matrix.env.os == 'windows'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: devkit-${{ matrix.env.os }}-${{ matrix.env.arch }}-${{ matrix.ruby.version }}
+          if-no-files-found: error
+          path: devkit/
+          retention-days: 1
