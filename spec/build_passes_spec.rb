@@ -51,18 +51,23 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
                "\t$(Q) $(PURIFY) $(CC) $(EXE_LDFLAGS) $(XLDFLAGS) #{miniruby_recipe} $(OUTFLAG)$@\n")
   end
 
-  # The dln.c fixture: the dlmap patch block's three anchors (the decl the
-  # helper inserts after, the dlmap2file call, the bare goto failed) in a
-  # minimal dln_open body.
-  def write_dln_fixture(dir)
+  # The dln.c fixture: the dlmap patch block's two hot-patch anchors (the
+  # decl the helper inserts after, the dlmap2file call) plus the ruby-side
+  # named-verdict branch the W2 dlmap patch owns (the v1-era bare
+  # `goto failed` is retired there, so the hot-patch no longer rewrites
+  # it), in a minimal dln_open body.
+  def write_dln_fixture(dir) # rubocop:disable Metrics/MethodLength
     bp = TebakoRuntimeBuilder::BuildPasses
     lines = [bp::MSYS_DLN_DLMAP_DECL_ANCHOR,
              "static void *", "dln_open(const char *file)", "{",
              "  if (file && tfs_memfs_path_p(file)) {",
              bp::MSYS_DLN_DLMAP_CALL_ANCHOR,
+             "    if (f == NULL && errno != ENOENT) {",
+             "      tfs_dl_verdict(message, sizeof(message), file);",
+             "      error = message;",
+             "      goto failed;",
+             "    }",
              "    if (f) { load(f); }",
-             "    else if (errno == ENOENT) { passthrough(file); }",
-             bp::MSYS_DLN_DLMAP_FAIL_ANCHOR,
              "  }", "}"]
     File.write(File.join(dir, "dln.c"), "#{lines.join("\n")}\n")
   end
@@ -411,10 +416,14 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
       expect(contents).to include("if (c == ':') c = '_';")
     end
 
-    it "names the extraction errno instead of the bare goto failed (the '(null)' LoadError)" do
+    it "keeps the ruby-side named verdict intact (the W2 dlmap patch owns the named error)" do
       contents = File.read(dln_c)
-      expect(contents).to include("cannot extract the in-image extension to a host file for LoadLibrary (errno=%d)")
-      expect(contents).not_to include("    else {\n      goto failed;\n    }")
+      # the ruby-side verdict branch (tfs_dl_verdict on errno != ENOENT)
+      # rides through the hot-patch untouched -- the factory names nothing
+      # here any more
+      expect(contents).to include("if (f == NULL && errno != ENOENT) {")
+      expect(contents).to include("tfs_dl_verdict(message, sizeof(message), file);")
+      expect(contents).not_to include("cannot extract the in-image extension")
     end
 
     it "is idempotent across the msys pass-2 overlay prepare re-run" do
