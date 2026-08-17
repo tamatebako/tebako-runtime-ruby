@@ -1200,3 +1200,85 @@ jobs:
           if-no-files-found: error
           path: devkit/
           retention-days: 1
+
+  # Spec 22 C3 — the windows dogfood: the spec22-gems gem-level acceptance
+  # (tamatebako/ruby's ci/spec22-gems/run-msys.sh) against THIS run's fresh
+  # windows artifacts. Real sinatra + sassc, jailed, gemless, on the last
+  # platform — the leg matrix and the pinned verdicts live in the
+  # harness's README. Runs after the full windows matrix (it consumes the
+  # 4.0.6 leg's runtime package + devkit — bump both places when the
+  # ecosystem's dogfood line moves); skips when an audit run or a
+  # ruby_filter dispatch excludes 4.0.6.
+  dogfood:
+    name: Dogfood the fresh runtime (spec22-gems, msys)
+    needs: [compute, build]
+    if: >-
+      inputs.platform == 'windows' && inputs.audit == false
+      && contains(needs.compute.outputs.ruby-matrix, '4.0.6')
+    runs-on: windows-latest
+    steps:
+      # The harness is the acceptance spec; it lives with the POSIX legs
+      # in tamatebako/ruby and rides main (the recorded SHA is the run's
+      # provenance — the harness must track the ecosystem's head anyway).
+      - name: Checkout the harness (tamatebako/ruby)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: tamatebako/ruby
+          path: ruby-harness
+      - name: Record the harness SHA
+        shell: bash
+        run: echo "spec22-gems harness: tamatebako/ruby@$(git -C ruby-harness rev-parse HEAD)"
+      - name: Setup MSys
+        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
+        with:
+          msystem: ucrt64
+          path-type: minimal
+          update: true
+      # Only the gem-install leg needs a compiler (sassc's native ext
+      # compiles through the fresh runtime's OWN mkmf — the same ucrt64
+      # toolchain the build legs use). The proof legs run without it.
+      - name: Install the ucrt64 toolchain
+        shell: msys2 {0}
+        run: pacboy sync --needed --noconfirm toolchain:p
+      - name: Download the runtime package (this run)
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: runtime-packages-windows-x86_64-4.0.6
+          path: runtime-packages
+      - name: Download the msys devkit (this run)
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: devkit-windows-x86_64-4.0.6
+          path: devkit
+      - name: Fetch the published windows tfs CLI
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p tools
+          gh release download v0.1.9 --repo tamatebako/tebako \
+            --pattern 'tfs-0.1.9-windows-ucrt64.exe' --output tools/tfs.exe --clobber
+      - name: Run the spec22-gems acceptance (msys)
+        shell: msys2 {0}
+        env:
+          RUNTIME_PKG_DIR: runtime-packages
+          DEVKIT_DIR: devkit
+          TFS_CLI: tools/tfs.exe
+        run: |
+          set -euo pipefail
+          # The scratch lives in the workspace: the log upload below finds
+          # it by a stable windows path (the msys /tmp mapping is the
+          # msys installation's own, not the runner's).
+          export SCRATCH="$PWD/.dogfood-scratch"
+          bash ruby-harness/ci/spec22-gems/run-msys.sh 4.0.6
+      - name: Upload the dogfood logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dogfood-msys-logs
+          if-no-files-found: warn
+          path: |
+            .dogfood-scratch/proof-*.log
+            .dogfood-scratch/install.log
+          retention-days: 7
