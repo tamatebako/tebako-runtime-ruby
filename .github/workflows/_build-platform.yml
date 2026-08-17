@@ -1227,7 +1227,8 @@ jobs:
           path: ruby-harness
       - name: Record the harness SHA
         shell: bash
-        run: echo "spec22-gems harness: tamatebako/ruby@$(git -C ruby-harness rev-parse HEAD)"
+        run: |
+          echo "spec22-gems harness: tamatebako/ruby@$(git -C ruby-harness rev-parse HEAD)"
       - name: Setup MSys
         uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
         with:
