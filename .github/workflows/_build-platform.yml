@@ -111,12 +111,13 @@ jobs:
   # DRAFT chain, never the published pins — the ruby source roll from
   # tamatebako/ruby@main (the PR #55 branch is fully merged there, along
   # with the msys-dogfood incident fixes) and the v2 driver /
-  # link unit from tamatebako/tebako@feat/tfs-mount-of (PR #396). Replace
-  # with the published pins when the chain lands (in order: ruby release,
-  # tebako release — then this file's chain jobs and the --src-mirror
-  # plumbing come out again). The chain's third pin is retired: spec 22
-  # phase M2 drops the tebako-runtime gem from the env image entirely, so
-  # the gem-repo job and the GEMRC plumbing are no more.
+  # link unit from tamatebako/tebako@main (PR #396 merged there
+  # 2026-08-14; the branch went stale and lacks tebako_fs_dlalias2file).
+  # Replace with the published pins when the chain lands (in order: ruby
+  # release, tebako release — then this file's chain jobs and the
+  # --src-mirror plumbing come out again). The chain's third pin is
+  # retired: spec 22 phase M2 drops the tebako-runtime gem from the env
+  # image entirely, so the gem-repo job and the GEMRC plumbing are no more.
   #
   # The ruby source roll for THIS platform's scenario, packed exactly as a
   # tamatebako/ruby release lays out its assets (the asset naming mirrors
@@ -303,8 +304,10 @@ jobs:
         with:
           repository: tamatebako/tebako
           path: tebako-product
-          # CHAIN GATE: the spec-22 driver (PR #396) until the chain lands.
-          ref: feat/tfs-mount-of
+          # CHAIN GATE: the spec-22 driver from main — PR #396 merged
+          # 2026-08-14 and the branch went stale (it lacks
+          # tebako_fs_dlalias2file, which the W2 dlmap patch links).
+          ref: main
 
       - name: Check contract version agreement
         env:
@@ -416,8 +419,10 @@ jobs:
         with:
           repository: tamatebako/tebako
           path: tebako-rs
-          # CHAIN GATE: the spec-22 driver (PR #396) until the chain lands.
-          ref: feat/tfs-mount-of
+          # CHAIN GATE: the spec-22 driver from main — PR #396 merged
+          # 2026-08-14 and the branch went stale (it lacks
+          # tebako_fs_dlalias2file, which the W2 dlmap patch links).
+          ref: main
       - name: Checkout dwarfs-rs (link-unit sibling path dep)
         if: steps.published.outputs.hit != 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
