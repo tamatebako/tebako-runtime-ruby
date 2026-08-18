@@ -1290,4 +1290,8 @@ jobs:
           path: |
             .dogfood-scratch/proof-*.log
             .dogfood-scratch/install.log
+            # The tebako audit journal (policy denials ride here, never
+            # in the proof logs — incident 13's EACCES classes). Absent
+            # when no policy event fired; if-no-files-found tolerates.
+            .dogfood-scratch/tebako-home/journal.log
           retention-days: 7
