@@ -19,19 +19,20 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
   end
 
   # An msys ruby source tree fixture carrying the anchors the prepare
-  # hot-patches act on (dir.c: the glob hint; io.c: the fd_is_text block;
-  # dln.c: the dlmap extraction block — the stat wire-layout hot-patch is
-  # gone: the released source carries the pinned tebako_stat ABI from
-  # tamatebako/ruby v0.2.13), plus the
-  # shared-build set (issue 40): the mkexports rule in cygwin/GNUmakefile.in,
-  # the pipe-string mkexports.rb (the 3.3-line spelling), and the miniruby
-  # recipe in template/Makefile.in.
+  # hot-patches act on — dir.c: the glob hint; io.c: the fd_is_text block
+  # (both audited ABSENT from the v0.2.26 released source at the #114
+  # windows boot smoke, so the hot-patches stay); plus the shared-build
+  # set (issue 40): the mkexports rule in cygwin/GNUmakefile.in, the
+  # pipe-string mkexports.rb (the 3.3-line spelling), and the miniruby
+  # recipe in template/Makefile.in. (The dln.c dlmap extraction hot-patch
+  # IS retired at the v0.2.26 pin: tamatebako/ruby's dln_c_dlmap_msys
+  # routes through tebako_fs_dlmap2file and the tebako@main link unit —
+  # tebako#414 — owns the extraction + A:-join sanitize.)
   def write_msys_source_fixtures(dir) # rubocop:disable Metrics/MethodLength
     glob = TebakoRuntimeBuilder::BuildPasses::MSYS_GLOB_OPENDIR_ANCHOR
     fd_text = TebakoRuntimeBuilder::BuildPasses::MSYS_FD_IS_TEXT_ANCHOR
     File.write(File.join(dir, "dir.c"), "#{glob}\n")
     File.write(File.join(dir, "io.c"), "tfs_close\n#{fd_text}\n")
-    write_dln_fixture(dir)
     FileUtils.mkdir_p(File.join(dir, "cygwin"))
     File.write(File.join(dir, "cygwin", "GNUmakefile.in"),
                "rule-a\n#{TebakoRuntimeBuilder::BuildPasses::MSYS_DLL_EXPORTS_ANCHOR}rule-b\n" \
@@ -49,27 +50,6 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
                "-Wl,--start-group $(MAINLIBS) $(LIBS) $(EXTLIBS) -Wl,--end-group $(OUTFLAG)$@ # tebako patched\n" \
                "miniruby$(EXEEXT):\n" \
                "\t$(Q) $(PURIFY) $(CC) $(EXE_LDFLAGS) $(XLDFLAGS) #{miniruby_recipe} $(OUTFLAG)$@\n")
-  end
-
-  # The dln.c fixture: the dlmap patch block's two hot-patch anchors (the
-  # decl the helper inserts after, the dlmap2file call) plus the ruby-side
-  # named-verdict branch the W2 dlmap patch owns (the v1-era bare
-  # `goto failed` is retired there, so the hot-patch no longer rewrites
-  # it), in a minimal dln_open body.
-  def write_dln_fixture(dir) # rubocop:disable Metrics/MethodLength
-    bp = TebakoRuntimeBuilder::BuildPasses
-    lines = [bp::MSYS_DLN_DLMAP_DECL_ANCHOR,
-             "static void *", "dln_open(const char *file)", "{",
-             "  if (file && tfs_memfs_path_p(file)) {",
-             bp::MSYS_DLN_DLMAP_CALL_ANCHOR,
-             "    if (f == NULL && errno != ENOENT) {",
-             "      tfs_dl_verdict(message, sizeof(message), file);",
-             "      error = message;",
-             "      goto failed;",
-             "    }",
-             "    if (f) { load(f); }",
-             "  }", "}"]
-    File.write(File.join(dir, "dln.c"), "#{lines.join("\n")}\n")
   end
 
   # A libtfs.a the DLL export fragment derives from (issue 40): one defined
@@ -398,51 +378,45 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
     end
   end
 
-  describe ".prepare msys dln.c dlmap extraction" do
-    let(:dln_c) { File.join(ruby_src, "dln.c") }
+  describe ".prepare msys io.c fd_is_text dispatch" do
+    let(:io_c) { File.join(ruby_src, "io.c") }
 
     before do
       write_msys_source_fixtures(ruby_src)
       write_libtfs_fixture(deps_lib_dir)
+    end
+
+    it "dispatches rb_w32_fd_is_text through tebako_fd_is_embedded" do
       described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc")
-    end
 
-    it "routes the dlmap through the C-side extraction (the dlmap2file A:-join)" do
-      contents = File.read(dln_c)
-      expect(contents).to include("static char *\ntfs_dlmap_extract(const char *path)")
-      expect(contents).to include("f = tfs_dlmap_extract(file);")
-      expect(contents).not_to include("f = tebako_fs_dlmap2file(file);")
-      # the sanitized host tail: the drive-letter colon flattens
-      expect(contents).to include("if (c == ':') c = '_';")
-    end
-
-    it "keeps the ruby-side named verdict intact (the W2 dlmap patch owns the named error)" do
-      contents = File.read(dln_c)
-      # the ruby-side verdict branch (tfs_dl_verdict on errno != ENOENT)
-      # rides through the hot-patch untouched -- the factory names nothing
-      # here any more
-      expect(contents).to include("if (f == NULL && errno != ENOENT) {")
-      expect(contents).to include("tfs_dl_verdict(message, sizeof(message), file);")
-      expect(contents).not_to include("cannot extract the in-image extension")
+      contents = File.read(io_c)
+      expect(contents).to include("tfs_fd_is_text")
+      expect(contents).to include("#define rb_w32_fd_is_text(...) tfs_fd_is_text(__VA_ARGS__)")
     end
 
     it "is idempotent across the msys pass-2 overlay prepare re-run" do
+      described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc")
       expect do
         described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc")
       end.not_to raise_error
-      contents = File.read(dln_c)
-      expect(contents.scan("tfs_dlmap_extract(const char *path)").length).to eq(1)
-      expect(contents.scan("f = tfs_dlmap_extract(file);").length).to eq(1)
+      expect(File.read(io_c).scan("tfs_fd_is_text").length).to be >= 2
     end
 
-    it "fails loudly when a dlmap anchor drifted (the pre-patched dln.c changed)" do
-      File.write(dln_c, "no dlmap block here\n")
+    it "fails loudly when the anchor is absent but the shim block is present" do
+      File.write(io_c, "tfs_close\n#define rb_w32_close(...) tfs_close(__VA_ARGS__)\n")
       expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc") }
-        .to raise_error(TebakoRuntimeBuilder::Error, /dlmap anchor/)
+        .to raise_error(TebakoRuntimeBuilder::Error, /fd dispatch macro anchor/)
     end
 
-    it "fails when dln.c does not exist" do
-      FileUtils.rm(dln_c)
+    it "passes a tree without the io.c shim block through untouched" do
+      File.write(io_c, "/* no shims here */\n")
+      expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc") }
+        .not_to raise_error
+      expect(File.read(io_c)).not_to include("tfs_fd_is_text")
+    end
+
+    it "fails when io.c does not exist" do
+      FileUtils.rm(io_c)
       expect { described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc") }
         .to raise_error(TebakoRuntimeBuilder::Error, /does not exist/)
     end

@@ -37,8 +37,11 @@ module TebakoRuntimeBuilder
   #   prepare       -- substitute @TEBAKO_MLIBS@ in template/Makefile.in with
   #                    the platform static library list and build the stub
   #                    libtebako-fs.a for the toolchain link; on msys also
-  #                    guard the dir.c glob_opendir capacity hint and read
-  #                    libtfs' struct stat fills through their wire layout
+  #                    apply the shared-build set (issue #40: the DLL export
+  #                    fragment, the exe link order, the mkexports baseruby
+  #                    rewrite, miniruby's static library set) and guard the
+  #                    dir.c glob_opendir capacity hint + the io.c
+  #                    rb_w32_fd_is_text dispatch against libtfs handles
   #                    (the hot-patches below)
   #   postconfigure -- substitute S["MAINLIBS"] in the generated
   #                    config.status (the deferred patch of the canonical set)
@@ -70,6 +73,10 @@ module TebakoRuntimeBuilder
     # Removal: once tamatebako/ruby's dir_c_memfs_msys.patch carries the
     # guard in the released source tree the anchor below no longer matches
     # and the substitution raises -- drop it together with the pin bump.
+    # Audited at the v0.2.26 pin: the source patch does NOT carry the
+    # guard (the #114 windows boot smoke segfaulted at <internal:dir>:220
+    # on every ruby leg) -- the hot-patch stays until the source-side
+    # absorption lands in tamatebako/ruby and ships in a source release.
     MSYS_GLOB_OPENDIR_ANCHOR = "if ((capacity = dirp->nfiles) > 0) {"
     MSYS_GLOB_OPENDIR_GUARDED =
       "if (!tebako_fs_dir_is_embedded((tebako_dir_t) dirp) /* tebako patch */ " \
@@ -93,6 +100,9 @@ module TebakoRuntimeBuilder
     # Removal: once tamatebako/ruby's io_c_shims_msys patch carries the
     # dispatch in the released source the anchor below no longer matches
     # and the substitution raises -- drop it together with the pin bump.
+    # Audited at the v0.2.26 pin: the source patch does NOT carry the
+    # dispatch (no rb_w32_fd_is_text mention anywhere in tamatebako/ruby's
+    # patches) -- same absorption follow-up as the glob guard above.
     MSYS_FD_IS_TEXT_ANCHOR = <<~C.chomp
       #define rb_w32_close(...) tfs_close(__VA_ARGS__)
       #define rb_w32_fstati128(...) tfs_fstati128(__VA_ARGS__)
@@ -196,152 +206,6 @@ module TebakoRuntimeBuilder
       "      f.each(&block)",
       "    end"
     ].join("\n")
-
-    # msys dln.c dlmap extraction (the ruby >= 3.3 native-ext LoadError) --
-    #
-    # The pre-patched dln.c routes dlopen of a memfs path through
-    # tebako_fs_dlmap2file, which composes the extraction host path from the
-    # FULL memfs path (<tmp>/tebako-dl-<hex>/<memfs path>). On msys the
-    # mount root carries a drive letter (A:/t), and a Windows path
-    # join with a drive-prefixed absolute operand REPLACES the base -- the
-    # extraction targets the nonexistent A: drive, create_dir_all fails,
-    # and dlmap2file answers NULL with errno=EIO. The dlmap call site's
-    # bare `goto failed` then raises LoadError with a NULL detail, which
-    # the UCRT prints as "(null)" -- the observed (pre-rename root)
-    #   LoadError: (null) - A:/__tfs__/.../racc-1.7.3/racc/cparse.so
-    # (a LoadLibrary failure would name the GetLastError code, e.g.
-    # "126: ...", so the message shape itself places the failure BEFORE
-    # LoadLibrary, in the extraction).
-    #
-    # Why 3.3+ only: 3.1/3.2 build every extension statically
-    # (--with-static-linked-ext, racc's cparse lives in ext/) and require
-    # is served from the static ext table -- no image .so is ever
-    # dlopened, so the broken extraction is never exercised. Ruby 3.3
-    # removed ext/racc; racc 1.7.x rides gems/bundled_gems and its
-    # cparse.so is built at install time into the image's gem extensions
-    # dir -- the FIRST dynamic .so a windows runtime loads from the image.
-    #
-    # The fix here replaces the dlmap2file call with a C-side extraction
-    # that composes the host path from the SANITIZED memfs tail (the
-    # drive-letter colon flattens, so the tail is a relative host path),
-    # streaming through the public c_api (tebako_fs_open/read/close). Same
-    # contract as tebako_fs_dlmap2file: the returned string is heap
-    # allocated (the caller frees); NULL with errno set on failure --
-    # ENOENT keeps the covered-but-not-held host passthrough.
-    #
-    # The named error is owned RUBY-SIDE since the W2 dlmap rework
-    # (tamatebako/ruby dln_c_dlmap_msys): the patched call site routes a
-    # failed materialization through tfs_dl_verdict and retires the v1-era
-    # bare `goto failed` there, so this hot-patch carries ONLY the
-    # extraction workaround (the helper insert + the call swap). Anchors
-    # ride the inserted patch block's text, identical across the
-    # 3.1-4.0 pre-patched trees. Idempotent (the helper name is the
-    # marker), loud on anchor drift (the released pre-patched dln.c
-    # changed -- revisit together with the tamatebako/ruby dlmap patch).
-    MSYS_DLN_DLMAP_DECL_ANCHOR = "char *tebako_fs_dlmap2file(const char *path);"
-    MSYS_DLN_DLMAP_HELPER = <<~'C'.chomp
-      #include <windows.h> /* GetTempPathA/CreateDirectoryA/GetCurrentProcessId for tfs_dlmap_extract */
-
-      /* tebako_fs_dlmap2file composes the extraction host path from the
-         full memfs path; on msys the drive-letter mount root (A:/t)
-         makes that host join absolute, so the extraction targets the
-         nonexistent A: drive and fails EIO (the ruby >= 3.3 dynamic
-         native-extension LoadError: (null) class -- 3.1/3.2 ship no
-         dynamic .so in the image: their exts link statically). Extract
-         here instead: stream the memfs fd to a host temp file whose tail
-         is the SANITIZED memfs path. The contract is tebako_fs_dlmap2file's:
-         the returned string is heap allocated (the caller frees); NULL
-         with errno set on failure (ENOENT = covered but not held -- the
-         host passthrough below then serves the path from the host). */
-      static char *
-      tfs_dlmap_extract(const char *path)
-      {
-          int fd = tebako_fs_open(path, 0);
-          if (fd < 0) return NULL; /* errno from the c_api */
-
-          char tmp[MAX_PATH];
-          DWORD tlen = GetTempPathA(sizeof(tmp), tmp);
-          if (tlen == 0 || tlen >= sizeof(tmp)) {
-              tebako_fs_close(fd);
-              errno = EIO;
-              return NULL;
-          }
-
-          /* <tmp>/tebako-dl-<pid>/<memfs path>: the drive-letter colon
-             flattens to '_' and backslashes to '/', so the tail is a
-             RELATIVE host path */
-          size_t cap = strlen(tmp) + strlen(path) + 40;
-          char *host = xmalloc(cap);
-          char *dst = host + sprintf(host, "%s", tmp);
-          if (dst > host && dst[-1] != '/' && dst[-1] != '\\') *dst++ = '/';
-          dst += sprintf(dst, "tebako-dl-%lu/", (unsigned long)GetCurrentProcessId());
-          const char *src;
-          for (src = path; *src; src++) {
-              char c = *src;
-              if (c == ':') c = '_';
-              else if (c == '\\') c = '/';
-              *dst++ = c;
-          }
-          *dst = '\0';
-
-          /* mkdir -p the parents: a process extracts several extensions
-             side by side, so existing components are the norm */
-          char *slash = host;
-          while ((slash = strchr(slash + 1, '/')) != NULL) {
-              *slash = '\0';
-              CreateDirectoryA(host, NULL);
-              *slash = '/';
-          }
-
-          FILE *out = fopen(host, "wb");
-          if (!out) {
-              int open_errno = errno;
-              tebako_fs_close(fd);
-              free(host);
-              errno = open_errno;
-              return NULL;
-          }
-
-          for (;;) {
-              char buf[16384];
-              ssize_t n = tebako_fs_read(fd, buf, sizeof(buf));
-              if (n < 0) {
-                  int read_errno = errno;
-                  tebako_fs_close(fd);
-                  fclose(out);
-                  remove(host);
-                  free(host);
-                  errno = read_errno;
-                  return NULL;
-              }
-              if (n == 0) break;
-              if (fwrite(buf, 1, (size_t)n, out) != (size_t)n) {
-                  tebako_fs_close(fd);
-                  fclose(out);
-                  remove(host);
-                  free(host);
-                  errno = EIO;
-                  return NULL;
-              }
-          }
-          tebako_fs_close(fd);
-          if (fclose(out) != 0) {
-              remove(host);
-              free(host);
-              errno = EIO;
-              return NULL;
-          }
-          return host;
-      }
-    C
-    MSYS_DLN_DLMAP_CALL_ANCHOR = "    f = tebako_fs_dlmap2file(file);"
-    MSYS_DLN_DLMAP_CALL_PATCHED =
-      "    f = tfs_dlmap_extract(file); /* tebako patched: the dlmap2file host-path join breaks on the A: mount root */"
-    # NOTE: no FAIL anchor any more -- the W2 ruby-side dlmap patch names
-    # the extraction verdict itself (tfs_dl_verdict on errno != ENOENT);
-    # the v1-era `else { goto failed; }` this hot-patch used to rewrite is
-    # retired there, so the swap above leaves the naming intact.
-    MSYS_DLN_DLMAP_MARKER = "tfs_dlmap_extract"
 
     class << self # rubocop:disable Metrics/ClassLength
       def prepare(ostype, ruby_source_dir, deps_lib_dir, ruby_ver, mount_point, cc = "cc") # rubocop:disable Metrics/ParameterLists,Metrics/MethodLength
@@ -593,20 +457,24 @@ module TebakoRuntimeBuilder
       end
 
       # The msys hot-patch set the prepare pass applies (the constants
-      # above): the dir.c glob_opendir guard, the io.c rb_w32_fd_is_text
-      # dispatch, the dln.c C-side dlmap extraction (the dlmap2file
-      # host-path join breaks on the A: mount root), and the shared-build
-      # set (issue #40) -- the DLL export
+      # above): the shared-build set (issue #40) -- the DLL export
       # fragment, the mkexports rule appending it, the mkexports
       # pipe-string rewrite for the ruby-4 baseruby, and miniruby's static
-      # library set in template/Makefile.in. (The struct stat wire-layout
-      # reads are GONE: the released source carries the pinned tebako_stat
-      # ABI — stat64 layout — from tamatebako/ruby v0.2.13, so there is
-      # nothing left to re-read.)
-      def hotfix_msys!(ruby_source_dir, deps_lib_dir, ruby_ver) # rubocop:disable Metrics/AbcSize,Metrics/MethodLength
+      # library set in template/Makefile.in -- plus the two ruby-C-source
+      # guards still awaiting source-side absorption (the dir.c
+      # glob_opendir capacity-hint guard and the io.c rb_w32_fd_is_text
+      # dispatch; audited absent from the v0.2.26 released tree -- the
+      # #114 windows boot smoke segfaulted without them).
+      #
+      # The dlmap extraction workaround is GONE: the released source
+      # routes dln.c through tebako_fs_dlmap2file (tamatebako/ruby
+      # dln_c_dlmap_msys) and the extraction + A:-join sanitize live in
+      # the tebako@main link unit (tebako#414). A ruby-source fix lands in
+      # tamatebako/ruby and flows via a source release (iterate unmerged
+      # via harness_ref) -- the remaining two guards retire the same way.
+      def hotfix_msys!(ruby_source_dir, deps_lib_dir, ruby_ver) # rubocop:disable Metrics/AbcSize
         hotfix_msys_glob_opendir!(File.join(ruby_source_dir, "dir.c"))
         hotfix_msys_fd_is_text!(File.join(ruby_source_dir, "io.c"))
-        hotfix_msys_dln_dlmap!(File.join(ruby_source_dir, "dln.c"))
         write_dll_exports_fragment!(ruby_source_dir, deps_lib_dir)
         hotfix_msys_dll_exports!(File.join(ruby_source_dir, "cygwin", "GNUmakefile.in"))
         # The ruby.exe link rule lives in BOTH template/Makefile.in (the one
@@ -673,40 +541,6 @@ module TebakoRuntimeBuilder
 
         puts "   ... dispatching rb_w32_fd_is_text through tebako_fd_is_embedded in io.c (msys)"
         File.write(io_c, contents.sub(MSYS_FD_IS_TEXT_ANCHOR, MSYS_FD_IS_TEXT_REPLACEMENT))
-      end
-
-      # Replace the dln.c dlmap call with the C-side extraction
-      # (MSYS_DLN_DLMAP_* above). Same shape
-      # as the other msys hot-patches: idempotent on re-run (the pass-2
-      # overlay re-runs prepare), loud when an anchor drifts (the released
-      # pre-patched dln.c changed -- the fix landed in tamatebako/ruby, or
-      # the dlmap block moved).
-      def hotfix_msys_dln_dlmap!(dln_c) # rubocop:disable Metrics/AbcSize,Metrics/MethodLength
-        unless File.exist?(dln_c)
-          raise TebakoRuntimeBuilder::Error.new("Could not patch #{dln_c} because it does not exist.", 107)
-        end
-
-        contents = File.read(dln_c)
-        return if contents.include?(MSYS_DLN_DLMAP_MARKER)
-
-        anchors = [MSYS_DLN_DLMAP_DECL_ANCHOR, MSYS_DLN_DLMAP_CALL_ANCHOR]
-        anchors.each do |anchor|
-          anchor_count = contents.scan(anchor).length
-          next if anchor_count == 1
-
-          raise TebakoRuntimeBuilder::Error.new(
-            "#{dln_c}: expected exactly one dlmap anchor (#{anchor.inspect[0, 60]}...), found #{anchor_count} -- " \
-            "the pre-patched dln.c changed; revisit the msys dlmap extraction hot-patch", 130
-          )
-        end
-
-        puts "   ... extracting memfs extensions C-side in dln.c (the dlmap2file A:-join, msys)"
-        # The block form of sub: no backreference/backslash interpretation
-        # of the C text (the helper carries '\\' and '\0' literals)
-        decl_with_helper = "#{MSYS_DLN_DLMAP_DECL_ANCHOR}\n\n#{MSYS_DLN_DLMAP_HELPER}"
-        patched = contents.sub(MSYS_DLN_DLMAP_DECL_ANCHOR) { decl_with_helper }
-        patched = patched.sub(MSYS_DLN_DLMAP_CALL_ANCHOR) { MSYS_DLN_DLMAP_CALL_PATCHED }
-        File.write(dln_c, patched)
       end
 
       # The DLL export fragment (issue #40): the tebako_* definitions of

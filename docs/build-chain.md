@@ -145,6 +145,40 @@ evict the build prefixes the matrix runs to warm. The content-keyed
 roll (v2) and the staged link-unit cache exist to keep minted bytes per
 probe round near zero.
 
+## The patch-ownership law (the factory never edits ruby C source)
+
+This repo is a **pure builder**: it fetches the pinned, sha256-verified,
+PRE-PATCHED source release from tamatebako/ruby and compiles it. Every
+patch to ruby's own sources — every `*.c`/`*.h` semantic change the
+runtime needs — is owned by tamatebako/ruby and reaches a build ONLY
+through a source release (the SSOT law; the release pin is
+`source_fetcher.rb`'s `DEFAULT_RELEASE`).
+
+Under incident pressure the correct loop is: fix on a tamatebako/ruby
+branch → iterate UNMERGED via `harness_ref` (below) → merge to ruby main
+→ cut a source release → bump the pin here. **Never** land a NEW
+factory-side hot-patch of ruby C source — not "temporarily", not with a
+removal note. (The 2026-08 incident era did exactly that — the
+glob_opendir guard, the fd_is_text dispatch, the dlmap extraction
+workaround — each with a "drop with the pin bump" contract. At the
+v0.2.26 pin bump the three were audited for absorption line-by-line: the
+dlmap extraction WAS absorbed (dln_c_dlmap_msys + the tebako@main link
+unit, tebako#414) and is retired; the glob_opendir guard and the
+fd_is_text dispatch were NOT — the released patches never mention
+`glob_opendir`/`nfiles`/`rb_w32_fd_is_text`, and the #114 windows boot
+smoke segfaulted at `<internal:dir>:220` on every ruby leg without them.
+Those two survive in `build_passes.rb` as named, spec-pinned hot-patches
+until the source-side absorption lands in tamatebako/ruby's
+dir_c_memfs_msys / io_c_shims_msys patches and ships in a source
+release. Do not resurrect the pattern for anything new.)
+
+What legitimately remains in `build_passes.rb` is build-LINK glue: the
+issue-40 set (the DLL export fragment, the exe link order, the mkexports
+baseruby rewrite, miniruby's static libs) edits ruby's build SYSTEM
+(Makefile.in/GNUmakefile.in/mkexports.rb/config.status) to control how
+OUR link unit joins the ruby DLL/exe — factory business, never ruby
+semantics.
+
 ## The spec-22 chain gate (temporary)
 
 While the v2 chain is in flight, the roll-source job rolls from the
