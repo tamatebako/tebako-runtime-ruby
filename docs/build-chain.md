@@ -45,19 +45,34 @@ call it; it is never dispatched directly. Stages:
 
 ## The cache architecture (and why it works)
 
-Three independent caches, each keyed on what it actually contains:
+Four independent caches, each keyed on what it actually contains:
 
 | Cache | Key | Contents |
 |-------|-----|----------|
-| roll cache | `spec22-src-roll-v1-<platform>-<ruby-branch-sha>` | the rolled source tarballs + SHA256SUMS |
+| roll cache | `spec22-src-roll-v2-<platform>-<hash(rolled inputs)>` | the rolled source tarballs + SHA256SUMS |
 | build prefix | `tebako-runtime-<os>-<arch>-<version>-<tebako-ver>-<src_sha256>-v<CACHE_VER>` | the whole `.build` prefix |
-| link unit | artifact staged per run, pin-hit download | the native closure per triplet |
+| staged link unit | `link-unit-staged-v1-<os>-<arch>-<tebako-sha>-<dwarfs-sha>-<hash(ci/link-unit*.sh)>` | the fully staged link unit (compile skipped on hit) |
+| published link unit | release-pin download (no cache scope) | the native closure per triplet — the terminal state |
 
-The load-bearing one is `src_sha256`: the sha256 of the source tarball
-THIS platform consumes for that ruby version. It is read from the
-pinned release's SHA256SUMS (normal path) or from the roll's own
-SHA256SUMS (chain gate, via `TEBAKO_SRC_MIRROR`). The build prefix cache
-is `save-always: true` — a red leg must never poison the next one.
+The roll cache key is the hash of the ROLLED INPUTS
+(`ruby-src/versions.yml`, `ruby-src/patches/**`, `ruby-src/schema/**`,
+`ruby-src/tools/**`) — content, not the ruby-branch SHA. A probe commit
+that touches only CI/harness files reuses the previous round's roll.
+The retired v1 key (branch SHA) minted a fresh ~2.5 GB entry per probe
+commit and evicted the build prefixes the matrix runs to warm.
+
+The staged link unit is keyed on the two input SHAs it compiles
+(tebako-rs + dwarfs-t) plus the link-unit scripts. A hit skips the
+whole compile stage (the build legs consume the restored stage); a miss
+rebuilds and saves. The published pin, when set, beats both — it is
+the scope-free terminal state (see the scope law below).
+
+The load-bearing build-prefix component is `src_sha256`: the sha256 of
+the source tarball THIS platform consumes for that ruby version. It is
+read from the pinned release's SHA256SUMS (normal path) or from the
+roll's own SHA256SUMS (chain gate, via `TEBAKO_SRC_MIRROR`). The build
+prefix cache is `save-always: true` — a red leg must never poison the
+next one.
 
 **For this to save anything, `src_sha256` must be content-addressed:**
 identical patched source ⇒ identical tarball bytes ⇒ identical sha256 ⇒
@@ -81,6 +96,10 @@ Verified 2026-08-17: two independent `tools/apply` rolls of the same
 version produce byte-identical trees (`diff -r` clean), and a
 metadata-clamped tar of both produces identical sha256.
 
+Verified again 2026-08-19 (runs 32204381083, 32211646613): three probe
+rounds on three different ruby-branch SHAs computed the IDENTICAL build
+prefix key (`…e06b8398…-v4`) — the roll bytes did not move.
+
 **If the tar line regresses to plain `tar -czf`:** every ruby-branch
 move changes every tarball's sha256 on every platform, every build
 prefix cache goes cold, and the whole matrix rebuilds (~60 min × every
@@ -99,6 +118,33 @@ starvation this design exists to prevent.
   `tools/apply` writes into the rolled tree — the tree is content, and
   content is the cache key.
 
+## THE SCOPE LAW (why a green key still misses)
+
+`actions/cache` scopes entries to the ref that wrote them:
+`refs/pull/N/merge` runs and branch dispatches NEVER share entries,
+even when the key string is identical. Evidenced 2026-08-19: runs
+32204381083 (`pull_request`) and 32211646613 (`workflow_dispatch` on
+the branch) computed the same prefix key and both missed — each scope
+was cold. Consequences:
+
+- **Iterate on ONE ref.** Pick `workflow_dispatch` on the feature
+  branch and stay on it; every scope's first run pays a cold build,
+  and bouncing between a PR run and a dispatch pays it twice.
+- **A scope miss is NOT corruption and NOT non-determinism** — never
+  bump `CACHE_VER` for it, never "fix" the roll. Check the run's ref
+  before touching any key.
+- **The published-pin path is the scope-free terminal state** — release
+  downloads carry no cache scope. Landing the chain (ruby source
+  release → tebako release → pins set) is what makes the caches
+  advisory instead of load-bearing.
+
+Eviction math: the repository cache cap is 10 GB. One link-unit-stage
+entry is ~2.3–2.6 GB; the retired per-commit roll key minted a fresh
+~2.5 GB entry per probe commit, so three probe rounds were enough to
+evict the build prefixes the matrix runs to warm. The content-keyed
+roll (v2) and the staged link-unit cache exist to keep minted bytes per
+probe round near zero.
+
 ## The spec-22 chain gate (temporary)
 
 While the v2 chain is in flight, the roll-source job rolls from the
@@ -116,6 +162,12 @@ published-pin path remains.
 - `workflow_dispatch` grammar: `full | tidy | catalog | a,comma,slice`
   on one platform, optionally with `arch_filter` — the fast path for
   iteration loops that genuinely need rebuilt artifacts.
+- `ruby_filter` (e.g. `4.0.6`) narrows the matrix to one ruby version —
+  the probe-round spend control. Pair it with a dispatch on ONE ref
+  (the scope law above).
+- `harness_ref` points the dogfood acceptance-harness checkout at a
+  tamatebako/ruby branch, so the harness iterates UNMERGED next to its
+  probe PR — never merge a harness PR just to run it.
 - `audit: true` — publish-shaped verification with no build spend.
 - `CACHE_VER` — see the contract above; bump ONLY for recipe shape
   changes, and say why in the comment (the history is recorded there).
