@@ -101,6 +101,63 @@ RSpec.describe "build-platform reusable workflow" do
     end
   end
 
+  # The roll cache keys on the hash of the ROLLED INPUTS (versions.yml +
+  # patches/ + schema/ + tools/ — the complete input set of tools/apply),
+  # never the ruby branch sha: the determinism contract makes the rolled
+  # bytes a pure function of the inputs, so a harness-only ruby commit
+  # restores in seconds instead of re-rolling 2.5 GB (and minting the
+  # cache-cap pressure that evicts the build-prefix entries). The
+  # checkout must precede the cache step — hashFiles needs the tree.
+  it "keys the roll cache on the rolled-inputs content hash, never the branch sha" do
+    steps = workflow.fetch("jobs").fetch("roll-source").fetch("steps")
+    names = steps.map { |step| step["name"].to_s }
+    cache = steps.find { |step| step["name"] == "Cache the roll" }
+    key = cache.dig("with", "key").to_s
+    expect(key).to include("hashFiles('ruby-src/versions.yml'")
+    expect(key).not_to include("chain-sha")
+    checkout = steps.find { |step| step["name"] == "Checkout tamatebako/ruby (the chain source)" }
+    expect(checkout["if"]).to be_nil # always — the key's hashFiles needs the tree
+    expect(names.index("Checkout tamatebako/ruby (the chain source)")).to be < names.index("Cache the roll")
+  end
+
+  # The staged-unit cache stands in for the published pin while no
+  # product release ships the units: keyed on the product + dwarfs-rs
+  # SHAs and the recipe hash (never a ruby version, never a ruby branch
+  # sha), restored before any source-build step, with every source-build
+  # and warmer step gated on the miss — a re-run with an unmoved product
+  # tree is a seconds-scale restore, never another fat-LTO build.
+  it "restores the staged link unit before any source build" do
+    steps = workflow.fetch("jobs").fetch("link-unit").fetch("steps")
+    names = steps.map { |step| step["name"].to_s }
+    staged = steps.find { |step| step["name"].to_s == "Cache the staged link unit" }
+    expect(staged).not_to be_nil
+    expect(staged.dig("with", "path")).to eq(".build/link-unit")
+    key = staged.dig("with", "key").to_s
+    expect(key).to include("${{ matrix.env.os }}", "${{ matrix.env.arch }}",
+                           "steps.unit-key.outputs.tebako", "steps.unit-key.outputs.dwarfs")
+    expect(key).not_to include("ruby")
+    # The key's SHAs come from the checkouts — resolve runs after them.
+    expect(names.index("Resolve the link-unit input SHAs"))
+      .to be > names.index("Checkout the tebako product repo (the link unit source)")
+    # The restored unit gets the same completeness assertion the legs do.
+    assertion = steps.find { |step| step["name"].to_s == "Assert the restored staged unit is complete" }
+    expect(assertion).not_to be_nil
+    expect(assertion["if"].to_s).to include("steps.staged.outputs.cache-hit == 'true'")
+    expect(assertion["run"]).to include("libtebako_driver.a", "libtfs.a", "closure")
+    # Every builder/warmer gated on the miss, after the cache step.
+    builders = steps.select do |step|
+      step["name"].to_s.start_with?("Stage the", "Build + stage", "Set up vcpkg", "Setup MSys",
+                                    "Install pacman", "Configure the vcpkg", "Restore the vcpkg",
+                                    "Cache the cargo", "Cache vcpkg", "Cache the musl")
+    end
+    expect(builders).not_to be_empty
+    builders.each do |step|
+      expect(step["if"].to_s).to include("steps.staged.outputs.cache-hit != 'true'"),
+                                 "#{step["name"]} must be gated on the staged-unit cache missing"
+      expect(names.index(step["name"])).to be > names.index("Cache the staged link unit")
+    end
+  end
+
   # The publish job is GONE from the per-platform builder: N platform runs
   # sharing one publish group displaced (cancelled) queued publishes. The
   # coordinator (publish.yml) publishes from a single release job. Locked

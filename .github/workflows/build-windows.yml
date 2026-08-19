@@ -39,13 +39,17 @@ on:
   workflow_dispatch:
     inputs:
       ruby_filter:
-        description: 'Rubies: "full", "tidy", "catalog", or comma-separated versions'
+        description: 'Rubies: "full", "tidy", "catalog", or comma-separated versions. Probe/dogfood rounds: "4.0.6" — the dogfood job consumes only that leg; the rest is pure spend.'
         type: string
         default: 'full'
       arch_filter:
         description: 'Arch slice: "all" or an arch (e.g. "x86_64")'
         type: string
         default: 'all'
+      harness_ref:
+        description: 'Dogfood acceptance-harness ref in tamatebako/ruby (default main). Point at a ruby PR branch to iterate the harness WITHOUT merging it.'
+        type: string
+        default: 'main'
 
 jobs:
   windows:
@@ -54,4 +58,5 @@ jobs:
       platform: windows
       ruby_filter: ${{ inputs.ruby_filter || '' }}
       arch_filter: ${{ inputs.arch_filter || '' }}
+      harness_ref: ${{ inputs.harness_ref || 'main' }}
     secrets: inherit

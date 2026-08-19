@@ -35,8 +35,12 @@
 # Stage 2 (link-unit): the v2 link unit (tebako-driver + scoped tfs + the
 #   native closure) staged ONCE per platform-arch — the closure depends on
 #   the triplet only, never on the ruby version — and handed to the build
-#   legs as an artifact. Windows legs still stage in-leg (the build job
-#   below) until the first published windows link unit ships.
+#   legs as an artifact. Order of preference: the published pin
+#   (contract.yml link_unit_release → ci/link-unit-download.sh), else the
+#   staged-unit cache (keyed on the product + dwarfs-rs SHAs and the
+#   recipe hash — ref-scoped, docs/build-chain.md's SCOPE LAW), else the
+#   source build. Every platform stages here now; the published-pin path
+#   awaits a product release that ships the units.
 # Stage 3 (build): the matrix legs, exactly the retired monolith's steps,
 #   consuming the staged unit via TEBAKO_RUST_LIBDIR instead of rebuilding
 #   the native closure per ruby version.
@@ -56,13 +60,17 @@ on:
         required: true
         type: string
       ruby_filter:
-        description: 'Dispatch grammar: full | tidy | catalog | comma-separated versions. Empty = the event decides.'
+        description: 'Dispatch grammar: full | tidy | catalog | comma-separated versions. Empty = the event decides. Probe/dogfood rounds: "4.0.6" — the dogfood job consumes only that leg; the rest is pure spend.'
         type: string
         default: ''
       arch_filter:
         description: 'Optional arch slice within the platform (x86_64 | arm64).'
         type: string
         default: ''
+      harness_ref:
+        description: 'Dogfood acceptance-harness ref in tamatebako/ruby (branch/SHA, default main). Point at a ruby PR branch to iterate the harness WITHOUT merging it.'
+        type: string
+        default: 'main'
       audit:
         description: 'Audit only: no builds, no uploads — verify the release against the expected matrix'
         type: boolean
@@ -121,9 +129,13 @@ jobs:
   #
   # The ruby source roll for THIS platform's scenario, packed exactly as a
   # tamatebako/ruby release lays out its assets (the asset naming mirrors
-  # SourceFetcher.scenario_asset_names — the consumer-side owner). Cached
-  # on the ruby branch's head sha: a re-run without a ruby-branch move is
-  # a restore, never a re-roll.
+  # SourceFetcher.scenario_asset_names — the consumer-side owner). The
+  # cache keys on the hash of the ROLLED INPUTS (versions.yml + patches/ +
+  # schema/ + tools/): the determinism contract (docs/build-chain.md)
+  # makes the rolled bytes a pure function of those, so a harness-only
+  # move on the ruby branch (a probe round) restores in seconds — never a
+  # 7-minute re-roll, and never a fresh 2.5 GB entry per probe commit
+  # (the 10 GB-cap pressure that evicts the build-prefix entries).
   roll-source:
     name: Roll the chain-gated ruby source (${{ inputs.platform }})
     runs-on: ubuntu-24.04
@@ -137,20 +149,22 @@ jobs:
           [ -n "$ruby_sha" ] || { echo "::error::cannot resolve tamatebako/ruby@main"; exit 1; }
           echo "ruby=$ruby_sha" >> "$GITHUB_OUTPUT"
 
-      - name: Cache the roll
-        id: roll-cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: .build/spec22-roll
-          key: spec22-src-roll-v1-${{ inputs.platform }}-${{ steps.chain-sha.outputs.ruby }}
-
+      # Always checked out (a shallow fetch is seconds): the roll cache
+      # keys on the CONTENT hash of this tree's rolled inputs, which needs
+      # the tree on disk (hashFiles) before the cache step can run.
       - name: Checkout tamatebako/ruby (the chain source)
-        if: steps.roll-cache.outputs.cache-hit != 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: tamatebako/ruby
           ref: main
           path: ruby-src
+
+      - name: Cache the roll
+        id: roll-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .build/spec22-roll
+          key: spec22-src-roll-v2-${{ inputs.platform }}-${{ hashFiles('ruby-src/versions.yml', 'ruby-src/patches/**', 'ruby-src/schema/**', 'ruby-src/tools/**') }}
 
       - name: Setup Ruby
         if: steps.roll-cache.outputs.cache-hit != 'true'
@@ -447,13 +461,52 @@ jobs:
           mkdir -p "$sibling"
           [ -d "$sibling/limnifs/.git" ] || git clone --quiet --depth 1 https://github.com/limnifs/limnifs "$sibling/limnifs"
           test -f "$sibling/limnifs/limnifs-write/Cargo.toml"
+      # The staged unit (.build/link-unit) is a pure function of the
+      # product SHA, the dwarfs-rs SHA, and the staging recipe — cache it
+      # on exactly those. A re-run with an unmoved product tree (every
+      # ruby-side probe round) restores in seconds instead of re-spending
+      # the fat-LTO source build (~27 min on windows, 2026-08-19). The
+      # published pin (contract.yml link_unit_release) stays the terminal
+      # state — scope-free by construction, where this cache is ref-scoped
+      # (THE SCOPE LAW, docs/build-chain.md). The recipe hash rides
+      # ci/link-unit*.sh; the RUSTFLAGS shape and the toolchain line live
+      # in THIS file — bump the v1 prefix when either changes under an
+      # unchanged recipe hash.
+      - name: Resolve the link-unit input SHAs
+        if: steps.published.outputs.hit != 'true'
+        id: unit-key
+        shell: bash
+        run: |
+          echo "tebako=$(git -C tebako-rs rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "dwarfs=$(git -C dwarfs-rs rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Cache the staged link unit
+        if: steps.published.outputs.hit != 'true'
+        id: staged
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .build/link-unit
+          key: link-unit-staged-v1-${{ matrix.env.os }}-${{ matrix.env.arch }}-${{ steps.unit-key.outputs.tebako }}-${{ steps.unit-key.outputs.dwarfs }}-${{ hashFiles('ci/link-unit.sh', 'ci/link-unit-posix.sh') }}
+      # The same completeness contract the build legs assert below — a
+      # corrupt restore fails HERE by name, never an hour into a ruby
+      # build with a missing-archive error from the link.
+      - name: Assert the restored staged unit is complete
+        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          unit=.build/link-unit
+          for f in libtebako_driver.a libtfs.a include/tebako/fs/c_api.h; do
+            test -s "$unit/$f" || { echo "::error::restored staged unit lacks $unit/$f — bump the link-unit-staged key prefix and re-run"; exit 1; }
+          done
+          compgen -G "$unit/closure/*.a" > /dev/null || { echo "::error::restored staged unit carries no closure/*.a — bump the link-unit-staged key prefix and re-run"; exit 1; }
+          echo "restored staged link unit OK: $(find "$unit/closure" -name '*.a' | wc -l) closure archives"
       - uses: dtolnay/rust-toolchain@e43eeffd51aefeea929f4ea14e09fd077153e788 # 1.94.1
-        if: steps.published.outputs.hit != 'true' && matrix.env.os == 'macos'
+        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'macos'
       # The warmers below key on (os, arch[, the vcpkg closure hash]) and
       # NOTHING else — this job has no ruby dimension, so no key ever
       # carries a ruby version (spec-locked in build_workflow_spec.rb).
       - name: Cache the cargo target dir (link unit)
-        if: steps.published.outputs.hit != 'true'
+        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true'
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: |
@@ -465,7 +518,7 @@ jobs:
       # The archive caches are per flavor on purpose: a floor-built gnu
       # archive, a musl archive, and a macos archive never serve each other.
       - name: Cache vcpkg package archives (link unit, macos)
-        if: steps.published.outputs.hit != 'true' && matrix.env.os == 'macos'
+        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'macos'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/Library/Caches/vcpkg
@@ -476,7 +529,7 @@ jobs:
           # a failed leg keeps its progress instead of restarting cold.
           save-always: true
       - name: Cache vcpkg package archives (link unit, container legs)
-        if: steps.published.outputs.hit != 'true' && matrix.env.container != null
+        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.container != null
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/vcpkg
@@ -487,14 +540,14 @@ jobs:
       # The musl staging container's source-built cmake (3.17's stock
       # 3.24 is too old for the boost 1.90 ports; built once per arch).
       - name: Cache the musl cmake build (link unit)
-        if: steps.published.outputs.hit != 'true' && matrix.env.os == 'linux-musl'
+        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'linux-musl'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/tebako-cmake-musl-${{ matrix.env.arch }}
           key: cmake-musl-3.31.8-${{ matrix.env.arch }}
           save-always: true
       - name: Stage the POSIX link unit
-        if: steps.published.outputs.hit != 'true' && matrix.env.os != 'windows'
+        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os != 'windows'
         env:
           # Only the macos baseline restore needs it (gh release download);
           # the container flavors build the ports in-leg by design.
@@ -508,14 +561,14 @@ jobs:
       # here, never per ruby version again. The checkouts/caches above
       # are shared with POSIX; these are the ucrt64-only provisions.
       - name: Setup MSys
-        if: matrix.env.os == 'windows' && steps.published.outputs.hit != 'true'
+        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'windows'
         uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
         with:
           msystem: ucrt64
           path-type: minimal
           update: true
       - name: Install pacman packages
-        if: matrix.env.os == 'windows' && steps.published.outputs.hit != 'true'
+        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'windows'
         shell: msys2 {0}
         run: |
           pacman -Syu --needed --noconfirm git tar bison flex pactoys
@@ -524,11 +577,11 @@ jobs:
             gtest:p autotools:p ncurses:p ruby:p toolchain:p openssl:p  \
             make:p libyaml:p libxslt:p
       - uses: dtolnay/rust-toolchain@e43eeffd51aefeea929f4ea14e09fd077153e788 # 1.94.1
-        if: matrix.env.os == 'windows' && steps.published.outputs.hit != 'true'
+        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'windows'
         with:
           targets: x86_64-pc-windows-gnu
       - name: Set up vcpkg for the link unit
-        if: matrix.env.os == 'windows' && steps.published.outputs.hit != 'true'
+        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'windows'
         uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.6
         with:
           vcpkgGitCommitId: f14401ca0f2754347c3864da7488a9b955b4e47a
@@ -538,7 +591,7 @@ jobs:
       # The override is the org's GitHub Packages NuGet feed (details in
       # ci/vcpkg-nuget-cache.sh).
       - name: Configure the vcpkg binary cache (GitHub Packages NuGet)
-        if: matrix.env.os == 'windows' && steps.published.outputs.hit != 'true'
+        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'windows'
         shell: bash
         env:
           # First-push of a new package id CANNOT be done by GITHUB_TOKEN
@@ -548,7 +601,7 @@ jobs:
           GH_TOKEN: ${{ secrets.TEBAKO_PACKAGES_PAT || secrets.GITHUB_TOKEN }}
         run: bash ci/vcpkg-nuget-cache.sh
       - name: Restore the vcpkg baseline (dwarfs-t is the single writer)
-        if: matrix.env.os == 'windows' && steps.published.outputs.hit != 'true'
+        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'windows'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -560,7 +613,7 @@ jobs:
             dwarfs-rs/dwarfs-t x64-mingw-static \
             || echo "baseline miss — ports build normally"
       - name: Build + stage the windows-gnu link unit
-        if: matrix.env.os == 'windows' && steps.published.outputs.hit != 'true'
+        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'windows'
         # Git-bash, and NO msys2 bin dir on PATH: vcpkg's downloaded
         # msys2 (make/perl) ABI-clashes with the setup-msys2 install when
         # both are on PATH (openssl's make install died in a perl eval
@@ -1218,12 +1271,15 @@ jobs:
     runs-on: windows-latest
     steps:
       # The harness is the acceptance spec; it lives with the POSIX legs
-      # in tamatebako/ruby and rides main (the recorded SHA is the run's
-      # provenance — the harness must track the ecosystem's head anyway).
+      # in tamatebako/ruby and rides inputs.harness_ref (default main —
+      # the harness must track the ecosystem's head; a probe round points
+      # it at a ruby PR branch so the harness iterates UNMERGED — the
+      # recorded SHA below is the run's provenance).
       - name: Checkout the harness (tamatebako/ruby)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: tamatebako/ruby
+          ref: ${{ inputs.harness_ref || 'main' }}
           path: ruby-harness
       - name: Record the harness SHA
         shell: bash
