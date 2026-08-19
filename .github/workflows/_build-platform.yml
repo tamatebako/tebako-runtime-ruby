@@ -1290,6 +1290,10 @@ jobs:
           path: |
             .dogfood-scratch/proof-*.log
             .dogfood-scratch/install.log
+            # The pressed probe images (the exact bytes the closure walk
+            # ran against — incident 13): local forensics replay the walk
+            # against these without re-pressing or re-running CI.
+            .dogfood-scratch/probe-gems-*.tfs
             # The tebako audit journal (policy denials ride here, never
             # in the proof logs — incident 13's EACCES classes). Absent
             # when no policy event fired; if-no-files-found tolerates.
