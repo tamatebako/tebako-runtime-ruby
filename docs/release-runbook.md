@@ -82,6 +82,16 @@ release'` route exists for back-compat only.
 6. **Check for stray dispatches before assuming a queue stall.** A lost
    `repository_dispatch 'tebako release'` against the factory fans out a
    full-catalog publish. `gh run list --workflow publish.yml` shows them.
+7. **A wedged asset settles once per publish run (learned 2026-08-20).**
+   Warn-and-keep-previous is durable: the settled package stems persist in
+   the workspace ledger (`.tebako-publish-settled`, one job's lifetime) so
+   the per-platform invocations never re-attempt a settled asset, every
+   delete-wait is wall-clock-bounded (2 s polls, 60 s deadline, named
+   `DeletionPropagationTimeout`), and each asset's total retry effort is
+   capped (`PER_ASSET_UPLOAD_BUDGET`, 300 s, checked between attempts — an
+   in-flight POST is never cut off). The step ends green with a summary
+   naming every package that kept its previous bytes; the refresh lands on
+   the next publish (or a FORCE_REBUILD after the backend recovers).
 
 ## Incident field notes (2026-08-03)
 
@@ -98,3 +108,35 @@ release'` route exists for back-compat only.
   was refused. A token can also be edge-blocked per-IP (connections die
   after the Authorization header; unauthenticated 200s, garbage-token 401s) —
   an IP change cleared it.
+
+## Incident field notes (2026-08-20, the wedge loop)
+
+- Symptom: the publish step (run 32346716268) burned its entire 150-minute
+  timeout on the FIRST asset pair it processed
+  (`tebako-runtime-0.16.4-3.1.6-linux-gnu-arm64` + its `.tfs`); zero of 338
+  assets were updated before GitHub cancelled the job.
+- Root cause 1 — warn-keep was not durable. The exe wedged (its deleted
+  name 422'd re-uploads), ground the full retry budget (~20 min), and
+  warn-kept; then its own `.tfs` re-entered the replace path, wedged the
+  same way, and RE-RAISED — the warn-keep gate matched only top-level
+  manifest entries, and a facet's previous bytes live in its package's
+  `image`/`dll` block. The platform invocation died (exit 1), the next
+  platform's invocation re-attempted the same exe from scratch, and the
+  exe↔tfs cycle repeated once per platform until the timeout.
+- Root cause 2 — no per-asset bound. Every 422 re-armed the
+  deletion-propagation wait and the escalating backoff with no wall-clock
+  cap, so one wedged asset could consume the whole job.
+- Fixed behavior: the wait polls every 2 s under a 60 s deadline and ends
+  in the named `DeletionPropagationTimeout` (delete call sites demote it to
+  a loud warning — the upload budget absorbs the held name); warn-keep
+  records the package stem in the workspace ledger and never re-attempts a
+  settled asset or its facets for the rest of the run; the warn-keep gate
+  covers facets; `PER_ASSET_UPLOAD_BUDGET` (300 s) caps each asset's retry
+  effort; the step ends green with a summary naming every package that kept
+  its previous bytes.
+- Log-reading trap: the runner stamps log lines at FLUSH time, and Ruby
+  block-buffers stdout to a pipe — lines written minutes apart (sleeps
+  included) appeared 2 ms apart in this incident's log, reading as a busy
+  spin that was not one. `upload_release.rb` now sets `$stdout.sync = true`;
+  trust the message content, and only trust timestamps when the publisher
+  flushes per line.

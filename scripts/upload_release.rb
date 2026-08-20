@@ -33,6 +33,18 @@ require "json"
 require "pathname"
 require "yaml"
 
+# CI log truth: stdout to a pipe is block-buffered, and the runner stamps
+# each line at FLUSH time — in the 2026-08-20 wedge incident's log,
+# lines written minutes apart (sleeps included) appeared 2 ms apart,
+# misdiagnosing the deletion-propagation wait as a busy spin. Flush every
+# line so the log's timestamps are the writes' real times.
+$stdout.sync = true
+
+# Named error (spec 00: named errors, never silent fallbacks): a release
+# asset's deletion did not stop the name from being listed within the
+# propagation deadline — the name stays 422-blocked server-side.
+class DeletionPropagationTimeout < StandardError; end
+
 # The Platform model owns the (os, arch) → release platform id lookup
 # (HOST_IDS, mirroring tpkg::Platform in tebako-rs) — expected asset names
 # are built through it, never by formula.
@@ -496,32 +508,54 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   # minutes after the delete committed on the primary).
   UPLOAD_RETRY_DELAYS = [5, 10, 20, 40, 80, 120].freeze
 
-  def perform_upload(release, package, filename, delays: UPLOAD_RETRY_DELAYS.dup)
-    puts "Uploading #{filename}"
-    upload_once(release, package, filename)
-  rescue Octokit::UnprocessableEntity, Net::WriteTimeout, Net::ReadTimeout,
-         Faraday::TimeoutError, Faraday::ConnectionFailed => e
-    # A 422 means the asset name is taken. Two distinct causes: the
-    # eventual-consistency race after a same-name delete (the
-    # FORCE_REBUILD / content-changed path), or a previous attempt's POST
-    # that timed out but LANDED server-side — the retry then 422s (the
-    # v0.16.1 publish died on exactly this). Resolve by content, first:
-    # a name-only check would misread the delete-race, where the STALE
-    # asset is still listed.
-    return if landed_duplicate?(release, filename, package, e)
+  # The per-asset wall-clock cap: one wedged asset must never consume the
+  # whole job. On the 2026-08-20 publish a single wedged exe/.tfs pair
+  # burned the full 150-minute step timeout across the per-platform
+  # invocations — every retry cycle's delete-wait and backoff re-armed
+  # with no overall bound. The cap is checked BETWEEN attempts: an
+  # in-flight POST (a healthy 200 MB upload can legitimately write for
+  # minutes against the 600 s request timeout) is never cut off.
+  PER_ASSET_UPLOAD_BUDGET = 300
 
-    # A 422 whose landed bytes DISAGREE with ours is a partial (a timed-out
-    # POST that landed incomplete) or a stale same-name asset: retrying the
-    # POST blindly can never win — delete the conflict so the retry lands
-    # (the v0.16.3 publish exhausted its budget exactly here). The delete's
-    # listing-propagation lag rides the retry budget below.
-    delete_conflicting_asset(release, filename) if e.is_a?(Octokit::UnprocessableEntity)
+  def perform_upload(release, package, filename, delays: UPLOAD_RETRY_DELAYS.dup,
+                     budget: PER_ASSET_UPLOAD_BUDGET)
+    deadline = monotonic_now + budget
+    loop do
+      puts "Uploading #{filename}"
+      begin
+        upload_once(release, package, filename)
+        return
+      rescue Octokit::UnprocessableEntity, Net::WriteTimeout, Net::ReadTimeout,
+             Faraday::TimeoutError, Faraday::ConnectionFailed => e
+        # A 422 means the asset name is taken. Two distinct causes: the
+        # eventual-consistency race after a same-name delete (the
+        # FORCE_REBUILD / content-changed path), or a previous attempt's
+        # POST that timed out but LANDED server-side — the retry then 422s
+        # (the v0.16.1 publish died on exactly this). Resolve by content,
+        # first: a name-only check would misread the delete-race, where
+        # the STALE asset is still listed.
+        return if landed_duplicate?(release, filename, package, e)
 
-    delay = delays.shift
-    raise if delay.nil?
+        # A 422 whose landed bytes DISAGREE with ours is a partial (a
+        # timed-out POST that landed incomplete) or a stale same-name
+        # asset: retrying the POST blindly can never win — delete the
+        # conflict so the retry lands (the v0.16.3 publish exhausted its
+        # budget exactly here). The delete's listing-propagation lag rides
+        # the retry budget below.
+        delete_conflicting_asset(release, filename) if e.is_a?(Octokit::UnprocessableEntity)
 
-    backoff(e, filename, delay)
-    retry
+        delay = delays.shift
+        raise if delay.nil?
+
+        if monotonic_now >= deadline
+          puts "#{filename}: the per-asset upload budget (#{budget}s) is exhausted — " \
+               "the replace cannot land tonight"
+          raise
+        end
+
+        backoff(e, filename, delay)
+      end
+    end
   end
 
   # Remove the same-name asset whose content disagrees with ours (a
@@ -536,7 +570,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     # The name stays 422-blocked until the delete propagates — poll for
     # the absence so the retry's POST actually lands (the v0.16.3 gnu
     # publish looped blind POSTs into the held name).
-    wait_for_absence(release, filename)
+    wait_for_absence_best_effort(release, filename)
   end
 
   # Did an earlier attempt's POST land despite the error? Accepts (loudly)
@@ -643,6 +677,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     release_body = generate_release_notes(sections, image_sections) + metadata_pointer(addressed)
     with_transient_retries { @client.update_release(release.url, body: release_body) }
     puts "Successfully updated release notes"
+    print_settled_summary
   end
 
   def metadata_pointer(addressed)
@@ -750,23 +785,51 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
 
     with_transient_retries { @client.delete_release_asset(existing.id) }
     invalidate_assets_memo # the deleted asset leaves the listing
-    wait_for_absence(release, filename)
+    wait_for_absence_best_effort(release, filename)
   end
 
   # GitHub asset deletion is only eventually consistent: a same-name
   # re-upload 422s until the delete propagates (the v0.16.1 windows
   # publish lost SHA256SUMS.txt to exactly this — four retries inside
-  # ~20 s never saw the absence). Poll for the absence (bounded) so the
-  # following upload starts clean; if propagation outlasts the poll, the
-  # upload's 422 handler resolves by content.
-  def wait_for_absence(release, filename, attempts: 12)
-    invalidate_assets_memo # the propagation poll needs live reads
-    return if find_asset(release, filename).nil?
-    return if attempts <= 1
+  # ~20 s never saw the absence). Poll for the absence, SLEEPING between
+  # polls, under an overall wall-clock deadline; when propagation outlasts
+  # the deadline the named error fires — the wait never spins and never
+  # silently gives up (the 2026-08-20 publish burned its whole job timeout
+  # on a wait whose outcome nobody could act on).
+  DELETION_PROPAGATION_POLL_INTERVAL = 2
+  DELETION_PROPAGATION_DEADLINE = 60
 
-    puts "Waiting for the deletion of #{filename} to propagate..."
-    sleep 5
-    wait_for_absence(release, filename, attempts: attempts - 1)
+  def wait_for_absence(release, filename, deadline: DELETION_PROPAGATION_DEADLINE)
+    started = monotonic_now
+    loop do
+      invalidate_assets_memo # the propagation poll needs live reads
+      return if find_asset(release, filename).nil?
+
+      if monotonic_now - started >= deadline
+        raise DeletionPropagationTimeout,
+              "the deletion of #{filename} has not propagated within #{deadline}s — " \
+              "the asset name stays 422-blocked server-side"
+      end
+
+      puts "Waiting for the deletion of #{filename} to propagate..."
+      sleep DELETION_PROPAGATION_POLL_INTERVAL
+    end
+  end
+
+  # The bounded wait after a delete, best-effort at the call sites that
+  # have a retry budget behind them: over-deadline propagation is a loud
+  # warning, and the upload's 422-by-content handler + per-asset budget
+  # absorb the still-held name.
+  def wait_for_absence_best_effort(release, filename)
+    wait_for_absence(release, filename)
+  rescue DeletionPropagationTimeout => e
+    puts "::warning::#{e.message}"
+  end
+
+  # Wall-clock reads for the deadline accounting — monotonic, immune to
+  # clock smear on the runner.
+  def monotonic_now
+    Process.clock_gettime(Process::CLOCK_MONOTONIC)
   end
 
   # release.assets is an embedded array capped at 30 entries, and a raw
@@ -869,6 +932,11 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   def upload_package(release, package) # rubocop:disable Metrics/MethodLength
     filename = package.basename.to_s
     puts "Processing #{filename}..."
+    if settled?(filename)
+      puts "#{filename} kept its previous bytes earlier in this publish run (wedged replace) — " \
+           "the settled asset is never re-attempted; the refresh lands on the next publish"
+      return nil
+    end
     return filename if skip_existing_asset?(release, filename)
 
     perform_upload(release, package, filename)
@@ -879,30 +947,103 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     # existing asset AND its previous manifest entry (byte-truthful,
     # never a mismatch) and complete the publish; the refreshed bytes
     # land on the next publish or FORCE_REBUILD. A never-published asset
-    # has nothing to keep — that re-raises by name.
-    raise if previous_entry_for(filename).nil?
+    # has nothing to keep — that re-raises by name. Facets count: the
+    # manifest keys a .tfs/.dll under its package's entry, so the facet's
+    # previous bytes live in the package entry's facet block (the
+    # 2026-08-20 publish died here — a wedged .tfs re-raised, killing the
+    # platform's invocation and re-attempting the same pair on the next).
+    raise if previous_entry_covering(filename).nil?
 
     puts "::warning::#{filename} could not replace the wedged asset — " \
          "keeping the previous asset + manifest entry (byte-truthful); the refresh lands on the next publish"
-    (@stale_kept ||= []) << filename
+    settle_asset!(filename)
     nil
+  end
+
+  # The settled ledger — the durable half of warn-and-keep-previous. The
+  # publish step runs upload_release.rb once per platform (sequential
+  # processes, one workspace); a wedged asset settled in one invocation
+  # must NEVER be re-attempted by a later one (the 2026-08-20 publish
+  # re-attempted the same wedged exe once per platform invocation and
+  # burned the whole 150-minute job timeout doing it). The ledger file in
+  # the workspace carries the settled package stems across the per-platform
+  # processes; each job's fresh workspace starts it empty.
+  SETTLED_LEDGER_ENV = "TEBAKO_PUBLISH_SETTLED_PATH"
+  SETTLED_LEDGER_DEFAULT = ".tebako-publish-settled"
+
+  def settled_ledger_path
+    Pathname.new(ENV.fetch(SETTLED_LEDGER_ENV, SETTLED_LEDGER_DEFAULT))
+  end
+
+  # The settled package stems: this process's settles plus every earlier
+  # invocation's, loaded once from the workspace ledger.
+  def settled_stems
+    @settled_stems ||= begin
+      path = settled_ledger_path
+      path.file? ? path.read.lines.map(&:chomp).reject(&:empty?).uniq : []
+    end
+  end
+
+  # The package stem an asset name belongs to: the exe (with or without
+  # .exe), its .tfs image and its .dll facet share one stem — settling is
+  # package-scoped so a wedged exe also stands down its facets (a fresh
+  # facet over previous package bytes would be a mixed-version package).
+  def package_stem(filename)
+    filename.sub(/\.(exe|tfs|dll)\z/, "")
+  end
+
+  def settled?(filename)
+    settled_stems.include?(package_stem(filename))
+  end
+
+  def settle_asset!(filename)
+    stem = package_stem(filename)
+    return if settled_stems.include?(stem)
+
+    settled_stems << stem
+    settled_ledger_path.open("a") { |file| file.puts(stem) }
+  end
+
+  # The end-of-step summary: every package that kept its previous bytes
+  # this run, in one loud block. The step still exits green — the design
+  # is byte-truthful keep-previous, refresh on the next publish.
+  def print_settled_summary
+    return if settled_stems.empty?
+
+    puts "=" * 78
+    puts "Publish summary: #{settled_stems.size} package(s) kept their previous bytes this run"
+    puts "(wedged replace — byte-truthful keep-previous; the refresh lands on the next publish):"
+    settled_stems.sort.each { |stem| puts "  - #{stem} (executable and its .tfs/.dll facets)" }
+    puts "=" * 78
   end
 
   # A wedged asset keeps the release's previous bytes, so the manifest
   # keeps the previous ENTRY (the served bytes' sha, never the fresh one
   # that failed to land) — for the exe and its .tfs/.dll facets alike.
+  # The ledger (not just this process's settles) decides: a later
+  # per-platform invocation builds fresh entries for the wedged platform
+  # and must revert them too, or the manifest would describe bytes the
+  # release does not serve.
   def apply_stale_keeps(entries)
-    kept = @stale_kept || []
-    return entries if kept.empty?
+    return entries if settled_stems.empty?
 
     entries.map do |entry|
       names = [entry[:filename], entry.dig(:image, :filename), entry.dig(:dll, :filename)].compact
-      names.intersect?(kept) ? previous_entry_for(entry[:filename]) || entry : entry
+      names.any? { |name| settled?(name) } ? previous_entry_for(entry[:filename]) || entry : entry
     end
   end
 
   def previous_entry_for(filename)
     previous_manifest_entries.find { |entry| entry[:filename] == filename }
+  end
+
+  # The warn-keep gate's lookup: the previous manifest entry whose bytes
+  # cover this asset — the entry itself, or the entry whose image/dll
+  # facet block names it (the manifest keys facets under their package).
+  def previous_entry_covering(filename)
+    previous_manifest_entries.find do |entry|
+      [entry[:filename], entry.dig(:image, :filename), entry.dig(:dll, :filename)].compact.include?(filename)
+    end
   end
 
   # An asset with the same name AND the same sha256 is kept — an
