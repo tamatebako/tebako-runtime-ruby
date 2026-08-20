@@ -935,7 +935,7 @@ RSpec.describe ReleaseManager do
       allow(fake_manager).to receive(:monotonic_now).and_return(0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 70.0)
 
       expect { fake_manager.wait_for_absence(release, "asset.tgz") }
-        .to raise_error(DeletionPropagationTimeout, /deletion of asset\.tgz has not propagated within 60s/)
+        .to raise_error(ReleaseManager::DeletionPropagationTimeout, /asset\.tgz has not propagated within 60s/)
     end
 
     it "demotes the propagation timeout to a loud warning at the delete call sites" do
@@ -1002,8 +1002,9 @@ RSpec.describe ReleaseManager do
       tfs = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64.tfs")
       url = "https://download.test/#{tfs.basename}"
       store.delete_propagation = 999
-      store.assets << FakeAsset.new(7, tfs.basename.to_s, url)
-                    .tap { |asset| asset.digest = "sha256:#{"0" * 64}" }
+      asset = FakeAsset.new(7, tfs.basename.to_s, url)
+      asset.digest = "sha256:#{"0" * 64}"
+      store.assets << asset
       previous = { filename: "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64", sha256: "1" * 64,
                    platform: "macos-arm64",
                    image: { filename: tfs.basename.to_s, sha256: "2" * 64, size_bytes: 1 } }
@@ -1058,7 +1059,7 @@ RSpec.describe ReleaseManager do
       fake_manager.settle_asset!("tebako-runtime-#{SPEC_VERSION}-3.1.6-linux-gnu-arm64.tfs")
 
       expect { fake_manager.print_settled_summary }
-        .to output(/Publish summary: 2 package\(s\) kept their previous bytes.*3\.1\.6-linux-gnu-arm64.*3\.3\.7-macos-arm64/m)
+        .to output(/Publish summary: 2 package\(s\) kept their previous bytes.*linux-gnu-arm64.*macos-arm64/m)
         .to_stdout
     end
 

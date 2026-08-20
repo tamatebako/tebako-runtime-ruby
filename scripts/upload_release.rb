@@ -40,11 +40,6 @@ require "yaml"
 # line so the log's timestamps are the writes' real times.
 $stdout.sync = true
 
-# Named error (spec 00: named errors, never silent fallbacks): a release
-# asset's deletion did not stop the name from being listed within the
-# propagation deadline — the name stays 422-blocked server-side.
-class DeletionPropagationTimeout < StandardError; end
-
 # The Platform model owns the (os, arch) → release platform id lookup
 # (HOST_IDS, mirroring tpkg::Platform in tebako-rs) — expected asset names
 # are built through it, never by formula.
@@ -61,6 +56,11 @@ CONTRACT_YML = Pathname.new(File.expand_path("../contract.yml", __dir__)).freeze
 
 # Upload release manager for tebako build workflow
 class ReleaseManager # rubocop:disable Metrics/ClassLength
+  # Named error (spec 00: named errors, never silent fallbacks): a release
+  # asset's deletion did not stop the name from being listed within the
+  # propagation deadline — the name stays 422-blocked server-side.
+  class DeletionPropagationTimeout < StandardError; end
+
   # The era-2 release card (spec 18 C2): every runtime package carries a
   # builder-emitted `<package>.contract.yaml` sidecar (contract_era,
   # image_layout, mount_root, built_from) that manifest_entry folds into
@@ -517,7 +517,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   # minutes against the 600 s request timeout) is never cut off.
   PER_ASSET_UPLOAD_BUDGET = 300
 
-  def perform_upload(release, package, filename, delays: UPLOAD_RETRY_DELAYS.dup,
+  def perform_upload(release, package, filename, delays: UPLOAD_RETRY_DELAYS.dup, # rubocop:disable Metrics/MethodLength
                      budget: PER_ASSET_UPLOAD_BUDGET)
     deadline = monotonic_now + budget
     loop do
@@ -799,7 +799,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   DELETION_PROPAGATION_POLL_INTERVAL = 2
   DELETION_PROPAGATION_DEADLINE = 60
 
-  def wait_for_absence(release, filename, deadline: DELETION_PROPAGATION_DEADLINE)
+  def wait_for_absence(release, filename, deadline: DELETION_PROPAGATION_DEADLINE) # rubocop:disable Metrics/MethodLength
     started = monotonic_now
     loop do
       invalidate_assets_memo # the propagation poll needs live reads
