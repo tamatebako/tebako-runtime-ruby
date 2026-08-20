@@ -8,5 +8,8 @@ Gemfile.lock
 .rspec_status
 coverage/
 
+# The publish step's settled-asset ledger (upload_release.rb, per-job workspace state)
+.tebako-publish-settled
+
 # Homebrew
 Brewfile.lock.json

@@ -219,8 +219,8 @@ end
 
 RSpec.describe ReleaseManager do
   around do |example|
-    old = %w[GITHUB_TOKEN TEBAKO_VERSION EXPECTED_ENV_MATRIX EXPECTED_RUBY_MATRIX FORCE_REBUILD AUDIT_ONLY]
-          .to_h { |key| [key, ENV.fetch(key, nil)] }
+    old = %w[GITHUB_TOKEN TEBAKO_VERSION EXPECTED_ENV_MATRIX EXPECTED_RUBY_MATRIX FORCE_REBUILD AUDIT_ONLY
+             TEBAKO_PUBLISH_SETTLED_PATH].to_h { |key| [key, ENV.fetch(key, nil)] }
     ENV["GITHUB_TOKEN"] = "test-token"
     ENV["TEBAKO_VERSION"] = SPEC_VERSION
     ENV["EXPECTED_ENV_MATRIX"] = '[{"host":"macos-15","container":null,"os":"macos","arch":"arm64"}]'
@@ -228,6 +228,11 @@ RSpec.describe ReleaseManager do
     ENV.delete("FORCE_REBUILD")
     Dir.mktmpdir do |dir|
       @dir = Pathname.new(dir)
+      # The settled-asset ledger (cross-invocation wedge memory) lives in
+      # the per-example tmpdir: the default path is the process CWD, and a
+      # spec writing it would pollute the repo checkout and leak
+      # settlement between examples.
+      ENV["TEBAKO_PUBLISH_SETTLED_PATH"] = @dir.join("settled-ledger").to_s
       example.run
     end
   ensure
@@ -729,6 +734,10 @@ RSpec.describe ReleaseManager do
       allow(fake_manager).to receive(:previous_manifest_entries).and_return([previous])
       allow(fake_manager).to receive(:current_shas)
         .and_return(exe.basename.to_s => Digest::SHA256.hexdigest(exe.read))
+      # The wait is wall-clock-bounded now: an advancing clock keeps a
+      # never-propagating delete from spending real seconds per poll.
+      clock = 0.0
+      allow(fake_manager).to receive(:monotonic_now) { clock += 120.0 }
       (ReleaseManager::UPLOAD_RETRY_DELAYS.size + 1).times { store.fail_next(:upload, Octokit::UnprocessableEntity.new) }
 
       expect { fake_manager.upload_package(release, exe) }
@@ -835,6 +844,10 @@ RSpec.describe ReleaseManager do
       store.assets << FakeAsset.new(8, "manifest.json", "https://download.test/manifest.json")
       store.set_content("https://download.test/SHA256SUMS.txt", "stale sums")
       store.set_content("https://download.test/manifest.json", "stale manifest")
+      # The wait is wall-clock-bounded now: an advancing clock keeps a
+      # never-propagating delete from spending real seconds per poll.
+      clock = 0.0
+      allow(fake_manager).to receive(:monotonic_now) { clock += 120.0 }
 
       expect { fake_manager.upload_metadata(release, entries) }
         .to output(/::warning::canonical SHA256SUMS\.txt could not be refreshed/).to_stdout
@@ -888,6 +901,169 @@ RSpec.describe ReleaseManager do
       fake_manager.find_asset(release, "anything")
 
       expect(release.rels[:assets].gets).to eq(1)
+    end
+  end
+
+  # 2026-08-20 incident (run 32346716268, "Publish the runtime packages"):
+  # one wedged exe/.tfs pair burned the full 150-minute step timeout, zero
+  # of 338 assets updated. The three wounds, spec-locked: the
+  # deletion-propagation wait is wall-clock-bounded and ends in a named
+  # error (it sleeps between polls, never spins, never silently gives up);
+  # a settled asset is never re-attempted within the run — the workspace
+  # ledger carries the settlement across the per-platform invocations (no
+  # exe<->tfs ping-pong); and the per-asset wall-clock cap bounds a
+  # fully-wedged asset's effort.
+  describe "wedged asset settlement (2026-08-20)" do
+    let(:store) { FakeAssetStore.new }
+    let(:release) { FakeRelease.new(store) }
+    let(:fake_manager) { described_class.new(client: FakeClient.new(store)) }
+
+    before { allow(fake_manager).to receive(:sleep) }
+
+    it "sleeps between deletion-propagation polls until the asset leaves the listing" do
+      store.assets << FakeAsset.new(7, "asset.tgz", "https://download.test/asset.tgz")
+      store.delete_propagation = 2 # the listing clears on the third poll
+
+      expect { fake_manager.remove_existing_asset(release, "asset.tgz") }
+        .to output(/Waiting for the deletion of asset\.tgz to propagate/).to_stdout
+      expect(fake_manager).to have_received(:sleep)
+        .with(ReleaseManager::DELETION_PROPAGATION_POLL_INTERVAL).exactly(:twice)
+    end
+
+    it "times out with a named error when the deletion never propagates" do
+      store.assets << FakeAsset.new(7, "asset.tgz", "https://download.test/asset.tgz")
+      allow(fake_manager).to receive(:monotonic_now).and_return(0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 70.0)
+
+      expect { fake_manager.wait_for_absence(release, "asset.tgz") }
+        .to raise_error(DeletionPropagationTimeout, /deletion of asset\.tgz has not propagated within 60s/)
+    end
+
+    it "demotes the propagation timeout to a loud warning at the delete call sites" do
+      store.assets << FakeAsset.new(7, "asset.tgz", "https://download.test/asset.tgz")
+      store.delete_propagation = 999 # the delete never clears the listing
+      allow(fake_manager).to receive(:monotonic_now).and_return(0.0, 70.0)
+
+      expect { fake_manager.remove_existing_asset(release, "asset.tgz") }
+        .to output(/::warning::the deletion of asset\.tgz has not propagated/).to_stdout
+      expect(store.deletes).to eq([7])
+    end
+
+    # The incident's shape: the wedged exe warn-kept, then its own .tfs
+    # re-entered the replace path — and the next platform invocation
+    # re-attempted the exe. A settled asset is never attempted again in
+    # the run, and its facets stand down with it.
+    it "never re-attempts a settled asset and stands its .tfs facet down" do
+      exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
+      tfs = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64.tfs")
+      url = "https://download.test/#{exe.basename}"
+      previous = { filename: exe.basename.to_s, sha256: "1" * 64, platform: "macos-arm64",
+                   image: { filename: tfs.basename.to_s, sha256: "2" * 64, size_bytes: 1 } }
+      store.delete_propagation = 999 # the delete never clears the listing
+      store.assets << FakeAsset.new(7, exe.basename.to_s, url)
+      store.set_content(url, "previous bytes")
+      allow(fake_manager).to receive(:previous_manifest_entries).and_return([previous])
+      allow(fake_manager).to receive(:current_shas)
+        .and_return(exe.basename.to_s => Digest::SHA256.hexdigest(exe.read))
+      clock = 0.0
+      allow(fake_manager).to receive(:monotonic_now) { clock += 120.0 }
+
+      expect { fake_manager.upload_package(release, exe) }
+        .to output(/keeping the previous asset/).to_stdout
+      expect(store.attempts[:upload]).to eq(1)
+
+      expect { fake_manager.upload_package(release, exe) }
+        .to output(/never re-attempted/).to_stdout
+      expect { fake_manager.upload_package(release, tfs) }
+        .to output(/never re-attempted/).to_stdout
+      expect(store.attempts[:upload]).to eq(1)
+    end
+
+    # The publish step runs one upload_release.rb process per platform;
+    # the settlement must survive the process boundary or each invocation
+    # re-burns the wedge (the incident's 3x 20-minute re-attempts).
+    it "carries the settlement across the per-platform invocations via the workspace ledger" do
+      fake_manager.settle_asset!("tebako-runtime-#{SPEC_VERSION}-3.1.6-linux-gnu-arm64")
+
+      second = described_class.new(client: FakeClient.new(store))
+      exe = package("tebako-runtime-#{SPEC_VERSION}-3.1.6-linux-gnu-arm64")
+
+      expect { second.upload_package(release, exe) }
+        .to output(/never re-attempted/).to_stdout
+      expect(store.attempts[:upload]).to eq(0)
+      expect(store.deletes).to be_empty
+    end
+
+    # The incident's kill shot: a wedged .tfs has no TOP-LEVEL manifest
+    # entry (facets key under their package's entry), so the warn-keep
+    # gate found "nothing to keep" and re-raised — exit 1, the platform
+    # invocation dead, the pair re-attempted by the next one. The gate
+    # now covers facets.
+    it "warn-keeps a wedged .tfs facet instead of failing the publish" do
+      tfs = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64.tfs")
+      url = "https://download.test/#{tfs.basename}"
+      store.delete_propagation = 999
+      store.assets << FakeAsset.new(7, tfs.basename.to_s, url)
+                    .tap { |asset| asset.digest = "sha256:#{"0" * 64}" }
+      previous = { filename: "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64", sha256: "1" * 64,
+                   platform: "macos-arm64",
+                   image: { filename: tfs.basename.to_s, sha256: "2" * 64, size_bytes: 1 } }
+      allow(fake_manager).to receive(:previous_manifest_entries).and_return([previous])
+      allow(fake_manager).to receive(:current_shas)
+        .and_return(tfs.basename.to_s => Digest::SHA256.file(tfs).hexdigest)
+      clock = 0.0
+      allow(fake_manager).to receive(:monotonic_now) { clock += 120.0 }
+
+      expect { fake_manager.upload_package(release, tfs) }
+        .to output(/keeping the previous asset/).to_stdout
+      expect(fake_manager.settled?(tfs.basename.to_s)).to be(true)
+    end
+
+    # A LATER invocation builds fresh entries for the wedged platform;
+    # without the ledger-driven revert the manifest would describe bytes
+    # the release does not serve.
+    it "reverts a settled package's fresh manifest entry in later invocations too" do
+      fake_manager.settle_asset!("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
+      previous = { filename: "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64",
+                   sha256: "1" * 64, platform: "macos-arm64" }
+      fresh = { filename: "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64",
+                sha256: "9" * 64, platform: "macos-arm64" }
+
+      second = described_class.new(client: FakeClient.new(store))
+      allow(second).to receive(:previous_manifest_entries).and_return([previous])
+
+      expect(second.apply_stale_keeps([fresh])).to eq([previous])
+    end
+
+    # A fully-wedged asset: every POST 422s, every delete never
+    # propagates. The per-asset cap ends the effort inside the budget
+    # instead of grinding the whole escalating delay series (the
+    # incident's ~20 minutes per asset per invocation).
+    it "bounds a fully-wedged asset by the per-asset wall-clock cap" do
+      exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
+      url = "https://download.test/#{exe.basename}"
+      store.delete_propagation = 999
+      store.assets << FakeAsset.new(7, exe.basename.to_s, url)
+      store.set_content(url, "previous bytes")
+      clock = 0.0
+      allow(fake_manager).to receive(:monotonic_now) { clock += 120.0 }
+
+      expect { fake_manager.perform_upload(release, exe, exe.basename.to_s) }
+        .to raise_error(Octokit::UnprocessableEntity)
+        .and output(/per-asset upload budget \(300s\) is exhausted/).to_stdout
+      expect(store.attempts[:upload]).to eq(1)
+    end
+
+    it "prints the end-of-step summary naming every kept package" do
+      fake_manager.settle_asset!("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
+      fake_manager.settle_asset!("tebako-runtime-#{SPEC_VERSION}-3.1.6-linux-gnu-arm64.tfs")
+
+      expect { fake_manager.print_settled_summary }
+        .to output(/Publish summary: 2 package\(s\) kept their previous bytes.*3\.1\.6-linux-gnu-arm64.*3\.3\.7-macos-arm64/m)
+        .to_stdout
+    end
+
+    it "stays silent when nothing wedged" do
+      expect { fake_manager.print_settled_summary }.not_to output(/.+/).to_stdout
     end
   end
 
