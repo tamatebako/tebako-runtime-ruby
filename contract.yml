@@ -35,7 +35,9 @@ container_version: "0.16.2"
 # ~30 s download. Empty = build from source (the driver is moving: the
 # pin must name a release whose driver carries everything the factory
 # asserts — the boot smoke's contract-version check proves the match
-# per leg). A platform with no published unit (gnu, until the product
-# ships a floor build) misses the pin and builds from source — a miss
-# is never an error.
-link_unit_release: ""
+# per leg). A platform with no published unit misses the pin and
+# builds from source — a miss is never an error. v0.2.0 is the first
+# product release with a floor-built gnu unit (ubuntu:20.04, binutils
+# 2.34 — tebako#413's arscope GNU_UNIQUE demotion, tebako#431), so the
+# gnu leg now hits the pin too.
+link_unit_release: "v0.2.0"
