@@ -805,6 +805,12 @@ jobs:
             -e runtime="$runtime" \
             -t $container \
             bash -c '
+            # linux-gnu: the published link unit (contract.yml
+            # link_unit_release) is built with ppa gcc-11, so its closure
+            # references libstdc++ 3.4.29 symbols; install gcc-11 so the
+            # exe link'\''s STATICALLY absorbed libstdc++.a resolves new
+            # enough (#117). The compiler stays clang-18. No-op elsewhere.
+            ${{ matrix.env.os == 'linux-gnu' && '/mnt/w/ci/prepare-gnu-runtime-container.sh &&' || '' }}
             /mnt/w/tools/build_runtime --ruby "${{ matrix.ruby.version }}" --output "/mnt/w/runtime-packages/$runtime" \
             --prefix /root/.build --src-mirror file:///mnt/w/.build/spec22-src-roll --src-release spec22-chain \
             ${{ matrix.env.os == 'linux-gnu' && '--patchelf' || '' }} && \
