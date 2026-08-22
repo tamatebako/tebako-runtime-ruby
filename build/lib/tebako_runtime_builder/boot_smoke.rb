@@ -102,6 +102,15 @@ module TebakoRuntimeBuilder
       ENV.fetch("TEBAKO_SMOKE_EXPECT_OPENSSL", "ok")
     end
 
+    # The leg's expected CA-roots story (0.16.5): the windows runtime's
+    # boot shim points SSL_CERT_FILE at the in-image CA bundle, so the
+    # probe's ca_roots detail names the in-VFS path; POSIX runtimes leave
+    # it unset (the host's /etc/ssl serves — vcpkg's unix openssl builds
+    # with --openssldir=/etc/ssl). Platform-derived, no env plumbing.
+    def expected_ca_roots_detail
+      @platform.msys? ? %r{/ssl/cert\.pem \(\d+ B\)\z} : "unset"
+    end
+
     # Boot the runtime once with the named scenario preloaded; returns the
     # parsed Run model (never raises for a failed boot -- the model carries
     # the failure; a raise means the driver itself is miswired).

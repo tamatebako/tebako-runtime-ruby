@@ -225,9 +225,25 @@ module TebakoRuntimeBuilder
 
       check_toolchain_ruby!
       deploy_stub(stub_dir)
+      deploy_ca_bundle
       deploy_preload
       deploy_layout
       TebakoRuntimeBuilder::Stripper.strip(@platform, @data_src_dir)
+    end
+
+    # The windows runtime ships the pinned CA bundle (CaBundle) into the
+    # image at ssl/cert.pem: vcpkg's static openssl was built with the CI
+    # runner's openssldir, so without it the default verify paths find
+    # nothing on a user machine and the first HTTPS fails. The exe's boot
+    # shim points SSL_CERT_FILE at the in-VFS path (build/CMakeLists.txt's
+    # TEBAKO_MAIN_SHIM). POSIX legs ship nothing — vcpkg's unix openssl
+    # builds with --openssldir=/etc/ssl, which the host supplies.
+    def deploy_ca_bundle
+      return unless @platform.msys?
+
+      dest = TebakoRuntimeBuilder::CaBundle.new(cache_dir: File.join(@data_pre_dir, "downloads"))
+                                           .deploy(@data_src_dir)
+      puts "   ... CA bundle deployed to #{dest.sub("#{@data_src_dir}/", "")} (the boot shim exports SSL_CERT_FILE)"
     end
 
     # The image ships the recreated environment's toolchain ruby; this gate
