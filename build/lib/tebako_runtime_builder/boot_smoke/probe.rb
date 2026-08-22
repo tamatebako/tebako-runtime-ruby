@@ -109,6 +109,7 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
 
   def self.native_ext
     report("require_openssl") { openssl_check }
+    report("ca_roots") { ca_roots_check }
     report("load_native_extension") { native_extension_check }
   end
 
@@ -172,6 +173,22 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
   def self.openssl_check
     require "openssl"
     OpenSSL::OPENSSL_VERSION
+  end
+
+  # Windows CA roots (0.16.5): the exe's boot shim exports SSL_CERT_FILE
+  # pointing at the in-image bundle (<mount-root>/ssl/cert.pem, deployed
+  # by CaBundle); POSIX runtimes leave it unset — the host's /etc/ssl
+  # serves through the jail. The probe only senses: unset reports the
+  # "unset" detail; set asserts the bundle reads through the VFS and is
+  # bundle-sized. The spec judges per platform.
+  def self.ca_roots_check
+    path = ENV.fetch("SSL_CERT_FILE", nil)
+    return "unset" if path.nil? || path.empty?
+
+    size = File.size(path)
+    raise "SSL_CERT_FILE #{path} is only #{size} B — not a CA bundle" if size < 100_000
+
+    "#{path} (#{size} B)"
   end
 
   def self.stat_check

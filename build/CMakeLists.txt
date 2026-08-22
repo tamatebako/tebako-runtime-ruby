@@ -403,6 +403,22 @@ extern \"C\" {\n\
       snprintf(contract_version, sizeof(contract_version), \"%u\", tebako_driver_contract_version());\n\
 #ifdef _WIN32\n\
       _putenv_s(\"TEBAKO_CONTRACT_VERSION\", contract_version);\n\
+      // Windows CA roots (0.16.5): vcpkg's static openssl was built with\n\
+      // the CI runner's openssldir — a path no user machine has — so the\n\
+      // default verify paths find nothing and the first HTTPS fails. The\n\
+      // env image ships the pinned curl CA bundle at\n\
+      // <mount-root>/ssl/cert.pem (CaBundle); point openssl's default\n\
+      // store at it through the VFS unless the user already chose one.\n\
+      // POSIX needs nothing: vcpkg's unix openssl builds with\n\
+      // --openssldir=/etc/ssl, which the host supplies.\n\
+      {\n\
+        const char* user_ssl_cert_file = getenv(\"SSL_CERT_FILE\");\n\
+        if (user_ssl_cert_file == nullptr || user_ssl_cert_file[0] == 0) {\n\
+          char ssl_cert_file[512];\n\
+          snprintf(ssl_cert_file, sizeof(ssl_cert_file), \"%s/ssl/cert.pem\", tebako::fs_mount_point);\n\
+          _putenv_s(\"SSL_CERT_FILE\", ssl_cert_file);\n\
+        }\n\
+      }\n\
 #else\n\
       setenv(\"TEBAKO_CONTRACT_VERSION\", contract_version, 1);\n\
 #endif\n\

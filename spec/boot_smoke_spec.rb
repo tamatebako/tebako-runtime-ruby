@@ -374,6 +374,27 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
                          "must not happen. A windows leg flipping to 'ok' means the issue-#40 fix landed: flip " \
                          "the recorded value to 'ok' in the same PR to enforce it from then on."
       end
+      it "points windows openssl at the in-image CA bundle, POSIX at the host (0.16.5)" do
+        # vcpkg's static openssl bakes the CI runner's openssldir, which
+        # no user machine has — without the shipped bundle the first
+        # HTTPS from a packaged windows app fails verification. The boot
+        # shim exports SSL_CERT_FILE at the in-VFS bundle; POSIX legs
+        # leave it unset (host /etc/ssl). The probe senses, this judges.
+        expect(run).to be_booted, boot_failure(run)
+        expect(run.state("ca_roots")).to eq("ok"),
+                                         "probe ca_roots detail: #{run.detail("ca_roots")}"
+        detail = run.detail("ca_roots")
+        expectation = smoke.expected_ca_roots_detail
+        if expectation.is_a?(Regexp)
+          expect(detail).to match(expectation),
+                            "windows ca_roots: expected the in-VFS bundle path, got '#{detail}' — the boot shim's " \
+                            "SSL_CERT_FILE export (build/CMakeLists.txt) or the CaBundle deploy is broken"
+        else
+          expect(detail).to eq(expectation),
+                            "POSIX ca_roots: expected 'unset' (host /etc/ssl serves), got '#{detail}' — the shim " \
+                            "must not export SSL_CERT_FILE off windows"
+        end
+      end
     end
 
     describe "the loader interposition (spec 22 phase 1, class L)" do
