@@ -45,6 +45,7 @@ module TebakoRuntimeBuilder
   autoload :CaBundle,       File.expand_path("tebako_runtime_builder/ca_bundle", __dir__)
   autoload :Error,          File.expand_path("tebako_runtime_builder/error", __dir__)
   autoload :ImageBuilder,   File.expand_path("tebako_runtime_builder/image_builder", __dir__)
+  autoload :ImageManifest,  File.expand_path("tebako_runtime_builder/image_manifest", __dir__)
   autoload :ImagePackager,  File.expand_path("tebako_runtime_builder/image_packager", __dir__)
   autoload :Mlibs,          File.expand_path("tebako_runtime_builder/mlibs", __dir__)
   autoload :MountRoot,      File.expand_path("tebako_runtime_builder/mount_root", __dir__)

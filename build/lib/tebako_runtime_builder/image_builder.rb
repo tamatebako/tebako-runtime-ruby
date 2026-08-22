@@ -234,16 +234,19 @@ module TebakoRuntimeBuilder
     # The windows runtime ships the pinned CA bundle (CaBundle) into the
     # image at ssl/cert.pem: vcpkg's static openssl was built with the CI
     # runner's openssldir, so without it the default verify paths find
-    # nothing on a user machine and the first HTTPS fails. The exe's boot
-    # shim points SSL_CERT_FILE at the in-VFS path (build/CMakeLists.txt's
-    # TEBAKO_MAIN_SHIM). POSIX legs ship nothing — vcpkg's unix openssl
-    # builds with --openssldir=/etc/ssl, which the host supplies.
+    # nothing on a user machine and the first HTTPS fails. The image
+    # manifest (ImageManifest) declares /ssl/cert.pem in its class-R
+    # materialize list and the exe's boot shim (build/CMakeLists.txt's
+    # TEBAKO_MAIN_SHIM) points SSL_CERT_FILE at the driver's materialized
+    # host copy — libcrypto's native CRT IO never sees the VFS. POSIX
+    # legs ship nothing — vcpkg's unix openssl builds with
+    # --openssldir=/etc/ssl, which the host supplies.
     def deploy_ca_bundle
       return unless @platform.msys?
 
       dest = TebakoRuntimeBuilder::CaBundle.new(cache_dir: File.join(@data_pre_dir, "downloads"))
                                            .deploy(@data_src_dir)
-      puts "   ... CA bundle deployed to #{dest.sub("#{@data_src_dir}/", "")} (the boot shim exports SSL_CERT_FILE)"
+      puts "   ... CA bundle deployed to #{dest.sub("#{@data_src_dir}/", "")} (class-R materialized per the manifest)"
     end
 
     # The image ships the recreated environment's toolchain ruby; this gate

@@ -25,6 +25,7 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
+require "digest"
 require "fileutils"
 require "yaml"
 
@@ -61,7 +62,9 @@ module TebakoRuntimeBuilder
       cmake_configure(assets)
       cmake_build
       finalize
+      emit_image_manifest(assets) if @image
       pack_image if @image
+      write_image_sidecar if @image
       write_abi_sidecar
       write_contract_sidecar(assets)
       @output
@@ -203,7 +206,51 @@ module TebakoRuntimeBuilder
     # written from, and the deploy pass leaves it in place.
     def pack_image
       TebakoRuntimeBuilder::ImagePackager.new(@platform, File.join(deps, "bin"), tfs: @tfs)
-                                         .package(File.join(output_folder, "s"), image_output)
+                                         .package(layout_tree, image_output)
+    end
+
+    # The env image's L1 payload manifest (ImageManifest — spec 03 §1):
+    # emitted into the layout tree just before packing so the image
+    # carries /__tpkg__/manifest.yaml. The driver's post-mount read is
+    # fail-closed (a malformed manifest is a named 65 on every leg), so
+    # the class — never this callsite — owns the grammar. assets[0] is the
+    # pass-1 tarball pair: its verified sha256 is the image's
+    # built_from/source provenance (the msys pass-2 overlay rides the
+    # .contract.yaml card).
+    def emit_image_manifest(assets)
+      (_tarball, sha256) = assets[0]
+      path = TebakoRuntimeBuilder::ImageManifest.new(platform: @platform, ruby_version: @ruby_version,
+                                                     tebako_version: @tebako_version, patch_set: @release,
+                                                     src_sha256: sha256)
+                                                .deploy(layout_tree)
+      note = @platform.msys? ? " (materialize: /ssl/cert.pem)" : ""
+      puts "   ... env image payload manifest: #{path}#{note}"
+    end
+
+    # The assembled layout tree (the CMake project's DATA_SRC_DIR), in
+    # place after the deploy pass; a missing tree means the deploy pass
+    # never ran and an image would pack nothing — refuse by name.
+    def layout_tree
+      File.join(output_folder, "s").tap do |tree|
+        next if File.directory?(tree)
+
+        raise TebakoRuntimeBuilder::Error.new(
+          "runtime layout tree #{tree} does not exist (the deploy pass did not assemble it)", 131
+        )
+      end
+    end
+
+    # The store-layout trust marker next to the image (the store: every
+    # cached runtime image carries its <image>.sha256): the leading token
+    # is the content key the driver's exec-cache segregation (spec 22 §6)
+    # and the boot shim's SSL_CERT_FILE composition read. Written at build
+    # so a factory tree boots store-faithfully (the boot smoke's
+    # TEBAKO_RUNTIME_IMAGE then resolves the same image key the store
+    # would give it); never uploaded — upload_release rejects the suffix
+    # alongside .abi/.contract.yaml.
+    def write_image_sidecar
+      hex = Digest::SHA256.file(image_output).hexdigest
+      File.write("#{image_output}.sha256", "#{hex}  #{File.basename(image_output)}\n")
     end
 
     # The runtime's own platform string (spec 05 §5's abi line — ruby:

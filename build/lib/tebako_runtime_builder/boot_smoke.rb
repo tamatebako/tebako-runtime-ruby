@@ -60,6 +60,11 @@ module TebakoRuntimeBuilder
     # <runtime>.dll, the ruby DLL under its unique package name): support
     # files, never the interpreter.
     MARKER_SUFFIXES = %w[.abi .sha256 .origin .yaml .dll].freeze
+    # The materialized bundle's exec-cache spelling (spec 22 §6):
+    # <temp>/tebako-exec-<key>/resources/<key>/ssl/cert.pem — the probe's
+    # ca_roots detail prints the path (either separator) plus its size.
+    MATERIALIZED_CERT_DETAIL =
+      %r{tebako-exec-[0-9a-f]{16}[\\/]resources[\\/][0-9a-f]{16}[\\/]ssl[\\/]cert\.pem \(\d+ B\)\z}
     NON_EXECUTABLE_SUFFIXES = (IMAGE_SUFFIXES + MARKER_SUFFIXES).freeze
     # The child env is REPLACED, not inherited: RUBYOPT carries only the
     # probe and the rubygems/gem variables a host ruby setup would
@@ -102,13 +107,19 @@ module TebakoRuntimeBuilder
       ENV.fetch("TEBAKO_SMOKE_EXPECT_OPENSSL", "ok")
     end
 
-    # The leg's expected CA-roots story (0.16.5): the windows runtime's
-    # boot shim points SSL_CERT_FILE at the in-image CA bundle, so the
-    # probe's ca_roots detail names the in-VFS path; POSIX runtimes leave
-    # it unset (the host's /etc/ssl serves — vcpkg's unix openssl builds
-    # with --openssldir=/etc/ssl). Platform-derived, no env plumbing.
+    # The leg's expected CA-roots story (0.16.6): the windows runtime's
+    # boot shim points SSL_CERT_FILE at the driver's materialized HOST
+    # copy of the in-image CA bundle (spec 22 §4 class R —
+    # <temp>/tebako-exec-<key>/resources/<key>/ssl/cert.pem; the in-VFS
+    # spelling of 0.16.5 could not reach libcrypto's native CRT IO), so
+    # the probe's ca_roots detail names the exec-cache path; POSIX
+    # runtimes leave it unset (the host's /etc/ssl serves — vcpkg's unix
+    # openssl builds with --openssldir=/etc/ssl). Platform-derived, no
+    # env plumbing. The windows regex also proves the image's
+    # .sha256 sidecar rode along: without it the shim falls back to the
+    # in-VFS spelling, which does not match.
     def expected_ca_roots_detail
-      @platform.msys? ? %r{/ssl/cert\.pem \(\d+ B\)\z} : "unset"
+      @platform.msys? ? MATERIALIZED_CERT_DETAIL : "unset"
     end
 
     # Boot the runtime once with the named scenario preloaded; returns the

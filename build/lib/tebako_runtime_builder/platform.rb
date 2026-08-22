@@ -31,7 +31,7 @@ require "rbconfig"
 module TebakoRuntimeBuilder
   # Packaging host platform (gem Tebako::ScenarioManagerBase plus the
   # OptionsManager host_platform id used by runtime package names)
-  class Platform
+  class Platform # rubocop:disable Metrics/ClassLength
     def initialize(ostype = RUBY_PLATFORM, arch = RbConfig::CONFIG["host_cpu"])
       @ostype = ostype
       @arch = arch
@@ -128,6 +128,30 @@ module TebakoRuntimeBuilder
     # expected-asset model); same named failure as the instance path.
     def self.host_id_for(os_id, arch_id)
       HOST_IDS.fetch([os_id, arch_id]) { raise TebakoRuntimeBuilder::Error.new("#{os_id}/#{arch_id}", 112) }
+    end
+
+    # host_id → the spec 03 §3 vcpkg-form triplet (the in-image payload
+    # manifest's provides.provides[].platform grammar). The mapping is
+    # owned by tpkg::Platform (tamatebako/tebako — the single
+    # triplet ↔ release-asset-name owner); this mirrors it for the
+    # factory's manifest emission, and a drift fails loudly at the boot
+    # smoke (the driver refuses an unknown triplet at manifest parse,
+    # exit 65).
+    TPKG_TRIPLETS = {
+      "windows-ucrt64" => "x86_64-windows-ucrt",
+      "macos-arm64" => "aarch64-macos",
+      "macos-x86_64" => "x86_64-macos",
+      "linux-gnu-x86_64" => "x86_64-linux-gnu",
+      "linux-gnu-arm64" => "aarch64-linux-gnu",
+      "linux-musl-x86_64" => "x86_64-linux-musl",
+      "linux-musl-arm64" => "aarch64-linux-musl"
+    }.freeze
+
+    # This platform's spec 03 §3 triplet (e.g. "x86_64-windows-ucrt").
+    def tpkg_triplet
+      TPKG_TRIPLETS.fetch(host_id) do
+        raise TebakoRuntimeBuilder::Error.new("no spec 03 §3 triplet for host_id '#{host_id}'", 112)
+      end
     end
 
     # Platform id as used by tebako-runtime-ruby package names

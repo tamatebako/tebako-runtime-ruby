@@ -394,6 +394,56 @@ if(TEBAKO_RUST_DRIVER)
 #include <stdio.h>\n\
 #include <stdlib.h>\n\
 #include <string.h>\n\
+#ifdef _WIN32\n\
+// Declared directly (not via <windows.h>) to keep this TU lean; the exe\n\
+// links kernel32 regardless. GetTempPathA is std::env::temp_dir()'s\n\
+// windows source (the driver's TEBAKO_EXEC_CACHE root) — on ASCII temp\n\
+// paths the two agree byte-for-byte (a non-ASCII temp dir is the ANSI\n\
+// channel's documented limit, shared by _putenv_s).\n\
+extern \"C\" __declspec(dllimport) unsigned long __stdcall GetTempPathA(unsigned long nBufferLength, char* lpBuffer);\n\
+// The first 16 hex of the <image>.sha256 sidecar's leading token — the\n\
+// store sidecar's sha prefix, spec 22 §6's image-key idiom (the rule the\n\
+// driver's exec_cache::image_key applies: a sidecar that does not parse\n\
+// is no key source there, and no export here).\n\
+static int tebako_image_sidecar_key(const char* image, char* key16) {\n\
+  char sidecar[8192];\n\
+  char token[257];\n\
+  size_t len, i;\n\
+  FILE* f;\n\
+  int n = snprintf(sidecar, sizeof(sidecar), \"%s.sha256\", image);\n\
+  if (n <= 0 || (size_t)n >= sizeof(sidecar)) return 0;\n\
+  f = fopen(sidecar, \"r\");\n\
+  if (f == nullptr) return 0;\n\
+  token[0] = 0;\n\
+  if (fscanf(f, \"%256s\", token) != 1) { fclose(f); return 0; }\n\
+  fclose(f);\n\
+  len = strlen(token);\n\
+  if (len != 64) return 0;\n\
+  for (i = 0; i < 64; i++) {\n\
+    char c = token[i];\n\
+    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) return 0;\n\
+  }\n\
+  memcpy(key16, token, 16);\n\
+  key16[16] = 0;\n\
+  return 1;\n\
+}\n\
+// The materialized CA bundle's host path (spec 22 §4/§6):\n\
+// <temp>/tebako-exec-<key>/resources/<key>/ssl/cert.pem — forward slashes\n\
+// past GetTempPath's trailing separator: the CRT's fopen resolves mixed\n\
+// separators uniformly.\n\
+static int tebako_materialized_cert_path(const char* image, char* out, size_t out_size) {\n\
+  char key[17];\n\
+  char temp[4096];\n\
+  unsigned long n;\n\
+  int m;\n\
+  if (image == nullptr || image[0] == 0) return 0;\n\
+  if (!tebako_image_sidecar_key(image, key)) return 0;\n\
+  n = GetTempPathA((unsigned long)sizeof(temp), temp);\n\
+  if (n == 0 || n >= sizeof(temp)) return 0;\n\
+  m = snprintf(out, out_size, \"%stebako-exec-%s/resources/%s/ssl/cert.pem\", temp, key, key);\n\
+  return m > 0 && (size_t)m < out_size;\n\
+}\n\
+#endif\n\
 extern \"C\" {\n\
   int tebako_driver_boot(int* argc, char*** argv, const char* runtime_root);\n\
   unsigned int tebako_driver_contract_version(void);\n\
@@ -403,20 +453,34 @@ extern \"C\" {\n\
       snprintf(contract_version, sizeof(contract_version), \"%u\", tebako_driver_contract_version());\n\
 #ifdef _WIN32\n\
       _putenv_s(\"TEBAKO_CONTRACT_VERSION\", contract_version);\n\
-      // Windows CA roots (0.16.5): vcpkg's static openssl was built with\n\
-      // the CI runner's openssldir — a path no user machine has — so the\n\
-      // default verify paths find nothing and the first HTTPS fails. The\n\
-      // env image ships the pinned curl CA bundle at\n\
-      // <mount-root>/ssl/cert.pem (CaBundle); point openssl's default\n\
-      // store at it through the VFS unless the user already chose one.\n\
-      // POSIX needs nothing: vcpkg's unix openssl builds with\n\
-      // --openssldir=/etc/ssl, which the host supplies.\n\
+      // Windows CA roots (0.16.6, spec 22 §4 class R): the env image\n\
+      // ships the pinned curl CA bundle at /ssl/cert.pem (CaBundle) and\n\
+      // declares it in /__tpkg__/manifest.yaml's materialize list, so\n\
+      // the driver extracts it per boot to the host path\n\
+      // tebako_materialized_cert_path composes. libcrypto reads its cert\n\
+      // store through its OWN native CRT IO, which the VFS never\n\
+      // interposes — the 0.16.5 in-VFS export could not reach it — so\n\
+      // the export names the materialized HOST path. Composed pre-boot\n\
+      // (TEBAKO_EXEC_CACHE is not yet exported) from the same inputs the\n\
+      // driver uses: TEBAKO_RUNTIME_IMAGE, its store sidecar, GetTempPath.\n\
+      // The file itself appears in the driver's class-R pass, before the\n\
+      // interpreter handoff. POSIX needs nothing: vcpkg's unix openssl\n\
+      // builds with --openssldir=/etc/ssl, which the host supplies.\n\
       {\n\
         const char* user_ssl_cert_file = getenv(\"SSL_CERT_FILE\");\n\
         if (user_ssl_cert_file == nullptr || user_ssl_cert_file[0] == 0) {\n\
-          char ssl_cert_file[512];\n\
-          snprintf(ssl_cert_file, sizeof(ssl_cert_file), \"%s/ssl/cert.pem\", tebako::fs_mount_point);\n\
-          _putenv_s(\"SSL_CERT_FILE\", ssl_cert_file);\n\
+          char ssl_cert_file[8192];\n\
+          if (tebako_materialized_cert_path(getenv(\"TEBAKO_RUNTIME_IMAGE\"), ssl_cert_file, sizeof(ssl_cert_file))) {\n\
+            _putenv_s(\"SSL_CERT_FILE\", ssl_cert_file);\n\
+          } else {\n\
+            // Store-less boot (no image named, or no sidecar — a dev\n\
+            // tree): the driver keys the extraction by the image-PATH\n\
+            // hash this shim cannot compute — keep the 0.16.5 in-VFS\n\
+            // spelling (ruby-level VFS reads still resolve there; the\n\
+            // store flow is the shipped one).\n\
+            snprintf(ssl_cert_file, sizeof(ssl_cert_file), \"%s/ssl/cert.pem\", tebako::fs_mount_point);\n\
+            _putenv_s(\"SSL_CERT_FILE\", ssl_cert_file);\n\
+          }\n\
         }\n\
       }\n\
 #else\n\
