@@ -104,11 +104,14 @@ module TebakoRuntimeBuilder
                                             109)
     end
 
-    private
-
+    # The abi line this build satisfies (spec 03 §2.2's abi_line — what
+    # native-extension payloads match their "~> x.y.z" against): the
+    # version's major.minor as integers, so 4.x lines fall out naturally.
     def major_minor
       @major_minor ||= @ruby_version.split(".").first(2).map(&:to_i)
     end
+
+    private
 
     def patch_version
       @patch_version ||= @ruby_version.split(".")[2].to_i

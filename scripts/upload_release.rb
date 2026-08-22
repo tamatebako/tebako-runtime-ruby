@@ -1121,16 +1121,21 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     packages_dir = Pathname.new("runtime-packages")
     raise "No runtime packages directory found" unless packages_dir.directory?
 
-    # `.abi` sidecars (the runtime's platform string) and `.contract.yaml`
-    # sidecars (the era-2 release card provenance) are manifest inputs read
-    # by manifest_entry — never packages of their own.
-    packages = packages_dir.glob("*").reject do |p|
-      p.extname == ".abi" || p.basename.to_s.end_with?(CONTRACT_SIDECAR_SUFFIX)
-    end
+    packages = packages_dir.glob("*").reject { |p| support_file?(p) }
     raise "No packages found in runtime-packages directory" if packages.empty?
 
     puts "Found packages:\n#{packages.map(&:basename).join("\n")}"
     packages
+  end
+
+  # `.abi` sidecars (the runtime's platform string), `.contract.yaml`
+  # sidecars (the era-2 release card provenance) and `.sha256` markers
+  # (the image's store-layout trust anchor, spec 22 §6 — the boot
+  # smoke's image-key input) are manifest inputs / build outputs read
+  # in place — never packages of their own.
+  def support_file?(path)
+    path.extname == ".abi" || path.extname == ".sha256" ||
+      path.basename.to_s.end_with?(CONTRACT_SIDECAR_SUFFIX)
   end
 end
 

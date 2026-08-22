@@ -175,12 +175,16 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
     OpenSSL::OPENSSL_VERSION
   end
 
-  # Windows CA roots (0.16.5): the exe's boot shim exports SSL_CERT_FILE
-  # pointing at the in-image bundle (<mount-root>/ssl/cert.pem, deployed
-  # by CaBundle); POSIX runtimes leave it unset — the host's /etc/ssl
-  # serves through the jail. The probe only senses: unset reports the
-  # "unset" detail; set asserts the bundle reads through the VFS and is
-  # bundle-sized. The spec judges per platform.
+  # Windows CA roots (0.16.6): the exe's boot shim exports SSL_CERT_FILE
+  # pointing at the driver's materialized HOST copy of the in-image
+  # bundle (spec 22 §4 class R — the image declares /ssl/cert.pem in its
+  # /__tpkg__/manifest.yaml materialize list; the class-R pass extracts
+  # it under TEBAKO_EXEC_CACHE before the interpreter handoff). POSIX
+  # runtimes leave it unset — the host's /etc/ssl serves through the
+  # jail. The probe only senses (unset reports the "unset" detail; set
+  # asserts the file reads — the materialized path is a host path, so
+  # File.size rides the jail's host passthrough — and is bundle-sized).
+  # The spec judges per platform.
   def self.ca_roots_check
     path = ENV.fetch("SSL_CERT_FILE", nil)
     return "unset" if path.nil? || path.empty?

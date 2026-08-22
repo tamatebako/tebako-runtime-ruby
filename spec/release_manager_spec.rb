@@ -464,6 +464,19 @@ RSpec.describe ReleaseManager do
     end
   end
 
+  it "never treats .sha256 image markers as packages" do
+    dir = @dir.join("runtime-packages")
+    dir.mkdir
+    dir.join("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64").write("exe")
+    dir.join("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64.tfs").write("image")
+    dir.join("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64.tfs.sha256").write("#{"0" * 64}  image\n")
+
+    with_packages do
+      packages = manager.validate_packages_directory
+      expect(packages.map(&:extname)).not_to include(".sha256")
+    end
+  end
+
   it "checksummes both the package and its image, image line following its package" do
     exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
     img = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64.tfs")

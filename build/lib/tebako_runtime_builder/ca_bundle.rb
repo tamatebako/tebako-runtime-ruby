@@ -31,16 +31,19 @@ require "net/http"
 require "uri"
 
 module TebakoRuntimeBuilder
-  # The windows runtime's CA bundle (0.16.5). vcpkg's static openssl was
-  # built with the CI runner's openssldir — a path no user machine has —
-  # so the default verify paths find nothing there and the first HTTPS
-  # from a packaged app fails ("certificate verify failed"). The env
-  # image ships the curl project's CA bundle (the Mozilla store) at
-  # ssl/cert.pem, and the exe's boot shim (build/CMakeLists.txt's
-  # TEBAKO_MAIN_SHIM) points SSL_CERT_FILE at the in-VFS path unless the
-  # user already set one. POSIX legs ship nothing: vcpkg's unix openssl
-  # builds with --openssldir=/etc/ssl, which the host supplies through
-  # the jail.
+  # The windows runtime's CA bundle (0.16.5; class-R wired in 0.16.6).
+  # vcpkg's static openssl was built with the CI runner's openssldir — a
+  # path no user machine has — so the default verify paths find nothing
+  # there and the first HTTPS from a packaged app fails ("certificate
+  # verify failed"). The env image ships the curl project's CA bundle
+  # (the Mozilla store) at ssl/cert.pem; the image manifest declares it
+  # in the class-R materialize list (ImageManifest) and the exe's boot
+  # shim (build/CMakeLists.txt's TEBAKO_MAIN_SHIM) points SSL_CERT_FILE
+  # at the driver's materialized HOST copy — the bundle must exist
+  # off-VFS because libcrypto reads it through its own native CRT IO.
+  # A user-set SSL_CERT_FILE still wins. POSIX legs ship nothing: vcpkg's
+  # unix openssl builds with --openssldir=/etc/ssl, which the host
+  # supplies through the jail.
   #
   # The pin is a VERSIONED curl.se URL plus its SHA256 — an immutable
   # pair, never the moving cacert.pem alias. Bump procedure: pick the
@@ -49,8 +52,8 @@ module TebakoRuntimeBuilder
     FILENAME = "cacert-2026-08-13.pem"
     URL = "https://curl.se/ca/#{FILENAME}".freeze
     SHA256 = "f66dff1bdf8f96060b8177976f8b7d9254bc89bc4db933d769f7384d28480bc9"
-    # Where the bundle rides inside the env image — the path the boot
-    # shim's SSL_CERT_FILE export names under the mount root.
+    # Where the bundle rides inside the env image — the path the image
+    # manifest's class-R materialize list declares (as "/ssl/cert.pem").
     IN_IMAGE_PATH = File.join("ssl", "cert.pem").freeze
     MAX_REDIRECTS = 5
 

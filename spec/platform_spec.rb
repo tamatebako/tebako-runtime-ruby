@@ -47,6 +47,27 @@ RSpec.describe TebakoRuntimeBuilder::Platform do
     expect(described_class.new("aarch64-linux-gnu", "aarch64").host_id).to eq("linux-gnu-arm64")
   end
 
+  it "names the spec 03 §3 vcpkg triplet for every host_id" do
+    {
+      %w[x64-mingw-ucrt x86_64] => "x86_64-windows-ucrt",
+      %w[arm64-darwin23 arm64] => "aarch64-macos",
+      %w[x86_64-darwin23 x86_64] => "x86_64-macos",
+      %w[x86_64-linux-gnu x86_64] => "x86_64-linux-gnu",
+      %w[aarch64-linux-gnu aarch64] => "aarch64-linux-gnu",
+      %w[x86_64-linux-musl x86_64] => "x86_64-linux-musl",
+      %w[aarch64-linux-musl aarch64] => "aarch64-linux-musl"
+    }.each do |(ostype, arch), triplet|
+      expect(described_class.new(ostype, arch).tpkg_triplet).to eq(triplet)
+    end
+  end
+
+  it "keeps the triplet mirror total over the host_id axis" do
+    # tpkg::Platform (tamatebako/tebako) owns the triplet ↔ release-asset
+    # mapping; TPKG_TRIPLETS mirrors it — every host_id must map, and the
+    # reverse of every entry must be the host_id itself.
+    expect(described_class::TPKG_TRIPLETS.keys).to match_array(described_class::HOST_IDS.values)
+  end
+
   it "rejects unsupported operating systems" do
     expect { described_class.new("x86_64-freebsd", "x86_64").host_id }
       .to raise_error(TebakoRuntimeBuilder::Error)
