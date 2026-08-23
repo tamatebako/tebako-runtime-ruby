@@ -110,6 +110,7 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
   def self.native_ext
     report("require_openssl") { openssl_check }
     report("ca_roots") { ca_roots_check }
+    report("https_handshake") { https_handshake_check }
     report("load_native_extension") { native_extension_check }
   end
 
@@ -193,6 +194,44 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
     raise "SSL_CERT_FILE #{path} is only #{size} B — not a CA bundle" if size < 100_000
 
     "#{path} (#{size} B)"
+  end
+
+  # Default-store HTTPS handshake (tebako-runtime-ruby#123): the vendored
+  # openssl gem predating ruby/openssl#949 flags DEFAULT_CERT_STORE with
+  # V_FLAG_CRL_CHECK_ALL, and OpenSSL 3.6 makes that imply V_FLAG_CRL_CHECK
+  # — every CRL-DP-bearing chain then dies with "unable to get certificate
+  # CRL", so default Net::HTTP HTTPS was dead on the POSIX 0.16.6 runtimes
+  # while every ruby-level check shipped green (nothing opened a socket).
+  # This is the real thing: VERIFY_PEER against the DEFAULT store (no
+  # cert_store override — the exact Net::HTTP default path) against pinned
+  # well-known hosts whose chains carry CRL distribution points. Any HTTP
+  # response code proves the handshake; the error of EVERY pinned host is
+  # the named failure (one host down or filtered is no TLS verdict). Short
+  # timeouts keep the leg fast — the first host normally answers at once.
+  HTTPS_PROBE_HOSTS = %w[api.github.com www.google.com github.com].freeze
+  HTTPS_PROBE_TIMEOUT = 4
+
+  def self.https_handshake_check
+    require "net/http"
+    failures = []
+    HTTPS_PROBE_HOSTS.each do |host|
+      response = https_probe_get(host)
+      return "#{host} HTTP #{response.code}"
+    rescue StandardError => e
+      failures << "#{host}: #{e.class}: #{e.message}"
+    end
+    raise "default-store HTTPS handshake failed against every pinned host " \
+          "(#{HTTPS_PROBE_HOSTS.join(", ")}): #{failures.join(" | ")}"
+  end
+
+  def self.https_probe_get(host)
+    http = Net::HTTP.new(host, 443)
+    http.use_ssl = true
+    http.open_timeout = HTTPS_PROBE_TIMEOUT
+    http.read_timeout = HTTPS_PROBE_TIMEOUT
+    http.write_timeout = HTTPS_PROBE_TIMEOUT
+    http.max_retries = 0
+    http.start { |session| session.get("/") }
   end
 
   def self.stat_check
