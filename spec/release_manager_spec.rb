@@ -26,7 +26,7 @@ SPEC_CONTRACT = {
 # Recording octokit stand-ins: ReleaseManager accepts any client object
 # (client:), and every publish interaction becomes observable through the
 # store's public collections; transient failures are scriptable per call.
-FakeAsset = Struct.new(:id, :name, :browser_download_url, :digest, :state)
+FakeAsset = Struct.new(:id, :name, :browser_download_url, :digest, :state, :url)
 
 # A page of the asset listing: data plus a Sawyer-shaped rels whose
 # :next link serves the following page (the real API's shape — raw rel
@@ -84,7 +84,10 @@ class FakeAssetStore
   attr_accessor :manifest_json, :delete_propagation, :page_size
 
   def initialize(names = [])
-    @assets = names.each_with_index.map { |name, index| FakeAsset.new(index + 1, name, "https://download.test/#{name}") }
+    @assets = names.each_with_index.map do |name, index|
+      FakeAsset.new(index + 1, name, "https://download.test/#{name}", nil, nil,
+                    "https://api.github.test/releases/42/assets/#{index + 1}")
+    end
     @manifest_json = nil
     @delete_propagation = 0
     init_recorders
@@ -105,8 +108,10 @@ class FakeAssetStore
 
   # Paged listing: page_size <= 0 serves everything in one page (the
   # historical fake); a positive size slices the visible assets and links
-  # the pages, exactly like the real API's default-30 pages.
+  # the pages, exactly like the real API's default-30 pages. Each page
+  # read is a scriptable :listing attempt (rate-limit injection).
   def page_at(offset)
+    attempt(:listing)
     all = tick_and_visible_assets
     return FakePage.new(all, nil) if page_size.to_i <= 0
 
@@ -193,11 +198,22 @@ class FakeClient
   def upload_asset(_url, path, content_type:, name:)
     @store.attempt(:upload)
     @store.assert_uploadable!(name)
-    asset = FakeAsset.new(@store.assets.size + 100, name, "https://download.test/#{name}")
+    id = @store.assets.size + 100
+    asset = FakeAsset.new(id, name, "https://download.test/#{name}", nil, nil,
+                          "https://api.github.test/releases/42/assets/#{id}")
     @store.uploads << name
     @store.upload_content_types[name] = content_type
     @store.assets << asset
     @store.register_upload(asset, File.binread(path))
+    asset # the real client returns the created asset record
+  end
+
+  # The single-asset existence read the deletion-propagation wait polls:
+  # one call per poll instead of a full re-listing. Shares the listing's
+  # propagation model — one poll is one tick.
+  def release_asset(url)
+    id = url.split("/").last.to_i
+    @store.tick_and_visible_assets.find { |asset| asset.id == id } or raise Octokit::NotFound
   end
 
   def delete_release_asset(id)
@@ -917,6 +933,124 @@ RSpec.describe ReleaseManager do
     end
   end
 
+  # The 0.16.6 publish (run 32602525094) died at the finalize: the
+  # publish's ~1000 listing re-reads drained the tebako-ci token's
+  # 5000-request hourly window in ~30 minutes and the next GET 403'd.
+  # A rate-limit response now rides the window out (budget-bounded),
+  # never dying on the response itself, never spending transient attempts.
+  describe "rate-limit resilience" do
+    let(:store) { FakeAssetStore.new }
+    let(:release) { FakeRelease.new(store) }
+    let(:fake_manager) { described_class.new(client: FakeClient.new(store)) }
+
+    before { allow(fake_manager).to receive(:sleep) }
+
+    def too_many_requests(headers = {})
+      Octokit::TooManyRequests.new(status: 403, body: "API rate limit exceeded", response_headers: headers)
+    end
+
+    it "sleeps until the window's named reset and retries instead of dying" do
+      reset = Time.now.to_i + 30
+      store.fail_next(:listing, too_many_requests("x-ratelimit-reset" => reset.to_s))
+
+      expect(fake_manager.all_assets(release)).to eq([])
+      expect(store.attempts[:listing]).to eq(2)
+      expect(fake_manager).to have_received(:sleep).with(a_value_between(25, 36))
+    end
+
+    it "honors the Retry-After header when no reset is named" do
+      store.fail_next(:listing, too_many_requests("retry-after" => "17"))
+
+      fake_manager.all_assets(release)
+
+      expect(fake_manager).to have_received(:sleep).with(a_value_between(17, 23))
+    end
+
+    it "waits a default minute when the response names neither reset nor retry-after" do
+      store.fail_next(:listing, too_many_requests)
+
+      fake_manager.all_assets(release)
+
+      expect(fake_manager).to have_received(:sleep).with(ReleaseManager::RATE_LIMIT_DEFAULT_WAIT)
+    end
+
+    it "never spends transient attempts on rate-limit responses" do
+      5.times { store.fail_next(:listing, too_many_requests("retry-after" => "1")) }
+
+      fake_manager.all_assets(release)
+
+      expect(store.attempts[:listing]).to eq(6)
+    end
+
+    it "rides out a rate-limited upload POST" do
+      store.fail_next(:upload, too_many_requests("retry-after" => "1"))
+      exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
+
+      fake_manager.perform_upload(release, exe, exe.basename.to_s)
+
+      expect(store.attempts[:upload]).to eq(2)
+      expect(store.uploads).to eq([exe.basename.to_s])
+    end
+
+    it "gives up loudly when the wait outlasts two full hourly windows" do
+      reset = Time.now.to_i + ReleaseManager::RATE_LIMIT_BUDGET + 60
+      store.fail_next(:listing, too_many_requests("x-ratelimit-reset" => reset.to_s))
+
+      expect { fake_manager.all_assets(release) }
+        .to raise_error(ReleaseManager::RateLimitBudgetExhausted, /rate-limit/)
+      expect(fake_manager).not_to have_received(:sleep)
+    end
+  end
+
+  # The 0.16.6 token drain's other half: every own-mutation invalidated
+  # the listing memo, re-fetching ~4 pages per upload/delete/poll at
+  # catalog size. The memo now updates in place (an upload appends the
+  # response's record, a delete drops by id) and the propagation wait
+  # polls a bounded single-asset read — the listing is fetched ONCE.
+  describe "asset listing memo updates in place" do
+    let(:store) { FakeAssetStore.new(["existing.tgz"]) }
+    let(:release) { FakeRelease.new(store) }
+    let(:fake_manager) { described_class.new(client: FakeClient.new(store)) }
+
+    before { allow(fake_manager).to receive(:sleep) }
+
+    def listing_reads
+      release.rels[:assets].gets
+    end
+
+    it "records an upload in the memo without a re-listing" do
+      fake_manager.find_asset(release, "existing.tgz") # populates the memo
+      expect(listing_reads).to eq(1)
+
+      file = @dir.join("new.tgz").tap { |path| path.write("new bytes") }
+      fake_manager.upload_once(release, file, "new.tgz")
+
+      expect(fake_manager.find_asset(release, "new.tgz")).not_to be_nil
+      expect(listing_reads).to eq(1)
+    end
+
+    it "drops a deleted asset from the memo without a re-listing" do
+      fake_manager.find_asset(release, "existing.tgz")
+      expect(listing_reads).to eq(1)
+
+      fake_manager.remove_existing_asset(release, "existing.tgz")
+
+      expect(fake_manager.find_asset(release, "existing.tgz")).to be_nil
+      expect(listing_reads).to eq(1)
+    end
+
+    it "polls deletion propagation by single-asset reads, never re-listing" do
+      store.delete_propagation = 2 # the deletion clears on the third poll
+      fake_manager.find_asset(release, "existing.tgz")
+      expect(listing_reads).to eq(1)
+
+      fake_manager.remove_existing_asset(release, "existing.tgz")
+
+      expect(store.deletes).to eq([1])
+      expect(listing_reads).to eq(1)
+    end
+  end
+
   # 2026-08-20 incident (run 32346716268, "Publish the runtime packages"):
   # one wedged exe/.tfs pair burned the full 150-minute step timeout, zero
   # of 338 assets updated. The three wounds, spec-locked: the
@@ -947,7 +1081,7 @@ RSpec.describe ReleaseManager do
       store.assets << FakeAsset.new(7, "asset.tgz", "https://download.test/asset.tgz")
       allow(fake_manager).to receive(:monotonic_now).and_return(0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 70.0)
 
-      expect { fake_manager.wait_for_absence(release, "asset.tgz") }
+      expect { fake_manager.wait_for_absence(release, "asset.tgz", store.assets.first) }
         .to raise_error(ReleaseManager::DeletionPropagationTimeout, /asset\.tgz has not propagated within 60s/)
     end
 
@@ -977,8 +1111,11 @@ RSpec.describe ReleaseManager do
       allow(fake_manager).to receive(:previous_manifest_entries).and_return([previous])
       allow(fake_manager).to receive(:current_shas)
         .and_return(exe.basename.to_s => Digest::SHA256.hexdigest(exe.read))
+      # 400s per clock read: the memo no longer re-lists the still-
+      # propagating deleted asset, so a retry cycle makes fewer clock
+      # reads — the per-asset budget still exhausts inside the first.
       clock = 0.0
-      allow(fake_manager).to receive(:monotonic_now) { clock += 120.0 }
+      allow(fake_manager).to receive(:monotonic_now) { clock += 400.0 }
 
       expect { fake_manager.upload_package(release, exe) }
         .to output(/keeping the previous asset/).to_stdout
