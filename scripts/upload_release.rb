@@ -61,6 +61,11 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   # propagation deadline — the name stays 422-blocked server-side.
   class DeletionPropagationTimeout < StandardError; end
 
+  # The rate-limit ride-out has a bound: two full hourly windows waited in
+  # one process means something is systemically wrong — give up loudly
+  # instead of blocking the runner forever.
+  class RateLimitBudgetExhausted < StandardError; end
+
   # The era-2 release card (spec 18 C2): every runtime package carries a
   # builder-emitted `<package>.contract.yaml` sidecar (contract_era,
   # image_layout, mount_root, built_from) that manifest_entry folds into
@@ -566,11 +571,11 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
 
     puts "#{filename}: the landed asset's content disagrees — deleting the partial/stale asset before the retry"
     with_transient_retries { @client.delete_release_asset(asset.id) }
-    invalidate_assets_memo
+    drop_asset_from_memo(asset.id) # the deleted asset leaves the listing
     # The name stays 422-blocked until the delete propagates — poll for
     # the absence so the retry's POST actually lands (the v0.16.3 gnu
     # publish looped blind POSTs into the held name).
-    wait_for_absence_best_effort(release, filename)
+    wait_for_absence_best_effort(release, filename, asset)
   end
 
   # Did an earlier attempt's POST land despite the error? Accepts (loudly)
@@ -625,11 +630,16 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     sleep delay
   end
 
+  # The POST rides rate-limit windows out like every other call; its
+  # TRANSIENT retries stay with perform_upload (escalating delays,
+  # 422-by-content resolution, the per-asset budget).
   def upload_once(release, package, filename)
-    @client.upload_asset(release.url, package.to_s,
-                         content_type: "application/octet-stream",
-                         name: filename)
-    invalidate_assets_memo # the landed asset joins the listing
+    asset = with_rate_limit_rideout do
+      @client.upload_asset(release.url, package.to_s,
+                           content_type: "application/octet-stream",
+                           name: filename)
+    end
+    record_asset_upload(asset) # the landed asset joins the listing
   end
 
   def platform_display_name(platform)
@@ -784,8 +794,8 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     return unless existing
 
     with_transient_retries { @client.delete_release_asset(existing.id) }
-    invalidate_assets_memo # the deleted asset leaves the listing
-    wait_for_absence_best_effort(release, filename)
+    drop_asset_from_memo(existing.id) # the deleted asset leaves the listing
+    wait_for_absence_best_effort(release, filename, existing)
   end
 
   # GitHub asset deletion is only eventually consistent: a same-name
@@ -799,11 +809,10 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   DELETION_PROPAGATION_POLL_INTERVAL = 2
   DELETION_PROPAGATION_DEADLINE = 60
 
-  def wait_for_absence(release, filename, deadline: DELETION_PROPAGATION_DEADLINE) # rubocop:disable Metrics/MethodLength
+  def wait_for_absence(release, filename, asset, deadline: DELETION_PROPAGATION_DEADLINE) # rubocop:disable Metrics/MethodLength
     started = monotonic_now
     loop do
-      invalidate_assets_memo # the propagation poll needs live reads
-      return if find_asset(release, filename).nil?
+      return if asset_deleted?(release, asset)
 
       if monotonic_now - started >= deadline
         raise DeletionPropagationTimeout,
@@ -816,12 +825,24 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     end
   end
 
+  # The propagation poll is a bounded single-asset existence read by id:
+  # one API call per poll. Re-listing ~4 asset pages per poll (the
+  # previous shape) is what, at catalog size, drained the token's hourly
+  # request window mid-publish. The real API always hands listed assets an
+  # api url; the fallback rebuilds it from the release url.
+  def asset_deleted?(release, asset)
+    with_transient_retries { @client.release_asset(asset.url || "#{release.url}/assets/#{asset.id}") }
+    false
+  rescue Octokit::NotFound
+    true
+  end
+
   # The bounded wait after a delete, best-effort at the call sites that
   # have a retry budget behind them: over-deadline propagation is a loud
   # warning, and the upload's 422-by-content handler + per-asset budget
   # absorb the still-held name.
-  def wait_for_absence_best_effort(release, filename)
-    wait_for_absence(release, filename)
+  def wait_for_absence_best_effort(release, filename, asset)
+    wait_for_absence(release, filename, asset)
   rescue DeletionPropagationTimeout => e
     puts "::warning::#{e.message}"
   end
@@ -837,10 +858,12 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   # client methods, not Sawyer rel gets) — with 100+ assets most lookups
   # silently miss. Walk the pages explicitly, MEMOIZED per process: a full
   # publish fetches the listing once instead of ~3 pages per file (~1000
-  # calls at catalog size — the difference on a degraded network). Our own
-  # mutations invalidate the memo (an upload adds to the listing, a delete
-  # removes); another actor's mutations are invisible by design — the
-  # global publish serialization means none exist within a run.
+  # calls at catalog size — the reads that drained the tebako-ci token's
+  # hourly window on the 0.16.6 publish). Our own mutations update the
+  # memo IN PLACE (an upload appends the response's asset record, a delete
+  # drops by id) — never a re-listing; another actor's mutations are
+  # invisible by design — the global publish serialization means none
+  # exist within a run.
   def all_assets(release)
     @all_assets ||= begin
       page = with_transient_retries { release.rels[:assets].get }
@@ -853,8 +876,14 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     end
   end
 
-  def invalidate_assets_memo
-    @all_assets = nil
+  # In-place memo updates for our own mutations. A nil memo stays nil:
+  # the next read fetches the listing fresh.
+  def record_asset_upload(asset)
+    @all_assets&.push(asset)
+  end
+
+  def drop_asset_from_memo(asset_id)
+    @all_assets&.delete_if { |asset| asset.id == asset_id }
   end
 
   def find_asset(release, filename)
@@ -863,15 +892,73 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
 
   # GET/DELETE/PUT calls other than the asset upload share the same
   # transient network failure modes; retry them (they are idempotent).
+  # A 403 rate-limit response is not one of those modes: it rides the
+  # window out and never consumes the transient attempts.
   def with_transient_retries(attempts: 4)
-    yield
-  rescue Net::WriteTimeout, Net::ReadTimeout, Faraday::TimeoutError, Faraday::ConnectionFailed => e
-    attempts -= 1
-    raise if attempts <= 0
+    with_rate_limit_rideout do
+      yield
+    rescue Net::WriteTimeout, Net::ReadTimeout, Faraday::TimeoutError, Faraday::ConnectionFailed => e
+      attempts -= 1
+      raise if attempts <= 0
 
-    puts "#{e.class}; retrying in 5s (#{attempts} attempt(s) left)"
-    sleep 5
+      puts "#{e.class}; retrying in 5s (#{attempts} attempt(s) left)"
+      sleep 5
+      retry
+    end
+  end
+
+  # A 403 rate-limit response must never kill the publish: the uploader
+  # is one serialized actor, and sleeping until the window resets is the
+  # CORRECT behavior (the 0.16.6 publish burned the tebako-ci token's
+  # 5000-request hourly window in ~30 minutes and died at the finalize —
+  # GET .../assets 403 — after all 334 payload assets had landed). The
+  # upload POST rides this out too; its transient retries (escalating
+  # delays, 422-by-content resolution, the per-asset budget) stay with
+  # perform_upload.
+  RATE_LIMIT_SETTLE = 5
+  RATE_LIMIT_DEFAULT_WAIT = 60
+  RATE_LIMIT_BUDGET = (2 * 3600) + 300
+
+  def with_rate_limit_rideout
+    yield
+  rescue Octokit::TooManyRequests => e
+    wait = rate_limit_wait(e)
+    puts "#{e.class}; rate-limited — sleeping #{wait}s until the window resets"
+    sleep wait
     retry
+  end
+
+  # The seconds to sleep before the next call, budget-checked: one full
+  # hourly window is a legitimate wait; a wait that would push the process
+  # past two windows means something is systemically wrong — give up
+  # loudly instead of blocking the runner forever.
+  def rate_limit_wait(error)
+    wait = rate_limit_seconds(error)
+    return wait if monotonic_now + wait <= rate_limit_deadline
+
+    raise RateLimitBudgetExhausted,
+          "the next GitHub rate-limit window is #{wait}s out but this publish has a #{RATE_LIMIT_BUDGET}s " \
+          "ride-out budget — two full windows spent; giving up loudly instead of blocking forever"
+  end
+
+  def rate_limit_deadline
+    @rate_limit_deadline ||= monotonic_now + RATE_LIMIT_BUDGET
+  end
+
+  # The reset header names the window's end as a wall-clock epoch (plus a
+  # small settle); a stale or absent reset falls back to Retry-After,
+  # then to a default minute. Faraday's real headers are case-insensitive;
+  # read both spellings so a plain hash (the spec fake) serves the same
+  # values.
+  def rate_limit_seconds(error)
+    headers = error.response_headers || {}
+    reset = (headers["x-ratelimit-reset"] || headers["X-RateLimit-Reset"]).to_i
+    return reset - Time.now.to_i + RATE_LIMIT_SETTLE if reset > Time.now.to_i
+
+    retry_after = (headers["retry-after"] || headers["Retry-After"]).to_i
+    return retry_after + RATE_LIMIT_SETTLE if retry_after.positive?
+
+    RATE_LIMIT_DEFAULT_WAIT
   end
 
   def run
