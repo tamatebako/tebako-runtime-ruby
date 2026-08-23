@@ -399,6 +399,22 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
                             "must not export SSL_CERT_FILE off windows"
         end
       end
+
+      it "completes a default-store HTTPS handshake against a pinned CRL-DP host (tebako-runtime-ruby#123)" do
+        # The #123 class: every ruby-level check shipped green on the
+        # POSIX 0.16.6 runtimes while the vendored openssl gem's
+        # CRL_CHECK_ALL default-store flag made OpenSSL 3.6 hard-fail
+        # every CRL-DP-bearing chain — nothing opened a socket. This is
+        # the real default-store VERIFY_PEER handshake (no cert_store
+        # override); any HTTP response code proves the TLS negotiation,
+        # only the handshake matters. The probe tries pinned well-known
+        # hosts whose chains carry CRL DPs (api.github.com first) and
+        # fails by name when every one of them errors.
+        expect(run).to be_booted, boot_failure(run)
+        expect(run.state("https_handshake")).to eq("ok"),
+                                                "probe https_handshake detail: #{run.detail("https_handshake")}"
+        expect(run.detail("https_handshake")).to match(/\A\S+ HTTP \d{3}\z/)
+      end
     end
 
     describe "the loader interposition (spec 22 phase 1, class L)" do
