@@ -750,10 +750,14 @@ RSpec.describe ReleaseManager do
       expect(store.deletes).to eq([7])
     end
 
-    # A name wedged server-side (the replace cannot land within the
-    # budget) keeps the previous asset AND its previous manifest entry —
-    # byte-truthful, loudly warned, never a failed publish.
+    # A FORCE_REBUILD replace whose name wedges server-side (the replace
+    # cannot land within the budget) keeps the previous asset AND its
+    # previous manifest entry — byte-truthful, loudly warned, never a
+    # failed publish. (Without FORCE_REBUILD the byte-immutable keep
+    # pre-empts the replace entirely — this wedge path is the
+    # force-replace's safety net.)
     it "keeps the previous asset and entry when the replace cannot land" do
+      ENV["FORCE_REBUILD"] = "true"
       exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
       url = "https://download.test/#{exe.basename}"
       previous = { filename: exe.basename.to_s, sha256: "1" * 64, platform: "macos-arm64" }
@@ -1098,34 +1102,28 @@ RSpec.describe ReleaseManager do
     # The incident's shape: the wedged exe warn-kept, then its own .tfs
     # re-entered the replace path — and the next platform invocation
     # re-attempted the exe. A settled asset is never attempted again in
-    # the run, and its facets stand down with it.
+    # the run, and its facets stand down with it. (The settle now happens
+    # through the byte-immutable keep — zero replace attempts.)
     it "never re-attempts a settled asset and stands its .tfs facet down" do
       exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
       tfs = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64.tfs")
       url = "https://download.test/#{exe.basename}"
       previous = { filename: exe.basename.to_s, sha256: "1" * 64, platform: "macos-arm64",
                    image: { filename: tfs.basename.to_s, sha256: "2" * 64, size_bytes: 1 } }
-      store.delete_propagation = 999 # the delete never clears the listing
       store.assets << FakeAsset.new(7, exe.basename.to_s, url)
-      store.set_content(url, "previous bytes")
       allow(fake_manager).to receive(:previous_manifest_entries).and_return([previous])
       allow(fake_manager).to receive(:current_shas)
         .and_return(exe.basename.to_s => Digest::SHA256.hexdigest(exe.read))
-      # 400s per clock read: the memo no longer re-lists the still-
-      # propagating deleted asset, so a retry cycle makes fewer clock
-      # reads — the per-asset budget still exhausts inside the first.
-      clock = 0.0
-      allow(fake_manager).to receive(:monotonic_now) { clock += 400.0 }
 
       expect { fake_manager.upload_package(release, exe) }
         .to output(/keeping the previous asset/).to_stdout
-      expect(store.attempts[:upload]).to eq(1)
+      expect(store.attempts[:upload]).to eq(0)
 
       expect { fake_manager.upload_package(release, exe) }
         .to output(/never re-attempted/).to_stdout
       expect { fake_manager.upload_package(release, tfs) }
         .to output(/never re-attempted/).to_stdout
-      expect(store.attempts[:upload]).to eq(1)
+      expect(store.attempts[:upload]).to eq(0)
     end
 
     # The publish step runs one upload_release.rb process per platform;
@@ -1143,17 +1141,17 @@ RSpec.describe ReleaseManager do
       expect(store.deletes).to be_empty
     end
 
-    # The incident's kill shot: a wedged .tfs has no TOP-LEVEL manifest
-    # entry (facets key under their package's entry), so the warn-keep
-    # gate found "nothing to keep" and re-raised — exit 1, the platform
-    # invocation dead, the pair re-attempted by the next one. The gate
-    # now covers facets.
-    it "warn-keeps a wedged .tfs facet instead of failing the publish" do
+    # The 0.16.6 re-publish's kill shot, pre-empted: a rebuilt .tfs facet
+    # whose bytes differ from the published asset's warn-keeps BEFORE any
+    # replace is attempted — no delete, no upload (the delete+re-upload
+    # of a differing same-name asset is exactly what wedged the name
+    # server-side) — settling the whole package stem so apply_stale_keeps
+    # reverts the package entry (byte-truthful for the published bytes).
+    it "keeps a byte-differing .tfs facet without a replace attempt (byte-immutable per name)" do
       tfs = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64.tfs")
       url = "https://download.test/#{tfs.basename}"
-      store.delete_propagation = 999
       asset = FakeAsset.new(7, tfs.basename.to_s, url)
-      asset.digest = "sha256:#{"0" * 64}"
+      asset.digest = "sha256:#{"2" * 64}"
       store.assets << asset
       previous = { filename: "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64", sha256: "1" * 64,
                    platform: "macos-arm64",
@@ -1161,11 +1159,11 @@ RSpec.describe ReleaseManager do
       allow(fake_manager).to receive(:previous_manifest_entries).and_return([previous])
       allow(fake_manager).to receive(:current_shas)
         .and_return(tfs.basename.to_s => Digest::SHA256.file(tfs).hexdigest)
-      clock = 0.0
-      allow(fake_manager).to receive(:monotonic_now) { clock += 120.0 }
 
       expect { fake_manager.upload_package(release, tfs) }
         .to output(/keeping the previous asset/).to_stdout
+      expect(store.attempts[:upload]).to eq(0)
+      expect(store.deletes).to be_empty
       expect(fake_manager.settled?(tfs.basename.to_s)).to be(true)
     end
 
@@ -1330,7 +1328,46 @@ RSpec.describe ReleaseManager do
       expect(store.deletes).to be_empty
     end
 
-    it "re-uploads an asset whose content moved (same name, different sha256)" do
+    # Byte-immutability (owner-locked, the 0.16.6 re-publish): the build
+    # is not bit-reproducible, so a re-publish's rebuilt package almost
+    # always differs from the published bytes — and the delete+re-upload
+    # of a differing same-name asset is exactly what wedged the name
+    # server-side (POST 422 cycles ~7 min apart until the per-asset
+    # budget died). Same name + different bytes + no FORCE_REBUILD keeps
+    # the published asset — no delete, no upload, a loud ::warning naming
+    # both shas — and the manifest entry reverts to the published sha
+    # (byte-truthful). The refresh needs a FORCE_REBUILD publish.
+    it "keeps the published asset when the rebuilt bytes differ (byte-immutable per name)" do
+      exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
+      store.assets << FakeAsset.new(7, exe.basename.to_s)
+      previous_manifest([previous_entry(exe.basename.to_s, "macos-arm64", "f" * 64)])
+      entries = fake_manager.build_manifest_entries([exe])
+      local_sha = Digest::SHA256.file(exe).hexdigest
+
+      expect { fake_manager.upload_package(release, exe) }
+        .to output(/::warning::#{Regexp.escape(exe.basename.to_s)}.*different bytes.*#{"f" * 12}.*#{local_sha[0, 12]}/)
+        .to_stdout
+      expect(store.deletes).to be_empty
+      expect(store.uploads).to be_empty
+      expect(fake_manager.apply_stale_keeps(entries).first[:sha256]).to eq("f" * 64)
+    end
+
+    # Missing is not different bytes: a name the release does not carry
+    # uploads fresh (the recovery path), and the completeness gate still
+    # fails when an expected name never lands.
+    it "uploads a fresh asset the release does not carry" do
+      exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
+      fake_manager.build_manifest_entries([exe])
+
+      expect(fake_manager.upload_package(release, exe)).to eq(exe.basename.to_s)
+      expect(store.uploads).to eq([exe.basename.to_s])
+      expect(store.deletes).to be_empty
+    end
+
+    # FORCE_REBUILD is the one exception to byte-immutability: the
+    # replace path (delete + re-upload) runs exactly as before.
+    it "replaces a byte-differing published asset under FORCE_REBUILD" do
+      ENV["FORCE_REBUILD"] = "true"
       exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
       store.assets << FakeAsset.new(7, exe.basename.to_s)
       previous_manifest([previous_entry(exe.basename.to_s, "macos-arm64", "f" * 64)])
@@ -1340,6 +1377,7 @@ RSpec.describe ReleaseManager do
 
       expect(store.deletes).to eq([7])
       expect(store.uploads).to eq([exe.basename.to_s])
+      expect(fake_manager.settled?(exe.basename.to_s)).to be(false)
     end
 
     it "keeps an existing asset when the previous manifest is unreadable (fail conservative)" do
@@ -1417,6 +1455,38 @@ RSpec.describe ReleaseManager do
       expect(store.uploads).to include("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64",
                                        "SHA256SUMS.txt", "manifest.json")
       expect(store.updates.size).to eq(1)
+    end
+
+    # The 0.16.6 re-publish end-to-end: the release already carries the
+    # earlier attempt's payload assets and the rebuild is not
+    # byte-identical. Keep-first-wins: the payloads are never deleted or
+    # re-uploaded (the delete+re-upload is what wedged the names
+    # server-side), a loud warning names the keep, and the published
+    # manifest + SHA256SUMS describe the PUBLISHED bytes (byte-truthful).
+    it "keeps a byte-differing rebuilt package and publishes byte-truthful metadata" do
+      stage_packages("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64",
+                     "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64.tfs")
+      exe_name = "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64"
+      store.assets << FakeAsset.new(7, exe_name, "https://download.test/#{exe_name}")
+      store.assets << FakeAsset.new(8, "#{exe_name}.tfs", "https://download.test/#{exe_name}.tfs")
+      store.manifest_json = JSON.generate(
+        [{ "tebako_version" => SPEC_VERSION, "filename" => exe_name, "platform" => "macos-arm64",
+           "sha256" => "e" * 64, "size_bytes" => 1,
+           "image" => { "filename" => "#{exe_name}.tfs", "sha256" => "1" * 64, "size_bytes" => 1 } }]
+      )
+      store.assets << FakeAsset.new(90, "manifest.json", "https://download.test/manifest.json")
+
+      with_packages do
+        expect { fake_manager.process_release }
+          .to output(/keeping the previous asset.*Successfully updated release notes/m).to_stdout
+      end
+      expect(store.deletes).not_to include(7, 8)
+      expect(store.uploads).not_to include(exe_name, "#{exe_name}.tfs")
+      manifest = JSON.parse(store.content_for("https://download.test/manifest.json"))
+      expect(manifest.first["sha256"]).to eq("e" * 64)
+      expect(manifest.first["image"]["sha256"]).to eq("1" * 64)
+      expect(store.content_for("https://download.test/SHA256SUMS.txt"))
+        .to include("#{"e" * 64}  #{exe_name}", "#{"1" * 64}  #{exe_name}.tfs")
     end
 
     it "fails the publish when an expected package never lands" do

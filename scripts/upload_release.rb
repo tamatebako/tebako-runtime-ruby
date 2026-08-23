@@ -1020,8 +1020,8 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     filename = package.basename.to_s
     puts "Processing #{filename}..."
     if settled?(filename)
-      puts "#{filename} kept its previous bytes earlier in this publish run (wedged replace) — " \
-           "the settled asset is never re-attempted; the refresh lands on the next publish"
+      puts "#{filename} kept its previous bytes earlier in this publish run — " \
+           "the settled asset is never re-attempted; the refresh lands on a FORCE_REBUILD publish"
       return nil
     end
     return filename if skip_existing_asset?(release, filename)
@@ -1030,31 +1030,35 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     filename
   rescue Octokit::UnprocessableEntity
     # The wedged-name class: a delete+recreate tonight 422s for hours —
-    # the replace cannot land within the budget. Keep the release's
-    # existing asset AND its previous manifest entry (byte-truthful,
-    # never a mismatch) and complete the publish; the refreshed bytes
-    # land on the next publish or FORCE_REBUILD. A never-published asset
-    # has nothing to keep — that re-raises by name. Facets count: the
-    # manifest keys a .tfs/.dll under its package's entry, so the facet's
-    # previous bytes live in the package entry's facet block (the
-    # 2026-08-20 publish died here — a wedged .tfs re-raised, killing the
-    # platform's invocation and re-attempting the same pair on the next).
+    # the replace cannot land within the budget. Only a FORCE_REBUILD
+    # replace reaches this rescue now (a plain re-publish's byte-differing
+    # assets warn-keep in skip_existing_asset? before any delete). Keep
+    # the release's existing asset AND its previous manifest entry
+    # (byte-truthful, never a mismatch) and complete the publish; the
+    # refreshed bytes land on a later FORCE_REBUILD publish. A
+    # never-published asset has nothing to keep — that re-raises by name.
+    # Facets count: the manifest keys a .tfs/.dll under its package's
+    # entry, so the facet's previous bytes live in the package entry's
+    # facet block (the 2026-08-20 publish died here — a wedged .tfs
+    # re-raised, killing the platform's invocation and re-attempting the
+    # same pair on the next).
     raise if previous_entry_covering(filename).nil?
 
     puts "::warning::#{filename} could not replace the wedged asset — " \
-         "keeping the previous asset + manifest entry (byte-truthful); the refresh lands on the next publish"
+         "keeping the previous asset + manifest entry (byte-truthful); the refresh lands on a FORCE_REBUILD publish"
     settle_asset!(filename)
     nil
   end
 
   # The settled ledger — the durable half of warn-and-keep-previous. The
   # publish step runs upload_release.rb once per platform (sequential
-  # processes, one workspace); a wedged asset settled in one invocation
-  # must NEVER be re-attempted by a later one (the 2026-08-20 publish
-  # re-attempted the same wedged exe once per platform invocation and
-  # burned the whole 150-minute job timeout doing it). The ledger file in
-  # the workspace carries the settled package stems across the per-platform
-  # processes; each job's fresh workspace starts it empty.
+  # processes, one workspace); an asset settled in one invocation (the
+  # byte-immutable keep, or a wedged FORCE_REBUILD replace) must NEVER be
+  # re-attempted by a later one (the 2026-08-20 publish re-attempted the
+  # same wedged exe once per platform invocation and burned the whole
+  # 150-minute job timeout doing it). The ledger file in the workspace
+  # carries the settled package stems across the per-platform processes;
+  # each job's fresh workspace starts it empty.
   SETTLED_LEDGER_ENV = "TEBAKO_PUBLISH_SETTLED_PATH"
   SETTLED_LEDGER_DEFAULT = ".tebako-publish-settled"
 
@@ -1093,22 +1097,23 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
 
   # The end-of-step summary: every package that kept its previous bytes
   # this run, in one loud block. The step still exits green — the design
-  # is byte-truthful keep-previous, refresh on the next publish.
+  # is byte-truthful keep-previous, refresh on a FORCE_REBUILD publish.
   def print_settled_summary
     return if settled_stems.empty?
 
     puts "=" * 78
     puts "Publish summary: #{settled_stems.size} package(s) kept their previous bytes this run"
-    puts "(wedged replace — byte-truthful keep-previous; the refresh lands on the next publish):"
+    puts "(byte-immutable per name — byte-truthful keep-previous; the refresh lands on a FORCE_REBUILD publish):"
     settled_stems.sort.each { |stem| puts "  - #{stem} (executable and its .tfs/.dll facets)" }
     puts "=" * 78
   end
 
-  # A wedged asset keeps the release's previous bytes, so the manifest
-  # keeps the previous ENTRY (the served bytes' sha, never the fresh one
-  # that failed to land) — for the exe and its .tfs/.dll facets alike.
+  # A kept asset (the byte-immutable keep, or a wedged FORCE_REBUILD
+  # replace) keeps the release's previous bytes, so the manifest keeps
+  # the previous ENTRY (the served bytes' sha, never the fresh one that
+  # did not land) — for the exe and its .tfs/.dll facets alike.
   # The ledger (not just this process's settles) decides: a later
-  # per-platform invocation builds fresh entries for the wedged platform
+  # per-platform invocation builds fresh entries for the kept platform
   # and must revert them too, or the manifest would describe bytes the
   # release does not serve.
   def apply_stale_keeps(entries)
@@ -1133,15 +1138,22 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     end
   end
 
-  # An asset with the same name AND the same sha256 is kept — an
-  # unchanged artifact never re-uploads. Presence in the listing alone
-  # proves nothing (the v0.16.3 publish kept a never-committed
-  # "starter" stub as "unchanged"): uncommitted stubs and
-  # digest-mismatched entries force the replace first.
+  # An asset with the same name AND the same bytes is kept — an
+  # unchanged artifact never re-uploads. A same-named asset whose bytes
+  # DIFFER is kept too, loudly, unless FORCE_REBUILD — a published
+  # release's payload assets are byte-immutable per name (owner-locked):
+  # the build is not bit-reproducible, and the delete+re-upload of a
+  # differing same-name asset is exactly what wedged names server-side
+  # on the 0.16.6 re-publish. Presence in the listing alone still proves
+  # nothing (the v0.16.3 publish kept a never-committed "starter" stub
+  # as "unchanged"): uncommitted stubs force the replace first, and a
+  # digest-mismatched asset the previous manifest does not cover takes
+  # the recovery replace (there is nothing truthful to keep).
   def skip_existing_asset?(release, filename)
     return false unless find_asset(release, filename)
     return false if uncommitted_asset?(release, filename)
-    return false if replace_existing_asset?(release, filename)
+    return false if force_replace_asset?(release, filename)
+    return true if keep_published_asset?(release, filename)
     return false if digest_mismatch_without_previous_entry?(release, filename)
 
     puts "Skipping upload of existing asset #{filename} (unchanged)"
@@ -1164,7 +1176,8 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   # an unreadable manifest, or a .tfs/.dll facet the manifest keys under
   # its package) is verified against the listing's server-computed
   # digest instead of trusted on presence; a digest-less listing keeps
-  # (conservative, as before).
+  # (conservative, as before). Runs behind the byte-immutable keep: a
+  # differing asset WITH previous coverage never reaches this replace.
   def digest_mismatch_without_previous_entry?(release, filename)
     return false unless previous_entry_for(filename).nil?
 
@@ -1178,24 +1191,55 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     true
   end
 
-  # FORCE_REBUILD always replaces. Otherwise a same-named asset whose
-  # previous-manifest sha256 differs from the current content's has moved —
-  # delete it so the caller re-uploads (GitHub deletion is only eventually
-  # consistent; the upload retry absorbs the 422s). Same sha — or no
-  # previous entry at all (an unreadable manifest fails conservative) —
-  # keeps the asset.
-  def replace_existing_asset?(release, filename)
-    if ENV["FORCE_REBUILD"] == "true"
-      remove_existing_asset(release, filename)
-      return true
-    end
-    previous = previous_manifest_entries.find { |entry| entry[:filename] == filename }
-    current = current_shas[filename]
-    return false unless previous && previous[:sha256] && current && previous[:sha256] != current
+  # FORCE_REBUILD is the one exception to per-name byte-immutability:
+  # the existing asset is deleted so the caller re-uploads (GitHub
+  # deletion is only eventually consistent; the upload retry absorbs the
+  # 422s, and a name that stays wedged warn-keeps at the upload_package
+  # rescue).
+  def force_replace_asset?(release, filename)
+    return false unless ENV["FORCE_REBUILD"] == "true"
 
-    puts "Re-uploading #{filename}: content changed (#{previous[:sha256][0, 12]}… → #{current[0, 12]}…)"
     remove_existing_asset(release, filename)
     true
+  end
+
+  # Byte-immutability keep (owner-locked): the release already carries an
+  # asset under this name and its published bytes differ from the local
+  # package's — the listing's server-computed digest is the authority,
+  # the previous manifest's recorded sha the digest-less fallback. Keep
+  # the published asset: warn with both shas and settle the package stem
+  # so apply_stale_keeps reverts the manifest entry to the previous one
+  # (byte-truthful for the published bytes) and no later per-platform
+  # invocation re-attempts the replace. A name the previous manifest
+  # does not cover has nothing truthful to keep — the digest recovery
+  # gate above handles it; same bytes (or an unreadable manifest) fail
+  # conservative, as before.
+  def keep_published_asset?(release, filename)
+    previous = previous_entry_covering(filename)
+    return false if previous.nil?
+
+    published = listed_digest(release, filename) || previous_sha_for(previous, filename)
+    current = current_shas[filename]
+    return false unless published && current && published != current
+
+    puts "::warning::#{filename} exists on the release with different bytes " \
+         "(published #{published[0, 12]}…, local #{current[0, 12]}…) — byte-immutable per name; keeping the " \
+         "previous asset + manifest entry (byte-truthful); the refresh lands on a FORCE_REBUILD publish"
+    settle_asset!(filename)
+    true
+  end
+
+  # The sha256 the previous manifest records for this asset: the entry's
+  # own sha for the executable, the image/dll facet block's sha for a
+  # facet (facets key under their package's entry).
+  def previous_sha_for(entry, filename)
+    if entry.dig(:image, :filename) == filename
+      entry.dig(:image, :sha256)
+    elsif entry.dig(:dll, :filename) == filename
+      entry.dig(:dll, :sha256)
+    else
+      entry[:sha256]
+    end
   end
 
   def validate_environment

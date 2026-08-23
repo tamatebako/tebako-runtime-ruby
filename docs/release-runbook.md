@@ -91,7 +91,18 @@ release'` route exists for back-compat only.
    capped (`PER_ASSET_UPLOAD_BUDGET`, 300 s, checked between attempts — an
    in-flight POST is never cut off). The step ends green with a summary
    naming every package that kept its previous bytes; the refresh lands on
-   the next publish (or a FORCE_REBUILD after the backend recovers).
+   a FORCE_REBUILD publish after the backend recovers.
+8. **Payload assets are byte-immutable per name (owner-locked, learned
+   2026-08-23).** The build is not bit-reproducible, so a re-publish's
+   rebuilt package almost always differs from the published bytes — and
+   the delete+re-upload of a differing same-name asset is exactly what
+   wedges the name server-side (the 0.16.6 re-publish's 422 cycles).
+   A plain re-publish KEEPS the published asset (a loud `::warning` names
+   both shas), reverts its manifest entry to the published sha
+   (byte-truthful), and settles the package stem for the rest of the run.
+   The refresh needs a FORCE_REBUILD publish. Missing ≠ different bytes:
+   a name the release does not carry uploads fresh, and the completeness
+   gate still fails on a missing expected name.
 
 ## Incident field notes (2026-08-03)
 
@@ -140,3 +151,29 @@ release'` route exists for back-compat only.
   spin that was not one. `upload_release.rb` now sets `$stdout.sync = true`;
   trust the message content, and only trust timestamps when the publisher
   flushes per line.
+
+## Incident field notes (2026-08-23, the 0.16.6 re-publish)
+
+- Symptom: the 0.16.6 re-publish died on
+  `tebako-runtime-0.16.6-3.2.11-macos-x86_64.tfs` (publish job
+  97169906686, 10:56:57Z), failing all four platform passes. The release
+  already carried every payload asset from an earlier attempt; the
+  rebuild was not byte-identical (the build is not bit-reproducible), so
+  the byte-differs path delete+re-uploaded each changed same-name asset —
+  GitHub wedged the names server-side (POST 422 `Validation Failed`
+  cycles ~7 min apart, the known eventual-consistency flaw) until the
+  per-asset retry budget exhausted.
+- Root cause: the replace-on-digest-drift path assumed a re-publish's
+  rebuilt bytes SHOULD replace the published ones. With a
+  non-bit-reproducible build that is every re-publish — and the delete
+  is the wedge. The trr#121 rate-limit ride-out held; it was never the
+  problem.
+- Fixed behavior (owner-locked): a published release's payload assets
+  are byte-immutable PER NAME unless FORCE_REBUILD. A byte-differing
+  same-name asset warn-keeps — the wedge path's keep mechanism extended
+  to the normal byte-differs path: `::warning` with both shas, the
+  published asset stays, `apply_stale_keeps` reverts the manifest entry
+  to the published sha (byte-truthful), and the package stem settles in
+  the workspace ledger for the rest of the run. No delete, no upload —
+  no wedge. FORCE_REBUILD keeps the replace path as-is; a missing name
+  still uploads fresh and the completeness gate still fails on one.
