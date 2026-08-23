@@ -116,8 +116,10 @@ module TebakoRuntimeBuilder
     # runtimes leave it unset (the host's /etc/ssl serves — vcpkg's unix
     # openssl builds with --openssldir=/etc/ssl). Platform-derived, no
     # env plumbing. The windows regex also proves the image's
-    # .sha256 sidecar rode along: without it the shim falls back to the
-    # in-VFS spelling, which does not match.
+    # .sha256 sidecar rode along: without it the shim cannot compose the
+    # materialized path and exports NOTHING (tebako#437 — the driver owns
+    # the variable post-materialization), so the probe reports "unset",
+    # which fails the regex just the same.
     def expected_ca_roots_detail
       @platform.msys? ? MATERIALIZED_CERT_DETAIL : "unset"
     end

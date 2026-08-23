@@ -472,15 +472,15 @@ extern \"C\" {\n\
           char ssl_cert_file[8192];\n\
           if (tebako_materialized_cert_path(getenv(\"TEBAKO_RUNTIME_IMAGE\"), ssl_cert_file, sizeof(ssl_cert_file))) {\n\
             _putenv_s(\"SSL_CERT_FILE\", ssl_cert_file);\n\
-          } else {\n\
-            // Store-less boot (no image named, or no sidecar — a dev\n\
-            // tree): the driver keys the extraction by the image-PATH\n\
-            // hash this shim cannot compute — keep the 0.16.5 in-VFS\n\
-            // spelling (ruby-level VFS reads still resolve there; the\n\
-            // store flow is the shipped one).\n\
-            snprintf(ssl_cert_file, sizeof(ssl_cert_file), \"%s/ssl/cert.pem\", tebako::fs_mount_point);\n\
-            _putenv_s(\"SSL_CERT_FILE\", ssl_cert_file);\n\
           }\n\
+          // Store-less boot (no image named, or no sidecar — a dev\n\
+          // tree): the driver keys the extraction by the image-PATH\n\
+          // hash this shim cannot compute, and the 0.16.5/0.16.6 in-VFS\n\
+          // fallback (<mount_root>/ssl/cert.pem) named a VFS path native\n\
+          // libcrypto cannot read (tebako#437) — so SSL_CERT_FILE stays\n\
+          // UNSET here. The driver takes ownership of the variable\n\
+          // post-materialization going forward; a store-less windows\n\
+          // boot keeps failing loudly the same way it already does.\n\
         }\n\
       }\n\
 #else\n\
