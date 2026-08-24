@@ -42,5 +42,7 @@ container_version: "0.16.2"
 # gnu leg now hits the pin too; v0.2.1 carries the libtfs-preload
 # fork/exec deadlock fix (tebako#433) on the same floor build;
 # v0.2.2 adds the driver-owned SSL_CERT_FILE export (tebako#441) and the
-# LFS64/fortify alias-surface jail coverage (tebako#443).
-link_unit_release: "v0.2.2"
+# LFS64/fortify alias-surface jail coverage (tebako#443); v0.2.3 strips
+# DYLD_INSERT_LIBRARIES for exec targets the arm64 dylib cannot load —
+# the arm64e child kill on macOS native-ext presses (tebako#448/#449).
+link_unit_release: "v0.2.3"
