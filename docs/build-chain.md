@@ -30,8 +30,12 @@ call it; it is never dispatched directly. Stages:
 ## The diff-routing law (build-graph.yaml)
 
 - `shared:` inputs reach every platform's legs (the builder model, the
-  workflows themselves, the matrix vocabulary).
+  build workflow, the matrix planner, the matrix vocabulary).
 - `platforms:<p>:` inputs reach only that platform.
+- `publish_only:` paths (release tooling consumed at release time —
+  `scripts/upload_release.rb`, the `publish.yml` coordinator, the
+  pin-bump bot, the bare-launch probe) produce no legs: a change there
+  cannot affect build outputs.
 - `ignore:` paths (docs, etc.) produce no legs.
 - `validation_only:` paths validate on the tidy set, never build-shaped.
 - A source-pin move (`DEFAULT_RELEASE` in

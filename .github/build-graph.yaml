@@ -19,7 +19,8 @@ shared:
   - build/CMakeLists.txt
   - build/cmake/**
   - tools/build_runtime
-  - scripts/**              # generate/compute/publish tooling
+  - scripts/compute_matrix.rb           # the matrix planner (the compute stage itself)
+  - scripts/check_contract_version.rb   # the compute-stage preflight gate
   - Gemfile
   - Gemfile.lock
   - VERSION                 # the tebako version (artifact names)
@@ -27,7 +28,6 @@ shared:
   - .github/matrix.json     # the version/env vocabularies
   - .github/build-graph.yaml # this model
   - .github/workflows/_build-platform.yml # the one per-platform build/publish unit
-  - .github/workflows/publish.yml         # the release coordinator
 
 # Per-platform inputs — a change here affects ONLY that platform's legs.
 platforms:
@@ -54,6 +54,18 @@ platforms:
 validation_only:
   - spec/**
   - .rubocop*.yml
+
+# Publish/release tooling — consumed AT RELEASE time against already-built
+# artifacts (the coordinator's release job, the pin-bump bot, the
+# bare-launch probe), never read by any build leg. A diff touching only
+# these cannot change build outputs: NO legs at all, on any platform —
+# the publish-hardening class (a scripts/upload_release.rb-only PR once
+# spent the tidy matrix on every platform for zero build signal).
+publish_only:
+  - scripts/upload_release.rb              # the release job's manifest merge/upload
+  - .github/workflows/publish.yml          # the release coordinator (dispatch-only)
+  - .github/workflows/bump-source-pin.yml  # the pin-bump bot — its OUTPUT (a pin PR) triggers the builds
+  - .github/workflows/probe-bare-launch.yml # the bare-machine launch probe (dispatch-only)
 
 # Never build inputs.
 ignore:

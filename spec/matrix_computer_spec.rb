@@ -134,6 +134,47 @@ RSpec.describe MatrixComputer do
     expect(legs(out)).to eq("false")
   end
 
+  # The publish-hardening class: release tooling is consumed at release
+  # time against already-built artifacts — a diff touching only these
+  # paths must not spend a single compile leg, on any platform.
+  it "computes nothing for a publish-only diff on every platform" do
+    %w[windows linux-gnu linux-musl macos].each do |platform|
+      out = run_computer(platform, event: "pull_request", files: ["scripts/upload_release.rb"],
+                                   payload: { "pull_request" => { "base" => { "sha" => "a" },
+                                                                  "head" => { "sha" => "b" } } })
+      expect(legs(out)).to eq("false"), "#{platform} must not run on a publish-only change"
+    end
+  end
+
+  it "computes nothing for a publish-workflow-only diff" do
+    out = run_computer("linux-gnu", event: "push", files: [".github/workflows/publish.yml"],
+                                    payload: { "before" => "a", "after" => "b" })
+    expect(legs(out)).to eq("false")
+  end
+
+  it "computes nothing for a mixed docs + publish-only diff" do
+    out = run_computer("macos", event: "push",
+                                files: ["docs/release-runbook.md", "scripts/upload_release.rb"],
+                                payload: { "before" => "a", "after" => "b" })
+    expect(legs(out)).to eq("false")
+  end
+
+  it "still builds when a publish-only path rides with a build input" do
+    out = run_computer("linux-gnu", event: "push",
+                                    files: ["scripts/upload_release.rb", "build/cmake/flags.cmake"],
+                                    payload: { "before" => "a", "after" => "b" })
+    expect(legs(out)).to eq("true")
+    expect(rubies(out)).to eq(%w[3.3.12 4.0.6]) # the tidy set, driven by the shared hit
+  end
+
+  it "still validates when a publish-only path rides with a spec" do
+    out = run_computer("linux-musl", event: "push",
+                                     files: ["scripts/upload_release.rb", "spec/release_manager_spec.rb"],
+                                     payload: { "before" => "a", "after" => "b" })
+    expect(legs(out)).to eq("true")
+    expect(rubies(out)).to eq(%w[3.3.12 4.0.6]) # the tidy validation legs
+  end
+
   it "runs every platform's tidy legs on a shared change" do
     %w[windows linux-gnu linux-musl macos].each do |platform|
       out = run_computer(platform, event: "push", files: ["build/lib/tebako_runtime_builder/builder.rb"],
