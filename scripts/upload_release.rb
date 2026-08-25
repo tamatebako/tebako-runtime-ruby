@@ -274,7 +274,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     digest = listed_digest(release, filename)
     unless digest.nil?
       matched = digest == sha
-      puts "#{filename} is already current on the release — no metadata rewrite needed" if matched
+      puts "#{filename} is already current on the release — canonical metadata unchanged — skipping refresh" if matched
       return matched
     end
 
@@ -288,7 +288,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     return false if served.nil? || served.empty?
 
     if Digest::SHA256.hexdigest(served) == sha
-      puts "#{filename} is already current on the release — no metadata rewrite needed"
+      puts "#{filename} is already current on the release — canonical metadata unchanged — skipping refresh"
       true
     else
       false
@@ -564,10 +564,19 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   end
 
   # Remove the same-name asset whose content disagrees with ours (a
-  # partial upload or a stale build). No-op when the listing holds none.
+  # partial upload or a stale build). No listed asset means our own delete
+  # already left the listing — yet the POST 422'd already_exists: the name
+  # stays blocked on the upload validator's lagging replica past the
+  # listing's truth (the 0.16.8 wedge — the name freed ~15 s after the
+  # absence showed). Re-run the delete+poll cycle once more: the delete is
+  # a no-op and the poll is trivially green, so the operative half is the
+  # post-absence grace — then the retry's POST lands.
   def delete_conflicting_asset(release, filename)
     asset = find_asset(release, filename)
-    return if asset.nil?
+    if asset.nil?
+      name_release_grace(filename)
+      return
+    end
 
     puts "#{filename}: the landed asset's content disagrees — deleting the partial/stale asset before the retry"
     with_transient_retries { @client.delete_release_asset(asset.id) }
@@ -808,11 +817,21 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   # on a wait whose outcome nobody could act on).
   DELETION_PROPAGATION_POLL_INTERVAL = 2
   DELETION_PROPAGATION_DEADLINE = 60
+  # The listing's truth frees the name BEFORE the upload validator's
+  # replica does: on the 0.16.8 publish a same-name POST kept 422ing
+  # (Validation Failed / code: already_exists / field: name) ~15 s PAST
+  # the deletion's visible absence — the manual repair that worked was
+  # "gone, grace, then upload". Every confirmed absence pays this grace
+  # before the next POST.
+  DELETION_PROPAGATION_GRACE = 15
 
   def wait_for_absence(release, filename, asset, deadline: DELETION_PROPAGATION_DEADLINE) # rubocop:disable Metrics/MethodLength
     started = monotonic_now
     loop do
-      return if asset_deleted?(release, asset)
+      if asset_deleted?(release, asset)
+        name_release_grace(filename)
+        return
+      end
 
       if monotonic_now - started >= deadline
         raise DeletionPropagationTimeout,
@@ -823,6 +842,13 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
       puts "Waiting for the deletion of #{filename} to propagate..."
       sleep DELETION_PROPAGATION_POLL_INTERVAL
     end
+  end
+
+  # The settle between "the deletion shows in the listing" and "the upload
+  # validator lets the name go" (0.16.8: ~15 s past the script's own wait).
+  def name_release_grace(filename)
+    puts "#{filename} left the listing; giving the name #{DELETION_PROPAGATION_GRACE}s to free up server-side"
+    sleep DELETION_PROPAGATION_GRACE
   end
 
   # The propagation poll is a bounded single-asset existence read by id:

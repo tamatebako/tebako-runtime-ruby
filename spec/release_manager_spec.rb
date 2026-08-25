@@ -807,6 +807,63 @@ RSpec.describe ReleaseManager do
       expect(store.attempts[:upload]).to eq(1)
     end
 
+    # The 0.16.8 wedge's timing: the name stayed 422 already_exists-blocked
+    # ~15 s PAST the deletion's visible absence — the manual repair that
+    # worked was "gone, grace, then upload". The confirmed absence pays
+    # DELETION_PROPAGATION_GRACE before the next POST.
+    it "pays a grace after the confirmed absence, before the re-upload" do
+      store.assets << FakeAsset.new(7, "SHA256SUMS.txt", "https://download.test/SHA256SUMS.txt")
+      store.delete_propagation = 2
+      file = @dir.join("SHA256SUMS.txt").tap { |path| path.write("new sums") }
+
+      fake_manager.force_upload(release, file)
+
+      expect(store.deletes).to eq([7])
+      expect(store.uploads).to eq(["SHA256SUMS.txt"])
+      expect(store.attempts[:upload]).to eq(1)
+      expect(fake_manager).to have_received(:sleep).with(ReleaseManager::DELETION_PROPAGATION_GRACE).once
+    end
+
+    # The 0.16.8 wedge in miniature: the delete HAS left the listing, yet
+    # the same-name POST still 422s already_exists (the upload validator's
+    # replica lags the listing). The handler re-runs the delete+poll cycle
+    # once more (the delete is a no-op — nothing is listed — and the poll
+    # is trivially green, so the operative half is the grace), and the
+    # retry lands instead of burning the per-asset budget on blind POSTs.
+    it "re-cycles the deletion wait once more when a 422 outlives the listing absence" do
+      ENV["FORCE_REBUILD"] = "true"
+      exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
+      store.assets << FakeAsset.new(7, exe.basename.to_s, "https://download.test/#{exe.basename}")
+      store.fail_next(:upload, Octokit::UnprocessableEntity.new) # the name is still blocked though unlisted
+
+      fake_manager.upload_package(release, exe)
+
+      expect(store.deletes).to eq([7])
+      expect(store.attempts[:upload]).to eq(2)
+      expect(store.uploads).to eq([exe.basename.to_s])
+      # once after the delete's confirmed absence, once on the 422 re-cycle
+      expect(fake_manager).to have_received(:sleep).with(ReleaseManager::DELETION_PROPAGATION_GRACE).twice
+    end
+
+    # Canonical metadata is conditional (the 0.16.8 repair class): the
+    # release already serves byte-identical canonical bytes → no delete,
+    # no canonical re-upload — only the content-addressed authority twin
+    # lands (content-keyed, collision-free).
+    it "skips the canonical refresh when the published metadata is byte-identical" do
+      entries = [{ filename: "pkg-a", sha256: "0" * 64 }]
+      with_packages do
+        file = fake_manager.generate_sha256sums(entries)
+        canonical = FakeAsset.new(7, "SHA256SUMS.txt", "https://download.test/SHA256SUMS.txt")
+        canonical.digest = "sha256:#{Digest::SHA256.file(file).hexdigest}"
+        store.assets << canonical
+
+        expect { fake_manager.upload_one_metadata(release, file) }
+          .to output(/canonical metadata unchanged — skipping refresh/).to_stdout
+        expect(store.deletes).to be_empty
+        expect(store.uploads).to contain_exactly(a_string_matching(/\ASHA256SUMS-[0-9a-f]{8}\.txt\z/))
+      end
+    end
+
     # Read-first: the served bytes already match → no mutation at all
     # (the delete-then-reupload pair is the API's most race-prone move).
     it "force_upload makes no mutation when the served metadata already matches" do
@@ -1268,6 +1325,8 @@ RSpec.describe ReleaseManager do
     let(:fake_manager) { described_class.new(client: client) }
     let(:client) { FakeClient.new(store) }
 
+    before { allow(fake_manager).to receive(:sleep) }
+
     def previous_manifest(entries)
       store.manifest_json = JSON.generate(entries)
       store.assets << FakeAsset.new(90, "manifest.json", "https://download.test/manifest.json")
@@ -1433,6 +1492,8 @@ RSpec.describe ReleaseManager do
     let(:store) { FakeAssetStore.new }
     let(:client) { FakeClient.new(store) }
     let(:fake_manager) { described_class.new(client: client) }
+
+    before { allow(fake_manager).to receive(:sleep) }
 
     def stage_packages(*names)
       dir = @dir.join("runtime-packages")
