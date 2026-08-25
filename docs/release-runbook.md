@@ -87,7 +87,10 @@ release'` route exists for back-compat only.
    the workspace ledger (`.tebako-publish-settled`, one job's lifetime) so
    the per-platform invocations never re-attempt a settled asset, every
    delete-wait is wall-clock-bounded (2 s polls, 60 s deadline, named
-   `DeletionPropagationTimeout`), and each asset's total retry effort is
+   `DeletionPropagationTimeout`, plus a 15 s post-absence grace before the
+   next POST — on 0.16.8 the name stayed 422 `already_exists`-blocked ~15 s
+   past the deletion's visible absence), and each asset's total retry
+   effort is
    capped (`PER_ASSET_UPLOAD_BUDGET`, 300 s, checked between attempts — an
    in-flight POST is never cut off). The step ends green with a summary
    naming every package that kept its previous bytes; the refresh lands on

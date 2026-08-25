@@ -124,6 +124,27 @@ rustup_install() {
   rustc --version
 }
 
+# The apt.llvm.org key fetch is the gnu leg's one unretried network call,
+# and a single flake killed three linux-gnu build legs at once (run
+# 32719054798). Bounded retry with backoff (5 retries, 5/10/20/40/80s);
+# after the last attempt the failure names the host. gpg --dearmor refuses
+# to overwrite an existing -o target, so every attempt starts from a clean
+# keyring path.
+fetch_llvm_key() {
+  rm -f /usr/share/keyrings/llvm.gpg
+  curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /usr/share/keyrings/llvm.gpg
+}
+
+llvm_key_with_retry() {
+  fetch_llvm_key && return 0
+  for delay in 5 10 20 40 80; do
+    echo "link-unit-posix: apt.llvm.org key fetch failed; retrying in ${delay}s" >&2
+    sleep "$delay"
+    fetch_llvm_key && return 0
+  done
+  die "apt.llvm.org GPG key unreachable after 5 retries (https://apt.llvm.org/llvm-snapshot.gpg.key)"
+}
+
 # Serialized squashfs-tools-ng install — an archive-cache warmer only (see
 # the header): the cargo build's sqfs-sys build.rs self-installs from the
 # warm archive cache into its own out dir, where stage_link_unit harvests
@@ -268,7 +289,7 @@ inner_gnu() {
   # libclang (v10) is too old for the current bindgen; llvm.org publishes
   # clang-19 for focal (tebako-rs ci/gnu-floor-build.sh's proven shape).
   echo "== clang-19 (llvm.org apt) =="
-  curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /usr/share/keyrings/llvm.gpg
+  llvm_key_with_retry
   echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/focal/ llvm-toolchain-focal-19 main" \
     > /etc/apt/sources.list.d/llvm19.list
   apt-get update -qq
