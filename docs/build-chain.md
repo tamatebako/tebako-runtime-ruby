@@ -210,11 +210,28 @@ published-pin path remains.
 - `CACHE_VER` — see the contract above; bump ONLY for recipe shape
   changes, and say why in the comment (the history is recorded there).
 
+## The env image's support-DLL set (msys only)
+
+Windows legs stage the msys2 toolchain runtime DLLs
+(libwinpthread-1.dll, libgcc_s_seh-1.dll, libstdc++-6.dll) into the
+image's `bin/` and the L1 manifest declares them as `library_aliases:`
+(spec 22 §2.1 — the alias channel; spec 03 §2.5 owns the grammar). The
+driver's boot pass materializes declared aliases and leads the process
+PATH with their directories, so a payload-resident C extension's bare
+import (ox.so/sqlite3 → libwinpthread-1.dll — the packed-mn#251 windows
+126; sassc's libsass → the C++ pair) binds through the OS's own standard
+search order, per-gem-code-free. `SupportDlls::NAMES` is the single
+owner: the deploy pass stages exactly that set (fail-closed when the
+toolchain prefix lacks a member), `ImageManifest` declares exactly that
+set, and the boot smoke judges the chain (declaration, in-image
+presence, PATH lead) against it via `TEBAKO_SMOKE_EXPECT_SUPPORT_DLLS`.
+
 ## Where each value lives (SSOT)
 
 - Legs/routing: `.github/build-graph.yaml` + `scripts/compute_matrix.rb`.
 - Version/env vocabulary: `.github/matrix.json`.
 - Source pin + asset naming: `build/lib/tebako_runtime_builder/source_fetcher.rb`.
 - Toolchain container version: `contract.yml`.
+- msys support-DLL set: `build/lib/tebako_runtime_builder/support_dlls.rb`.
 - This architecture: `docs/build-chain.md`. The release process:
   `docs/release-runbook.md`.

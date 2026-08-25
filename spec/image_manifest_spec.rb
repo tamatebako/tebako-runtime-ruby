@@ -81,6 +81,21 @@ RSpec.describe TebakoRuntimeBuilder::ImageManifest do
     expect(manifest_for(gnu)).not_to have_key("materialize")
   end
 
+  # The spec 22 §2.1 alias channel (the packed-mn#251 windows 126): the
+  # msys image declares the toolchain support-DLL set so the driver's boot
+  # pass materializes it and leads PATH with it — the OS's own search
+  # order then binds a payload ext's libwinpthread-1.dll import. The
+  # declaration flows from SupportDlls, the single owner; POSIX images
+  # omit the key (the channel is a windows contract).
+  it "declares the support-DLL library_aliases on msys only (spec 22 §2.1)" do
+    expect(manifest_for(msys)["library_aliases"]).to eq(
+      TebakoRuntimeBuilder::SupportDlls.alias_declarations
+    )
+    expect(manifest_for(msys)["library_aliases"].map { |a| a["name"] })
+      .to include("libwinpthread-1.dll", "libgcc_s_seh-1.dll", "libstdc++-6.dll")
+    expect(manifest_for(gnu)).not_to have_key("library_aliases")
+  end
+
   it "deploys parseable YAML at /__tpkg__/manifest.yaml in the layout tree" do
     Dir.mktmpdir do |tree|
       path = described_class.new(platform: msys, ruby_version: "3.4.8",

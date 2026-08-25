@@ -357,6 +357,23 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
                            "probe load_native_extension detail: #{run.detail("load_native_extension")}"
         end
       end
+      it "declares and PATH-leads the support-DLL aliases on windows (spec 22 §2.1)" do
+        # The packed-mn#251 windows 126: payload-resident C exts (ox,
+        # sqlite3) import libwinpthread-1.dll, which no designed channel
+        # served until the env image shipped + declared it. The probe
+        # asserts the whole chain (manifest declaration, in-image /bin
+        # presence, the driver's boot-extract PATH lead) against the
+        # expectation flowed from SupportDlls::NAMES. Off windows the
+        # channel does not exist — the probe reports unsupported.
+        expect(run).to be_booted, boot_failure(run)
+        state = run.state("support_dll_aliases")
+        if smoke.platform.msys?
+          expect(state).to eq("ok"), "probe support_dll_aliases detail: #{run.detail("support_dll_aliases")}"
+        else
+          expect(state).to eq("unsupported"),
+                           "probe support_dll_aliases detail: #{run.detail("support_dll_aliases")}"
+        end
+      end
       it "loads openssl on every leg (it is statically linked into the runtime)" do
         # openssl is STATICALLY linked into the runtime, so require
         # "openssl" must load on EVERY leg before the artifacts leave it

@@ -68,7 +68,7 @@ module TebakoRuntimeBuilder
       "raise PermissionError.new(path, action) # tebako backport (bundler < 2.6.6)\n"
 
     def initialize(platform, ruby_ver, stash_dir, data_src_dir, data_pre_dir, data_bin_file, deps_bin_dir, # rubocop:disable Metrics/ParameterLists,Metrics/MethodLength
-                   mount_point:, embed: true, mount_root_override: false)
+                   mount_point:, embed: true, mount_root_override: false, support_dlls: nil)
       @platform = platform
       @ruby_ver = ruby_ver
       @stash_dir = stash_dir
@@ -78,6 +78,10 @@ module TebakoRuntimeBuilder
       @deps_bin_dir = deps_bin_dir
       @mount_point = mount_point
       @embed = embed
+      # The msys support-DLL stager (spec 22 §2.1): injectable so the spec
+      # stages from a fake prefix; production resolves the toolchain
+      # prefixes (SupportDlls.toolchain_prefixes).
+      @support_dlls = support_dlls || TebakoRuntimeBuilder::SupportDlls.new
       # The source tarball's override capability (the loadpath patch):
       # the layout's grant is emitted only when the source declares it —
       # truthful by construction (spec 17 §1, layout schema_minor 1).
@@ -171,6 +175,27 @@ module TebakoRuntimeBuilder
       puts "   ... preload shim: #{File.join(dest, name)}"
     end
 
+    # The msys2 toolchain support DLLs (spec 22 §2.1 — the windows class-L
+    # alias channel): payload-resident C extensions compiled by a
+    # mingw/ucrt toolchain import the toolchain's support DLLs (ox.so and
+    # sqlite3_native.so import libwinpthread-1.dll — the packed-mn#251
+    # windows dogfood's 126; the C++ extension class — sassc's libsass —
+    # adds libgcc_s_seh-1.dll/libstdc++-6.dll), and the PE closure walk's
+    # importer-dir-only rule never reaches them from a gem's dir. The
+    # runtime ships the set in bin/ and the manifest declares it in
+    # library_aliases: (ImageManifest), so the driver's boot pass
+    # materializes the set and leads PATH with it — the OS's own standard
+    # search order then binds the import for every payload extension,
+    # per-gem-code-free. POSIX legs ship nothing (the alias channel is a
+    # windows contract; ELF/Mach-O closures ride rpath/$ORIGIN).
+    def deploy_support_dlls
+      return unless @platform.msys?
+
+      staged = @support_dlls.stage(@tbd)
+      names = staged.map { |path| File.basename(path) }
+      puts "   ... support DLLs staged into bin/: #{names.join(", ")} (declared as library_aliases in the manifest)"
+    end
+
     private
 
     # Recreate the packaging environment from the stash
@@ -226,6 +251,7 @@ module TebakoRuntimeBuilder
       check_toolchain_ruby!
       deploy_stub(stub_dir)
       deploy_ca_bundle
+      deploy_support_dlls
       deploy_preload
       deploy_layout
       TebakoRuntimeBuilder::Stripper.strip(@platform, @data_src_dir)
