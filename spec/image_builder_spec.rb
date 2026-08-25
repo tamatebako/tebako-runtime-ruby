@@ -231,4 +231,52 @@ RSpec.describe TebakoRuntimeBuilder::ImageBuilder do
       expect(File.exist?(File.join(data_src_dir, "lib", "tebako", "libtfs_preload.dylib"))).to be(false)
     end
   end
+
+  # Spec 22 §2.1 (the packed-mn#251 windows 126): the msys deploy stages
+  # the toolchain support-DLL set into the image's bin/ so the manifest's
+  # library_aliases: declaration (ImageManifest) never lies. POSIX deploys
+  # stage nothing — the alias channel is a windows contract.
+  describe "#deploy_support_dlls" do
+    def fake_prefix(names)
+      root = File.join(@dir, "ucrt64")
+      FileUtils.mkdir_p(File.join(root, "bin"))
+      names.each { |name| File.write(File.join(root, "bin", name), "pe") }
+      root
+    end
+
+    def builder_with_dlls(platform, prefixes)
+      rv = TebakoRuntimeBuilder::RubyVersion.new("3.3.7")
+      described_class.new(platform, rv, File.join(@dir, "stash"), data_src_dir, File.join(@dir, "pre"),
+                          File.join(@dir, "out", "fs.bin"), File.join(@dir, "deps", "bin"),
+                          mount_point: "A:/t", embed: false,
+                          support_dlls: TebakoRuntimeBuilder::SupportDlls.new(prefixes: prefixes))
+    end
+
+    it "stages the full set into bin/ on msys" do
+      msys = TebakoRuntimeBuilder::Platform.new("x64-mingw-ucrt", "x86_64")
+      prefix = fake_prefix(TebakoRuntimeBuilder::SupportDlls::NAMES)
+
+      builder_with_dlls(msys, [prefix]).deploy_support_dlls
+
+      TebakoRuntimeBuilder::SupportDlls::NAMES.each do |name|
+        expect(File.file?(File.join(data_src_dir, "bin", name))).to be(true)
+      end
+    end
+
+    it "fails closed by name when the toolchain prefix lacks a member" do
+      msys = TebakoRuntimeBuilder::Platform.new("x64-mingw-ucrt", "x86_64")
+      prefix = fake_prefix(%w[libwinpthread-1.dll])
+
+      expect { builder_with_dlls(msys, [prefix]).deploy_support_dlls }
+        .to raise_error(TebakoRuntimeBuilder::Error, /libgcc_s_seh-1\.dll/)
+    end
+
+    it "stages nothing off msys" do
+      posix = TebakoRuntimeBuilder::Platform.new("arm64-darwin23", "arm64")
+
+      builder_with_dlls(posix, []).deploy_support_dlls
+
+      expect(File.exist?(File.join(data_src_dir, "bin", "libwinpthread-1.dll"))).to be(false)
+    end
+  end
 end

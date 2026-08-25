@@ -244,6 +244,12 @@ module TebakoRuntimeBuilder
       image = "#{executable}.tfs"
       env["TEBAKO_RUNTIME_IMAGE"] = image if File.file?(image)
       env["TEBAKO_MOUNT_ROOT"] = mount_root_override if mount_root_override
+      # The support-DLL alias expectation (spec 22 §2.1, msys only): flowed
+      # from the single owner (SupportDlls::NAMES), so the probe judges the
+      # booted runtime against exactly the set this checkout stages and
+      # declares. POSIX legs set nothing — the probe reports unsupported.
+      names = TebakoRuntimeBuilder::SupportDlls::NAMES.join(",")
+      env["TEBAKO_SMOKE_EXPECT_SUPPORT_DLLS"] = names if @platform.msys?
       env.merge("RUBYOPT" => "-r#{PROBE_PATH}",
                 "TEBAKO_BOOT_PROBE" => scenario,
                 "TEBAKO_BOOT_MOUNT_POINT" => mount_root_override || mount_point)

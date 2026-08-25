@@ -78,7 +78,14 @@ module TebakoRuntimeBuilder
         "identity" => identity,
         "provides" => provides
       }
-      manifest["materialize"] = MATERIALIZE.dup if @platform.msys?
+      if @platform.msys?
+        manifest["materialize"] = MATERIALIZE.dup
+        # The toolchain support-DLL set (spec 22 §2.1's alias channel):
+        # declared from the single owner (SupportDlls) — the deploy pass
+        # stages exactly these names into /bin or dies by name, so the
+        # declaration is truthful by construction.
+        manifest["library_aliases"] = TebakoRuntimeBuilder::SupportDlls.alias_declarations
+      end
       manifest
     end
 

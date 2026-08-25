@@ -112,6 +112,7 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
     report("ca_roots") { ca_roots_check }
     report("https_handshake") { https_handshake_check }
     report("load_native_extension") { native_extension_check }
+    report("support_dll_aliases") { support_dll_aliases_check }
   end
 
   # Spec 22 phase 1 (class L, POSIX): the loader interposition proves the
@@ -436,6 +437,91 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
     end
 
     feature
+  end
+
+  # The spec-22 §2.1 windows class-L alias channel, end to end (the
+  # packed-mn#251 windows 126): the toolchain support DLLs a
+  # payload-resident C extension imports (ox.so/sqlite3_native.so →
+  # libwinpthread-1.dll; the C++ ext class adds libgcc_s_seh-1.dll /
+  # libstdc++-6.dll) are shipped in the env image's bin/ and declared in
+  # its manifest's library_aliases:, so the driver's boot pass
+  # materializes them and leads PATH with the materialized dirs — the
+  # OS's own standard search order then binds the import for any caller,
+  # per-gem-code-free. The probe asserts the chain's three links — the
+  # declaration, the in-image presence, and the PATH lead — against the
+  # expectation the leg flows from SupportDlls::NAMES. Off windows the
+  # channel does not exist (the boot pass's call sites are
+  # windows-gated), so there is nothing to sense.
+  def self.support_dll_aliases_check
+    windows_only!
+    expected = expected_support_dlls
+    assert_support_dll_aliases_declared(expected)
+    assert_support_dlls_held(expected)
+    assert_support_dlls_path_led(expected)
+    "#{expected.join(",")} declared, held, PATH-led"
+  end
+
+  # The windows twin of posix_only!: the boot alias pass's call sites are
+  # windows-gated, so off windows there is nothing to sense.
+  def self.windows_only!
+    host_os = RbConfig::CONFIG["host_os"]
+    return if host_os =~ /mswin|mingw/
+
+    raise NotImplementedError, "the support-DLL alias channel is a windows contract (host_os=#{host_os})"
+  end
+
+  # The msys leg's expectation, flowed from the single owner
+  # (SupportDlls::NAMES) by BootSmoke#boot_env; unset is the leg lying
+  # about what it staged and declared.
+  def self.expected_support_dlls
+    ENV.fetch("TEBAKO_SMOKE_EXPECT_SUPPORT_DLLS") do
+      raise "TEBAKO_SMOKE_EXPECT_SUPPORT_DLLS is unset — the msys leg flows no expectation (BootSmoke#boot_env)"
+    end.split(",")
+  end
+
+  # Link 1 — the mounted manifest's library_aliases: covers the set.
+  def self.assert_support_dll_aliases_declared(expected)
+    declared = declared_support_dll_aliases
+    missing = expected - declared
+    return if missing.empty?
+
+    manifest_path = File.join(MOUNT_POINT, "__tpkg__", "manifest.yaml")
+    raise "#{manifest_path} library_aliases misses #{missing.join(",")} (declares: #{declared.join(",")})"
+  end
+
+  # The mounted manifest's declared alias names. An absent/empty
+  # declaration is the 126 regression's shape: the env image ships no
+  # support DLLs, so a payload ext importing libwinpthread-1.dll dies with
+  # the OS loader's 126.
+  def self.declared_support_dll_aliases
+    require "yaml"
+    manifest_path = File.join(MOUNT_POINT, "__tpkg__", "manifest.yaml")
+    manifest = YAML.safe_load_file(manifest_path)
+    aliases = manifest.is_a?(Hash) ? manifest["library_aliases"] : nil
+    return aliases.map { |entry| entry["name"] } if aliases.is_a?(Array) && !aliases.empty?
+
+    raise "#{manifest_path} declares no library_aliases: the env image ships no support DLLs — " \
+          "a payload ext importing libwinpthread-1.dll dies with the OS loader's 126"
+  end
+
+  # Link 2 — each declared name is held in the image's bin/.
+  def self.assert_support_dlls_held(expected)
+    absent = expected.reject { |name| File.file?(File.join(MOUNT_POINT, "bin", name)) }
+    return if absent.empty?
+
+    raise "#{absent.join(",")} absent from the image's bin/ — the manifest declares what the image does not hold"
+  end
+
+  # Link 3 — the driver's boot alias pass materialized each name and led
+  # PATH with the materialized dirs (the OS's standard search order binds
+  # the import for any caller, per-gem-code-free).
+  def self.assert_support_dlls_path_led(expected)
+    path_dirs = ENV.fetch("PATH", "").split(File::PATH_SEPARATOR)
+    unleaded = expected.reject { |name| path_dirs.any? { |dir| File.file?(File.join(dir, name)) } }
+    return if unleaded.empty?
+
+    raise "no PATH dir holds the materialized #{unleaded.join(",")} — the driver's boot alias pass " \
+          "(extract + PATH lead) did not run or did not cover them"
   end
 
   # --- spec 22 phase 1 (class L) checks ---------------------------------
