@@ -45,11 +45,13 @@ require "tebako_runtime_builder"
 #
 # Change sets by event:
 #   push / pull_request — the git diff (before..after / base..head),
-#     walked against shared/platform/ignore rules. A shared hit affects
-#     every platform; a platform hit affects that platform only;
-#     ignore-only diffs produce no legs; validation_only diffs produce
-#     the tidy validation legs. A matrix.json change is diffed by
-#     CONTENT (which ruby sets/versions and which env entries moved).
+#     walked against shared/platform/publish_only/ignore rules. A shared
+#     hit affects every platform; a platform hit affects that platform
+#     only; ignore-only and publish_only-only diffs produce no legs
+#     (publish/release tooling is consumed at release time, never read
+#     by a build leg); validation_only diffs produce the tidy validation
+#     legs. A matrix.json change is diffed by CONTENT (which ruby
+#     sets/versions and which env entries moved).
 #     A diff that moves the source pin (PIN_FILE) rebuilds exactly the
 #     versions whose tarballs moved IN THE SCENARIOS THIS PLATFORM
 #     CONSUMES — an msys-only source re-roll runs windows legs only,
@@ -200,6 +202,14 @@ class MatrixComputer # rubocop:disable Metrics/ClassLength
 
     paths = paths.reject { |p| ignored?(p, graph["ignore"]) }
     return empty_legs("docs-only change") if paths.empty?
+
+    # Publish/release tooling (the graph's publish_only list) is consumed
+    # at release time against already-built artifacts — never a build
+    # input. Rejected AFTER ignore so a mixed docs+publish diff reports
+    # the honest reason, and BEFORE routing so a publish+build diff still
+    # builds on the build paths alone.
+    paths = paths.reject { |p| ignored?(p, graph.fetch("publish_only", [])) }
+    return empty_legs("publish-only change") if paths.empty?
 
     routed_legs(event, before, after, paths)
   end
