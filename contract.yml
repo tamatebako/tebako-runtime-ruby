@@ -46,5 +46,8 @@ container_version: "0.16.2"
 # DYLD_INSERT_LIBRARIES for exec targets the arm64 dylib cannot load —
 # the arm64e child kill on macOS native-ext presses (tebako#448/#449);
 # v0.2.4 completes #448: the driver scrubs its micro interpose dylib and
-# the sentinel from the child-facing env (tebako#451).
-link_unit_release: "v0.2.4"
+# the sentinel from the child-facing env (tebako#451); v0.2.6 carries
+# the TEBAKO_TFS_MOUNTS slot form (tebako#455/#462) and the limnifs
+# 0.2.62 floor (tebako#463) on the resolve-corrected asset spelling
+# (tebako#456/#461).
+link_unit_release: "v0.2.6"
