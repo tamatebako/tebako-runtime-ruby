@@ -54,4 +54,9 @@ container_version: "0.16.2"
 # the 0.3.3 windowed-read path, and moves the vendored crypto link onto
 # rnp-sys (rnp-rs 0.1.12; tebako#479/#480) — the unit's tfs reads ONLY
 # new-format images, so every env image must be re-baked by this re-cut.
-link_unit_release: "v0.3.0"
+# v0.3.2 adds the windows host tier (spec 22 §3.2, tebako#485): a
+# co-mounted dependency's declared executables materialize to host files
+# at spawn (java_home mounts extract whole-tree), so a windows runtime
+# can spawn a dependency's exe (openjdk's java.exe) off the VFS — the
+# metanorma → mn2pdf → java chain.
+link_unit_release: "v0.3.2"
