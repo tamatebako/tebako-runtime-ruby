@@ -59,4 +59,10 @@ container_version: "0.16.2"
 # at spawn (java_home mounts extract whole-tree), so a windows runtime
 # can spawn a dependency's exe (openjdk's java.exe) off the VFS — the
 # metanorma → mn2pdf → java chain.
-link_unit_release: "v0.3.2"
+# v0.3.3 (tebako#488): union mount members serialize into
+# TEBAKO_TFS_MOUNTS (a spawned child re-mounts the FULL tree — the
+# packed-mn POSIX jarfile ENOENT) and a data file materialized for exec
+# brings its in-image directory's files (jing's RelaxNG same-dir
+# includes — spec 22 Rule E4); both ride the link unit, no source
+# change, so the source pin stays v0.2.30.
+link_unit_release: "v0.3.3"
