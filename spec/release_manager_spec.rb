@@ -236,12 +236,14 @@ end
 RSpec.describe ReleaseManager do
   around do |example|
     old = %w[GITHUB_TOKEN TEBAKO_VERSION EXPECTED_ENV_MATRIX EXPECTED_RUBY_MATRIX FORCE_REBUILD AUDIT_ONLY
-             TEBAKO_PUBLISH_SETTLED_PATH].to_h { |key| [key, ENV.fetch(key, nil)] }
+             FINALIZE_ONLY BACKFILL_METADATA TEBAKO_PUBLISH_SETTLED_PATH].to_h { |key| [key, ENV.fetch(key, nil)] }
     ENV["GITHUB_TOKEN"] = "test-token"
     ENV["TEBAKO_VERSION"] = SPEC_VERSION
     ENV["EXPECTED_ENV_MATRIX"] = '[{"host":"macos-15","container":null,"os":"macos","arch":"arm64"}]'
     ENV["EXPECTED_RUBY_MATRIX"] = '["3.3.7"]'
     ENV.delete("FORCE_REBUILD")
+    ENV.delete("FINALIZE_ONLY")
+    ENV.delete("BACKFILL_METADATA")
     Dir.mktmpdir do |dir|
       @dir = Pathname.new(dir)
       # The settled-asset ledger (cross-invocation wedge memory) lives in
@@ -613,10 +615,14 @@ RSpec.describe ReleaseManager do
     let(:store) { FakeAssetStore.new }
     let(:release) { FakeRelease.new(store) }
     let(:fake_manager) { described_class.new(client: FakeClient.new(store)) }
+    let(:stem) { "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64" }
+    # The sidecar-era expected set (issue 139): the payload files, each
+    # landed file's .sha256 sidecar, and the package's .manifest.json
+    # shard. The monolithic conveniences are the finalize pass's business,
+    # never a platform gate's.
     let(:expected) do
-      ["tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64",
-       "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64.tfs",
-       "SHA256SUMS.txt", "manifest.json"]
+      [stem, "#{stem}.tfs",
+       "#{stem}.manifest.json", "#{stem}.sha256", "#{stem}.tfs.sha256"]
     end
 
     it "passes quietly when every expected asset is on the release" do
@@ -626,50 +632,53 @@ RSpec.describe ReleaseManager do
     end
 
     it "fails loud and lists a package that never landed" do
-      expected.reject { |name| name.end_with?("macos-arm64") }
-              .each { |name| store.assets << FakeAsset.new(store.assets.size + 1, name) }
+      # No exe: the package reports its own name only — the implied
+      # sidecar/shard gaps never cascade into secondary errors.
+      ["#{stem}.tfs", "#{stem}.tfs.sha256"].each { |name| store.assets << FakeAsset.new(store.assets.size + 1, name) }
 
       expect { fake_manager.verify_completeness(release) }
         .to raise_error(/incomplete.*1 missing/)
-        .and output(/::error::Missing asset: tebako-runtime-#{SPEC_VERSION}-3\.3\.7-macos-arm64/).to_stdout
+        .and output(/::error::Missing asset: #{stem}/).to_stdout
     end
 
     it "fails loud when a filesystem image is missing" do
-      expected.reject { |name| name.end_with?(".tfs") }
-              .each { |name| store.assets << FakeAsset.new(store.assets.size + 1, name) }
-
-      expect { fake_manager.verify_completeness(release) }.to raise_error(/incomplete/)
-    end
-
-    it "fails loud when the metadata files did not land" do
-      expected.first(2).each { |name| store.assets << FakeAsset.new(store.assets.size + 1, name) }
+      [stem, "#{stem}.manifest.json", "#{stem}.sha256"]
+        .each { |name| store.assets << FakeAsset.new(store.assets.size + 1, name) }
 
       expect { fake_manager.verify_completeness(release) }
-        .to raise_error(/incomplete.*2 missing/)
-        .and output(/Missing asset: SHA256SUMS\.txt/).to_stdout
+        .to raise_error(/incomplete.*1 missing/)
+        .and output(/::error::Missing asset: #{stem}\.tfs/).to_stdout
+    end
+
+    it "fails loud when the per-asset metadata did not land" do
+      [stem, "#{stem}.tfs"].each { |name| store.assets << FakeAsset.new(store.assets.size + 1, name) }
+
+      gap = "Missing asset: #{stem}"
+      gaps = /#{gap}\.manifest\.json.*#{gap}\.sha256.*#{gap}\.tfs\.sha256/m
+      expect { fake_manager.verify_completeness(release) }
+        .to raise_error(/incomplete.*3 missing/)
+        .and output(gaps).to_stdout
     end
 
     it "accepts a windows executable carrying the .exe suffix" do
       ENV["EXPECTED_ENV_MATRIX"] = '[{"host":"windows-2022","container":null,"os":"windows","arch":"x86_64"}]'
-      store.assets << FakeAsset.new(1, "tebako-runtime-#{SPEC_VERSION}-3.3.7-windows-ucrt64.exe")
-      store.assets << FakeAsset.new(2, "tebako-runtime-#{SPEC_VERSION}-3.3.7-windows-ucrt64.tfs")
-      store.assets << FakeAsset.new(3, "tebako-runtime-#{SPEC_VERSION}-3.3.7-windows-ucrt64.dll")
-      store.assets << FakeAsset.new(4, "SHA256SUMS.txt")
-      store.assets << FakeAsset.new(5, "manifest.json")
+      stem = "tebako-runtime-#{SPEC_VERSION}-3.3.7-windows-ucrt64"
+      ["#{stem}.exe", "#{stem}.tfs", "#{stem}.dll",
+       "#{stem}.manifest.json", "#{stem}.exe.sha256", "#{stem}.tfs.sha256", "#{stem}.dll.sha256"]
+        .each_with_index { |name, index| store.assets << FakeAsset.new(index + 1, name) }
 
       expect { fake_manager.verify_completeness(release) }.not_to raise_error
     end
 
     it "fails loud when the windows ruby DLL is missing (issue 40)" do
       ENV["EXPECTED_ENV_MATRIX"] = '[{"host":"windows-2022","container":null,"os":"windows","arch":"x86_64"}]'
-      store.assets << FakeAsset.new(1, "tebako-runtime-#{SPEC_VERSION}-3.3.7-windows-ucrt64.exe")
-      store.assets << FakeAsset.new(2, "tebako-runtime-#{SPEC_VERSION}-3.3.7-windows-ucrt64.tfs")
-      store.assets << FakeAsset.new(3, "SHA256SUMS.txt")
-      store.assets << FakeAsset.new(4, "manifest.json")
+      stem = "tebako-runtime-#{SPEC_VERSION}-3.3.7-windows-ucrt64"
+      ["#{stem}.exe", "#{stem}.tfs", "#{stem}.manifest.json", "#{stem}.exe.sha256", "#{stem}.tfs.sha256"]
+        .each_with_index { |name, index| store.assets << FakeAsset.new(index + 1, name) }
 
       expect { fake_manager.verify_completeness(release) }
         .to raise_error(/incomplete.*1 missing/)
-        .and output(/Missing asset: tebako-runtime-#{SPEC_VERSION}-3\.3\.7-windows-ucrt64\.dll/).to_stdout
+        .and output(/Missing asset: #{stem}\.dll/).to_stdout
     end
 
     it "warns and passes when no expected matrix is available" do
@@ -752,10 +761,11 @@ RSpec.describe ReleaseManager do
 
     # A FORCE_REBUILD replace whose name wedges server-side (the replace
     # cannot land within the budget) keeps the previous asset AND its
-    # previous manifest entry — byte-truthful, loudly warned, never a
-    # failed publish. (Without FORCE_REBUILD the byte-immutable keep
-    # pre-empts the replace entirely — this wedge path is the
-    # force-replace's safety net.)
+    # previous entry — byte-truthful, loudly warned, never a failed
+    # publish. (Without FORCE_REBUILD the byte-immutable keep pre-empts
+    # the replace entirely — this wedge path is the force-replace's
+    # safety net.) The settled package's published metadata then speaks
+    # with the previous entry's voice (effective_entry).
     it "keeps the previous asset and entry when the replace cannot land" do
       ENV["FORCE_REBUILD"] = "true"
       exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
@@ -775,8 +785,8 @@ RSpec.describe ReleaseManager do
 
       expect { fake_manager.upload_package(release, exe) }
         .to output(/keeping the previous asset/).to_stdout
-      expect(fake_manager.apply_stale_keeps([{ filename: exe.basename.to_s, sha256: "2" * 64 }]))
-        .to eq([previous])
+      expect(fake_manager.effective_entry({ filename: exe.basename.to_s, sha256: "2" * 64 }))
+        .to eq(previous)
     end
 
     # A listed-but-unreadable landed asset (mid-propagation) proves
@@ -845,23 +855,19 @@ RSpec.describe ReleaseManager do
       expect(fake_manager).to have_received(:sleep).with(ReleaseManager::DELETION_PROPAGATION_GRACE).twice
     end
 
-    # Canonical metadata is conditional (the 0.16.8 repair class): the
-    # release already serves byte-identical canonical bytes → no delete,
-    # no canonical re-upload — only the content-addressed authority twin
-    # lands (content-keyed, collision-free).
-    it "skips the canonical refresh when the published metadata is byte-identical" do
-      entries = [{ filename: "pkg-a", sha256: "0" * 64 }]
-      with_packages do
-        file = fake_manager.generate_sha256sums(entries)
-        canonical = FakeAsset.new(7, "SHA256SUMS.txt", "https://download.test/SHA256SUMS.txt")
-        canonical.digest = "sha256:#{Digest::SHA256.file(file).hexdigest}"
-        store.assets << canonical
+    # Metadata is derivable (a pure function of the package's served
+    # bytes), so already-current metadata — the listing's digest matches
+    # the content's sha — never re-uploads, never deletes.
+    it "skips a metadata asset whose listed digest already matches the content" do
+      content = "#{"0" * 64}  pkg-a\n"
+      asset = FakeAsset.new(7, "pkg-a.sha256", "https://download.test/pkg-a.sha256")
+      asset.digest = "sha256:#{Digest::SHA256.hexdigest(content)}"
+      store.assets << asset
 
-        expect { fake_manager.upload_one_metadata(release, file) }
-          .to output(/canonical metadata unchanged — skipping refresh/).to_stdout
-        expect(store.deletes).to be_empty
-        expect(store.uploads).to contain_exactly(a_string_matching(/\ASHA256SUMS-[0-9a-f]{8}\.txt\z/))
-      end
+      expect { fake_manager.ensure_metadata_asset(release, "pkg-a.sha256", content) }
+        .to output(/already current/).to_stdout
+      expect(store.uploads).to be_empty
+      expect(store.deletes).to be_empty
     end
 
     # Read-first: the served bytes already match → no mutation at all
@@ -923,26 +929,16 @@ RSpec.describe ReleaseManager do
         .to raise_error(/could not converge SHA256SUMS\.txt/)
     end
 
-    # A canonical name wedged server-side (a deleted name 422ing
-    # re-uploads for hours) must never block the publish: the
-    # content-addressed twin uploads first and is the authority, the
-    # canonical mirror demotes to a loud warning.
-    it "publishes the content-addressed metadata when the canonical name is wedged" do
-      entries = [{ filename: "pkg-a", sha256: "0" * 64 }]
-      store.delete_propagation = 999 # the delete never clears the listing
-      store.assets << FakeAsset.new(7, "SHA256SUMS.txt", "https://download.test/SHA256SUMS.txt")
-      store.assets << FakeAsset.new(8, "manifest.json", "https://download.test/manifest.json")
-      store.set_content("https://download.test/SHA256SUMS.txt", "stale sums")
-      store.set_content("https://download.test/manifest.json", "stale manifest")
-      # The wait is wall-clock-bounded now: an advancing clock keeps a
-      # never-propagating delete from spending real seconds per poll.
-      clock = 0.0
-      allow(fake_manager).to receive(:monotonic_now) { clock += 120.0 }
+    # A metadata asset whose bytes DRIFTED is debris from an interrupted
+    # publish (metadata is derivable; payloads alone are byte-immutable):
+    # the convergence loop replaces it — delete, re-upload, verify.
+    it "replaces a metadata asset whose bytes drifted" do
+      store.assets << FakeAsset.new(7, "pkg-a.sha256", "https://download.test/pkg-a.sha256")
 
-      expect { fake_manager.upload_metadata(release, entries) }
-        .to output(/::warning::canonical SHA256SUMS\.txt could not be refreshed/).to_stdout
-      expect(store.uploads).to include(a_string_matching(/SHA256SUMS-[0-9a-f]{8}\.txt/))
-      expect(store.uploads).to include(a_string_matching(/manifest-[0-9a-f]{8}\.json/))
+      fake_manager.ensure_metadata_asset(release, "pkg-a.sha256", "#{"1" * 64}  pkg-a\n")
+
+      expect(store.deletes).to eq([7])
+      expect(store.uploads).to eq(["pkg-a.sha256"])
     end
 
     it "raises after the upload attempts are exhausted" do
@@ -1140,16 +1136,16 @@ RSpec.describe ReleaseManager do
 
     it "times out with a named error when the deletion never propagates" do
       store.assets << FakeAsset.new(7, "asset.tgz", "https://download.test/asset.tgz")
-      allow(fake_manager).to receive(:monotonic_now).and_return(0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 70.0)
+      allow(fake_manager).to receive(:monotonic_now).and_return(0.0, 60.0, 120.0, 190.0)
 
       expect { fake_manager.wait_for_absence(release, "asset.tgz", store.assets.first) }
-        .to raise_error(ReleaseManager::DeletionPropagationTimeout, /asset\.tgz has not propagated within 60s/)
+        .to raise_error(ReleaseManager::DeletionPropagationTimeout, /asset\.tgz has not propagated within 180s/)
     end
 
     it "demotes the propagation timeout to a loud warning at the delete call sites" do
       store.assets << FakeAsset.new(7, "asset.tgz", "https://download.test/asset.tgz")
       store.delete_propagation = 999 # the delete never clears the listing
-      allow(fake_manager).to receive(:monotonic_now).and_return(0.0, 70.0)
+      allow(fake_manager).to receive(:monotonic_now).and_return(0.0, 190.0)
 
       expect { fake_manager.remove_existing_asset(release, "asset.tgz") }
         .to output(/::warning::the deletion of asset\.tgz has not propagated/).to_stdout
@@ -1202,8 +1198,9 @@ RSpec.describe ReleaseManager do
     # whose bytes differ from the published asset's warn-keeps BEFORE any
     # replace is attempted — no delete, no upload (the delete+re-upload
     # of a differing same-name asset is exactly what wedged the name
-    # server-side) — settling the whole package stem so apply_stale_keeps
-    # reverts the package entry (byte-truthful for the published bytes).
+    # server-side) — settling the whole package stem so effective_entry
+    # reverts the package's published metadata (byte-truthful for the
+    # published bytes).
     it "keeps a byte-differing .tfs facet without a replace attempt (byte-immutable per name)" do
       tfs = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64.tfs")
       url = "https://download.test/#{tfs.basename}"
@@ -1225,8 +1222,8 @@ RSpec.describe ReleaseManager do
     end
 
     # A LATER invocation builds fresh entries for the wedged platform;
-    # without the ledger-driven revert the manifest would describe bytes
-    # the release does not serve.
+    # without the ledger-driven revert the package's shard/sidecars would
+    # describe bytes the release does not serve.
     it "reverts a settled package's fresh manifest entry in later invocations too" do
       fake_manager.settle_asset!("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
       previous = { filename: "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64",
@@ -1237,7 +1234,7 @@ RSpec.describe ReleaseManager do
       second = described_class.new(client: FakeClient.new(store))
       allow(second).to receive(:previous_manifest_entries).and_return([previous])
 
-      expect(second.apply_stale_keeps([fresh])).to eq([previous])
+      expect(second.effective_entry(fresh)).to eq(previous)
     end
 
     # A fully-wedged asset: every POST 422s, every delete never
@@ -1304,9 +1301,9 @@ RSpec.describe ReleaseManager do
     it "verify_completeness sees assets past page one" do
       store.page_size = 30
       40.times { |i| store.assets << FakeAsset.new(i + 1, "asset-#{format("%02d", i)}") }
-      ["tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64",
-       "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64.tfs",
-       "SHA256SUMS.txt", "manifest.json"].each_with_index do |name, index|
+      stem = "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64"
+      [stem, "#{stem}.tfs", "#{stem}.manifest.json", "#{stem}.sha256", "#{stem}.tfs.sha256"]
+        .each_with_index do |name, index|
         store.assets << FakeAsset.new(100 + index, name)
       end
 
@@ -1315,11 +1312,12 @@ RSpec.describe ReleaseManager do
   end
 
   # The per-platform publish: each platform leg republishes only its own
-  # packages. The manifest merge keeps the previous manifest's entries for
-  # every OTHER platform verbatim (the release never loses coverage because
-  # one platform republished), and the idempotent skip keeps an unchanged
-  # asset from re-uploading (same name + same sha256).
-  describe "per-platform manifest merge and idempotent skip" do
+  # packages and writes only its own packages' metadata (sidecars +
+  # shard — issue 139; NOTHING merges into a shared file). The idempotent
+  # skip keeps an unchanged asset from re-uploading (same name + same
+  # sha256), and the byte-immutable keep's byte-truth revert now speaks
+  # through effective_entry.
+  describe "per-package metadata and idempotent skip" do
     let(:store) { FakeAssetStore.new }
     let(:release) { FakeRelease.new(store) }
     let(:fake_manager) { described_class.new(client: client) }
@@ -1339,41 +1337,38 @@ RSpec.describe ReleaseManager do
       entry
     end
 
-    it "keeps other platforms' entries (image metadata intact) and replaces only this run's platform" do
+    it "reads the previous monolithic manifest for the byte-truth revert (transitional)" do
       previous_manifest([
                           previous_entry("tebako-runtime-#{SPEC_VERSION}-3.1.6-linux-gnu-x86_64",
                                          "linux-gnu-x86_64", "a" * 64, image_sha256: "b" * 64),
                           previous_entry("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64",
-                                         "macos-arm64", "c" * 64),
-                          previous_entry("tebako-runtime-#{SPEC_VERSION}-4.0.6-windows-ucrt64.exe",
-                                         "windows-ucrt64", "d" * 64)
+                                         "macos-arm64", "c" * 64)
                         ])
-      exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
-      new_entries = fake_manager.build_manifest_entries([exe])
 
-      merged = fake_manager.merged_manifest_entries(new_entries)
+      entries = fake_manager.previous_manifest_entries
 
-      expect(merged.map { |entry| entry[:filename] }).to eq(
+      # The kept entries survive the JSON round trip, image facet included
+      expect(entries.map { |entry| entry[:filename] }).to eq(
         ["tebako-runtime-#{SPEC_VERSION}-3.1.6-linux-gnu-x86_64",
-         "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64",
-         "tebako-runtime-#{SPEC_VERSION}-4.0.6-windows-ucrt64.exe"]
+         "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64"]
       )
-      # The replaced platform carries THIS run's sha, not the previous one
-      expect(merged.find { |entry| entry[:platform] == "macos-arm64" }[:sha256])
-        .to eq(Digest::SHA256.file(exe).hexdigest)
-      # The kept platforms survive the JSON round trip, image entry included
-      kept = merged.find { |entry| entry[:platform] == "linux-gnu-x86_64" }
+      kept = entries.find { |entry| entry[:platform] == "linux-gnu-x86_64" }
       expect(kept[:sha256]).to eq("a" * 64)
       expect(kept[:image][:sha256]).to eq("b" * 64)
+      expect(fake_manager.previous_entry_for("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")[:sha256])
+        .to eq("c" * 64)
     end
 
-    it "publishes only this run's entries when there is no previous manifest" do
-      exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
+    it "covers a facet lookup through the package entry (previous_entry_covering)" do
+      previous_manifest([
+                          previous_entry("tebako-runtime-#{SPEC_VERSION}-3.1.6-linux-gnu-x86_64",
+                                         "linux-gnu-x86_64", "a" * 64, image_sha256: "b" * 64)
+                        ])
 
-      merged = fake_manager.merged_manifest_entries(fake_manager.build_manifest_entries([exe]))
+      covering = fake_manager.previous_entry_covering("tebako-runtime-#{SPEC_VERSION}-3.1.6-linux-gnu-x86_64.tfs")
 
-      expect(merged.map { |entry| entry[:filename] })
-        .to eq(["tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64"])
+      expect(covering[:filename]).to eq("tebako-runtime-#{SPEC_VERSION}-3.1.6-linux-gnu-x86_64")
+      expect(fake_manager.previous_entry_covering("tebako-runtime-#{SPEC_VERSION}-9.9.9-nowhere")).to be_nil
     end
 
     it "skips re-uploading an asset whose content is unchanged (same name, same sha256)" do
@@ -1408,7 +1403,7 @@ RSpec.describe ReleaseManager do
         .to_stdout
       expect(store.deletes).to be_empty
       expect(store.uploads).to be_empty
-      expect(fake_manager.apply_stale_keeps(entries).first[:sha256]).to eq("f" * 64)
+      expect(fake_manager.effective_entry(entries.first)[:sha256]).to eq("f" * 64)
     end
 
     # Missing is not different bytes: a name the release does not carry
@@ -1505,17 +1500,19 @@ RSpec.describe ReleaseManager do
       end
     end
 
-    it "publishes and passes the gate when the expected set is complete" do
+    it "publishes the payloads and their per-package metadata, touching no shared file" do
       stage_packages("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64",
                      "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64.tfs")
 
-      with_packages do
-        expect { fake_manager.process_release }
-          .to output(/Successfully updated release notes/).to_stdout
-      end
-      expect(store.uploads).to include("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64",
-                                       "SHA256SUMS.txt", "manifest.json")
-      expect(store.updates.size).to eq(1)
+      with_packages { fake_manager.process_release }
+
+      stem = "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64"
+      expect(store.uploads).to contain_exactly(stem, "#{stem}.tfs",
+                                               "#{stem}.manifest.json", "#{stem}.sha256", "#{stem}.tfs.sha256")
+      # The monolithic conveniences and the release notes are the
+      # finalize pass's job — a platform publish never writes them.
+      expect(store.uploads).not_to include("SHA256SUMS.txt", "manifest.json")
+      expect(store.updates).to be_empty
     end
 
     # The 0.16.6 re-publish end-to-end: the release already carries the
@@ -1523,7 +1520,7 @@ RSpec.describe ReleaseManager do
     # byte-identical. Keep-first-wins: the payloads are never deleted or
     # re-uploaded (the delete+re-upload is what wedged the names
     # server-side), a loud warning names the keep, and the published
-    # manifest + SHA256SUMS describe the PUBLISHED bytes (byte-truthful).
+    # shard + sidecars describe the PUBLISHED bytes (byte-truthful).
     it "keeps a byte-differing rebuilt package and publishes byte-truthful metadata" do
       stage_packages("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64",
                      "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64.tfs")
@@ -1538,16 +1535,17 @@ RSpec.describe ReleaseManager do
       store.assets << FakeAsset.new(90, "manifest.json", "https://download.test/manifest.json")
 
       with_packages do
-        expect { fake_manager.process_release }
-          .to output(/keeping the previous asset.*Successfully updated release notes/m).to_stdout
+        expect { fake_manager.process_release }.to output(/keeping the previous asset/).to_stdout
       end
       expect(store.deletes).not_to include(7, 8)
       expect(store.uploads).not_to include(exe_name, "#{exe_name}.tfs")
-      manifest = JSON.parse(store.content_for("https://download.test/manifest.json"))
-      expect(manifest.first["sha256"]).to eq("e" * 64)
-      expect(manifest.first["image"]["sha256"]).to eq("1" * 64)
-      expect(store.content_for("https://download.test/SHA256SUMS.txt"))
-        .to include("#{"e" * 64}  #{exe_name}", "#{"1" * 64}  #{exe_name}.tfs")
+      shard = JSON.parse(store.content_for("https://download.test/#{exe_name}.manifest.json"))
+      expect(shard["sha256"]).to eq("e" * 64)
+      expect(shard["image"]["sha256"]).to eq("1" * 64)
+      expect(store.content_for("https://download.test/#{exe_name}.sha256"))
+        .to eq("#{"e" * 64}  #{exe_name}\n")
+      expect(store.content_for("https://download.test/#{exe_name}.tfs.sha256"))
+        .to eq("#{"1" * 64}  #{exe_name}.tfs\n")
     end
 
     it "fails the publish when an expected package never lands" do
@@ -1566,9 +1564,9 @@ RSpec.describe ReleaseManager do
     # verified against the expected matrix.
     it "audit mode uploads nothing and passes when the release is complete" do
       ENV["AUDIT_ONLY"] = "true"
-      ["tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64",
-       "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64.tfs",
-       "SHA256SUMS.txt", "manifest.json"].each_with_index do |name, index|
+      stem = "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64"
+      [stem, "#{stem}.tfs", "#{stem}.manifest.json", "#{stem}.sha256", "#{stem}.tfs.sha256"]
+        .each_with_index do |name, index|
         store.assets << FakeAsset.new(index + 1, name, "https://download.test/#{name}")
       end
 
@@ -1581,7 +1579,7 @@ RSpec.describe ReleaseManager do
       ENV["AUDIT_ONLY"] = "true"
 
       expect { fake_manager.process_release }
-        .to raise_error(/incomplete \(4 missing/)
+        .to raise_error(/incomplete \(2 missing/)
         .and output(/AUDIT mode/).to_stdout
       expect(store.uploads).to be_empty
       expect(store.updates).to be_empty
@@ -1593,6 +1591,250 @@ RSpec.describe ReleaseManager do
 
       expect { fake_manager.process_release }
         .to raise_error(/no release found for tag/)
+    end
+  end
+
+  # Issue 139: the release's asset listing IS the package index. Every
+  # payload asset carries a `<asset>.sha256` sidecar (the store's
+  # trust-anchor shape, spec 00 §8) and every package a
+  # `<stem>.manifest.json` shard holding exactly its manifest entry —
+  # uploaded by the job that built the package, never merged.
+  describe "per-package metadata (issue 139)" do
+    let(:store) { FakeAssetStore.new }
+    let(:release) { FakeRelease.new(store) }
+    let(:fake_manager) { described_class.new(client: FakeClient.new(store)) }
+    let(:stem) { "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64" }
+
+    before { allow(fake_manager).to receive(:sleep) }
+
+    it "publishes the shard as the package's manifest entry and a coreutils sidecar per asset" do
+      exe = package(stem)
+      img = package("#{stem}.tfs")
+      entry = fake_manager.build_manifest_entries([exe, img]).first
+
+      fake_manager.ensure_package_metadata(release, entry)
+
+      shard = JSON.parse(store.content_for("https://download.test/#{stem}.manifest.json"))
+      expect(shard["filename"]).to eq(stem)
+      expect(shard["sha256"]).to eq(Digest::SHA256.file(exe).hexdigest)
+      expect(shard["image"]["filename"]).to eq("#{stem}.tfs")
+      expect(shard["image"]["sha256"]).to eq(Digest::SHA256.file(img).hexdigest)
+      expect(store.content_for("https://download.test/#{stem}.sha256"))
+        .to eq("#{Digest::SHA256.file(exe).hexdigest}  #{stem}\n")
+      expect(store.content_for("https://download.test/#{stem}.tfs.sha256"))
+        .to eq("#{Digest::SHA256.file(img).hexdigest}  #{stem}.tfs\n")
+    end
+
+    it "is idempotent: a second publish of the same bytes uploads no metadata" do
+      exe = package(stem)
+      entry = fake_manager.build_manifest_entries([exe]).first
+      fake_manager.ensure_package_metadata(release, entry)
+      expect(store.uploads).to contain_exactly("#{stem}.manifest.json", "#{stem}.sha256")
+
+      expect { fake_manager.ensure_package_metadata(release, entry) }
+        .to output(/already current/).to_stdout
+      expect(store.uploads).to contain_exactly("#{stem}.manifest.json", "#{stem}.sha256")
+      expect(store.deletes).to be_empty
+    end
+
+    it "publishes the PREVIOUS entry's metadata for a settled package (byte-truthful)" do
+      exe = package(stem)
+      fake_manager.settle_asset!(stem)
+      previous = { filename: stem, sha256: "f" * 64, platform: "macos-arm64" }
+      allow(fake_manager).to receive(:previous_manifest_entries).and_return([previous])
+      entry = fake_manager.build_manifest_entries([exe]).first
+
+      fake_manager.ensure_package_metadata(release, entry)
+
+      shard = JSON.parse(store.content_for("https://download.test/#{stem}.manifest.json"))
+      expect(shard["sha256"]).to eq("f" * 64)
+      expect(store.content_for("https://download.test/#{stem}.sha256")).to eq("#{"f" * 64}  #{stem}\n")
+    end
+  end
+
+  # Issue 139's single writer for the shared files: after every platform
+  # landed, the finalize pass derives the monolithic conveniences and the
+  # release notes from the release's own shards + asset listing — ground
+  # truth only, never a job's local merge.
+  describe "the finalize pass (issue 139)" do
+    let(:store) { FakeAssetStore.new }
+    let(:release) { FakeRelease.new(store) }
+    let(:client) { FakeClient.new(store) }
+    let(:fake_manager) { described_class.new(client: client) }
+
+    before { allow(fake_manager).to receive(:sleep) }
+
+    # A package as the release carries it in the shard era: payload
+    # assets, their sidecars, and the shard serving the entry.
+    def stage_shard_era_package(stem, platform, sha, image_sha: nil, sidecars: true)
+      add_asset(stem)
+      entry = { "filename" => stem, "platform" => platform, "sha256" => sha, "size_bytes" => 10 }
+      entry["image"] = stage_image(stem, image_sha) if image_sha
+      stage_shard(stem, entry)
+      stage_sidecar(stem, sha) if sidecars
+      stage_sidecar("#{stem}.tfs", image_sha) if sidecars && image_sha
+      entry
+    end
+
+    def add_asset(name)
+      store.assets << FakeAsset.new(store.assets.size + 100, name, "https://download.test/#{name}")
+    end
+
+    def stage_image(stem, image_sha)
+      add_asset("#{stem}.tfs")
+      { "filename" => "#{stem}.tfs", "sha256" => image_sha, "size_bytes" => 20 }
+    end
+
+    def stage_shard(stem, entry)
+      add_asset("#{stem}.manifest.json")
+      store.set_content("https://download.test/#{stem}.manifest.json", "#{JSON.pretty_generate(entry)}\n")
+    end
+
+    def stage_sidecar(name, digest)
+      add_asset("#{name}.sha256")
+      store.set_content("https://download.test/#{name}.sha256", "#{digest}  #{name}\n")
+    end
+
+    it "derives the monoliths and the release notes from the shards" do
+      stage_shard_era_package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64", "macos-arm64",
+                              "a" * 64, image_sha: "b" * 64)
+      stage_shard_era_package("tebako-runtime-#{SPEC_VERSION}-3.1.6-linux-gnu-x86_64", "linux-gnu-x86_64",
+                              "c" * 64, image_sha: "d" * 64)
+
+      with_packages do
+        expect { fake_manager.finalize_release }.to output(/Finalize complete: 2 package entries/).to_stdout
+      end
+
+      manifest = JSON.parse(store.content_for("https://download.test/manifest.json"))
+      expect(manifest.map { |entry| entry["filename"] }).to eq(
+        ["tebako-runtime-#{SPEC_VERSION}-3.1.6-linux-gnu-x86_64",
+         "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64"]
+      )
+      expect(manifest.last["image"]["sha256"]).to eq("b" * 64)
+      sums = store.content_for("https://download.test/SHA256SUMS.txt")
+      expect(sums).to include("#{"a" * 64}  tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64",
+                              "#{"b" * 64}  tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64.tfs")
+      expect(store.updates.size).to eq(1)
+      expect(store.updates.first).to include("`<asset>.sha256` sidecar")
+    end
+
+    it "covers a shard-less package from the monolith, loudly (the migration window)" do
+      stage_shard_era_package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64", "macos-arm64", "a" * 64)
+      legacy = "tebako-runtime-#{SPEC_VERSION}-3.2.11-linux-musl-x86_64"
+      store.assets << FakeAsset.new(301, legacy, "https://download.test/#{legacy}")
+      sidecar = FakeAsset.new(302, "#{legacy}.sha256", "https://download.test/#{legacy}.sha256")
+      store.assets << sidecar
+      store.set_content(sidecar.browser_download_url, "#{"e" * 64}  #{legacy}\n")
+      store.manifest_json = JSON.generate([{ "filename" => legacy, "platform" => "linux-musl-x86_64",
+                                             "sha256" => "e" * 64, "size_bytes" => 1 }])
+      store.assets << FakeAsset.new(90, "manifest.json", "https://download.test/manifest.json")
+
+      with_packages do
+        expect { fake_manager.finalize_release }
+          .to output(/carry no \.manifest\.json shard yet.*#{Regexp.escape(legacy)}/).to_stdout
+      end
+
+      manifest = JSON.parse(store.content_for("https://download.test/manifest.json"))
+      expect(manifest.map { |entry| entry["filename"] }).to include(legacy)
+    end
+
+    it "fails closed when a shard-less package is covered by neither shard nor monolith" do
+      stage_shard_era_package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64", "macos-arm64", "a" * 64)
+      store.assets << FakeAsset.new(301, "tebako-runtime-#{SPEC_VERSION}-3.2.11-linux-musl-x86_64",
+                                    "https://download.test/orphan")
+
+      with_packages do
+        expect { fake_manager.finalize_release }
+          .to raise_error(/no shard and no manifest\.json entry.*3\.2\.11-linux-musl/)
+      end
+    end
+
+    it "fails the coverage gate when a landed payload asset's sidecar never landed" do
+      stage_shard_era_package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64", "macos-arm64",
+                              "a" * 64, sidecars: false)
+
+      with_packages do
+        expect { fake_manager.finalize_release }
+          .to raise_error(/without their metadata/)
+          .and output(/::error::Missing metadata asset: tebako-runtime-#{SPEC_VERSION}-3\.3\.7-macos-arm64\.sha256/)
+          .to_stdout
+      end
+    end
+
+    it "process_release dispatches to the finalize pass under FINALIZE_ONLY" do
+      ENV["FINALIZE_ONLY"] = "true"
+      stage_shard_era_package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64", "macos-arm64", "a" * 64)
+
+      with_packages do
+        expect { fake_manager.process_release }.to output(/FINALIZE mode/).to_stdout
+      end
+    end
+
+    it "refuses to finalize a tag with no release" do
+      allow(client).to receive(:release_for_tag).and_raise(Octokit::NotFound)
+
+      expect { fake_manager.finalize_release }.to raise_error(/FINALIZE: no release found/)
+    end
+  end
+
+  # Issue 139's migration / repair pass: BACKFILL_METADATA=true writes
+  # the missing sidecars (from the listing's server-computed digests —
+  # the served bytes' truth) and the missing shards (from the monolithic
+  # manifest.json, sha fields re-anchored to the digests) onto a pre-shard
+  # release, then finalizes.
+  describe "the backfill pass (issue 139 migration)" do
+    let(:store) { FakeAssetStore.new }
+    let(:release) { FakeRelease.new(store) }
+    let(:client) { FakeClient.new(store) }
+    let(:fake_manager) { described_class.new(client: client) }
+
+    before { allow(fake_manager).to receive(:sleep) }
+
+    it "writes sidecars from the listing digests and shards from the monolith, then finalizes" do
+      stem = "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64"
+      store.assets << FakeAsset.new(7, stem, "https://download.test/#{stem}",
+                                    "sha256:#{"a" * 64}")
+      store.assets << FakeAsset.new(8, "#{stem}.tfs", "https://download.test/#{stem}.tfs",
+                                    "sha256:#{"b" * 64}")
+      # The monolith's recorded shas STALE-disagree with the served bytes
+      # (the incident class) — the backfill re-anchors to the digests.
+      store.manifest_json = JSON.generate(
+        [{ "filename" => stem, "platform" => "macos-arm64", "sha256" => "0" * 64, "size_bytes" => 1,
+           "image" => { "filename" => "#{stem}.tfs", "sha256" => "2" * 64, "size_bytes" => 2 } }]
+      )
+      store.assets << FakeAsset.new(90, "manifest.json", "https://download.test/manifest.json")
+
+      with_packages do
+        expect { fake_manager.backfill_release }
+          .to output(/disagree with the manifest\.json record.*Finalize complete: 1 package entries/m).to_stdout
+      end
+
+      expect(store.content_for("https://download.test/#{stem}.sha256")).to eq("#{"a" * 64}  #{stem}\n")
+      expect(store.content_for("https://download.test/#{stem}.tfs.sha256")).to eq("#{"b" * 64}  #{stem}.tfs\n")
+      shard = JSON.parse(store.content_for("https://download.test/#{stem}.manifest.json"))
+      expect(shard["sha256"]).to eq("a" * 64)
+      expect(shard["image"]["sha256"]).to eq("b" * 64)
+      expect(store.content_for("https://download.test/manifest.json")).to include(stem, "a" * 64)
+    end
+
+    it "fails closed when the release carries no monolith to synthesize from" do
+      with_packages do
+        expect { fake_manager.backfill_release }
+          .to raise_error(/BACKFILL needs the release's monolithic manifest\.json/)
+      end
+    end
+
+    it "fails closed when a listed payload asset is covered by no monolith entry" do
+      stem = "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64"
+      store.assets << FakeAsset.new(7, stem, "https://download.test/#{stem}", "sha256:#{"a" * 64}")
+      store.manifest_json = JSON.generate([{ "filename" => "tebako-runtime-#{SPEC_VERSION}-3.1.6-linux-gnu-x86_64",
+                                             "platform" => "linux-gnu-x86_64", "sha256" => "c" * 64,
+                                             "size_bytes" => 1 }])
+      store.assets << FakeAsset.new(90, "manifest.json", "https://download.test/manifest.json")
+
+      with_packages do
+        expect { fake_manager.backfill_release }.to raise_error(/BACKFILL: no manifest\.json entry covers #{stem}/)
+      end
     end
   end
 end

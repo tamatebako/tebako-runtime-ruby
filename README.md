@@ -69,9 +69,10 @@ the shipped packages. `--no-image` skips the step (only meaningful with
 cannot boot); `--embed-image` embeds the image into the executable instead
 (v1 backward-compat shape: the variable is honored when set, the embedded
 image otherwise). Both artifacts are
-uploaded to the release; `manifest.json` folds the image into the package's
-entry as an additive `image` key (`filename`/`sha256`/`size_bytes`), and
-`SHA256SUMS.txt` carries both lines.
+uploaded to the release; the package's `<package>.manifest.json` shard
+carries the image as an additive `image` key
+(`filename`/`sha256`/`size_bytes`), and each asset's `<asset>.sha256`
+sidecar carries its checksum line (see "Release metadata", below).
 
 Image layout (same as the embedded memfs tree): `/lib/ruby/<api>` (stdlib),
 `/lib/ruby/gems/<api>` (gem home — spec 22 phase M2: the env image ships
@@ -99,10 +100,10 @@ The DLL is the third artifact of a windows package:
 - the store entry holds it next to the exe **under the PE name**
   (`x64-ucrt-ruby<ABI>.dll`): the PE loader resolves the exe's imports
   against the exe's own directory first, so interpreter and extensions
-  bind without PATH games. The manifest's additive `dll` key flows the
-  mapping (`filename` = the asset, `install_as` = the PE name, plus
+  bind without PATH games. The package shard's additive `dll` key flows
+  the mapping (`filename` = the asset, `install_as` = the PE name, plus
   `sha256`/`size_bytes`; consumers ignoring the key keep working, same
-  rule as `image`), and `SHA256SUMS.txt` carries the line;
+  rule as `image`), and `<asset>.sha256` carries the line;
 - the env image does NOT carry the DLL (`bin/` is stripped from the
   layout — a DLL inside the read-only memfs would be dead weight: PE
   imports never resolve against it).
@@ -127,8 +128,9 @@ matrix builds, and by `spec/contract_spec.rb`):
 
 - `contract.yml` (schema: `schema/contract.schema.yml`) — the release
   pipeline's single source of truth. `scripts/upload_release.rb` emits it
-  as an additive `contract_version` key in every `manifest.json` package
-  entry (consumers ignoring the key keep working, same rule as `image`).
+  as an additive `contract_version` key in every package's manifest entry
+  (the `<package>.manifest.json` shard, and the derived `manifest.json`;
+  consumers ignoring the key keep working, same rule as `image`).
 - `TEBAKO_CONTRACT_VERSION` in `build/src/tebako-main.cpp` — the constant
   compiled into the runtime itself. The driver exports it as the
   `TEBAKO_CONTRACT_VERSION` environment variable before the entry dispatch,
@@ -140,6 +142,42 @@ by exactly +1 in BOTH places, same commit — the agreement check fails the
 build otherwise. The bootstrap side (negotiation, `min_contract..max_contract`
 range, `ContractMismatch` named error) lives in the tebako-rs workspace; the
 version → semantics changelog table is spec 06's.
+
+## Release metadata: per-asset sidecars, per-package shards (issue 139)
+
+The release's asset listing IS the package index. A platform publish writes
+ONLY the names it owns — its payload assets plus, for each package:
+
+- **`<asset>.sha256`** — the checksum sidecar next to every payload asset
+  (exe, `.tfs`, windows `.dll`), in the tebako store's own trust-anchor
+  shape (`"<sha256>  <filename>\n"`, spec 00 §8). This is the authority a
+  resolver verifies a download against.
+- **`<package>.manifest.json`** — the package's shard: exactly its manifest
+  entry (`ruby_version` / `platform` / `filename` / `sha256` /
+  `size_bytes` / `mount_root` / `image_layout` / `built_from` /
+  `contract_era` / `contract_version`, plus the additive `abi` / `image` /
+  `dll` keys). The non-derivable fields (the windows DLL's `install_as`,
+  the image sibling, the contract version) live here and nowhere else.
+
+Payload assets stay byte-immutable per name; metadata is DERIVABLE, so it
+replaces on drift (and a settled package's metadata describes the served
+bytes — the previous entry — never the fresh bytes that did not land).
+
+The monolithic **`manifest.json`** and **`SHA256SUMS.txt`** still ship —
+as DERIVED conveniences: one finalize pass (`FINALIZE_ONLY=true`, the
+publish.yml release job's last step) regenerates them from the shards +
+the asset listing after every platform landed, along with the release
+notes. No platform publish ever read-modify-writes a shared file, so a
+scoped re-publish cannot shrink the index and the same-name 422
+propagation window is bounded to names the job itself owns. A stem no
+shard covers falls back to the previous monolith loudly, or fails closed.
+
+`BACKFILL_METADATA=true` is the one-shot migration / repair pass for a
+pre-shard release: it writes the missing sidecars from the listing's
+server-computed digests (the served bytes' truth — a disagreement with
+the monolith's record is named loudly and the digest wins) and the
+missing shards from the monolith's entries (sha fields re-anchored to
+the digests), then finalizes.
 
 ## Layout
 
