@@ -71,4 +71,9 @@ container_version: "0.16.2"
 # the whole-tree home copy whose java.home carries conf/, fixing the
 # JCE NoSuchFileException that killed every POSIX mn2pdf render in
 # packed-mn. No source change; the pin stays v0.2.30.
-link_unit_release: "v0.3.4"
+# v2.0.0 (tebako#492): the preload shim's constructor mount pass does no
+# IO under the context guard — the union arm's second build_decl under
+# the lock self-deadlocked on ELF (the packed-mn linux-gnu acceptance
+# hang). The v2 era tag line begins here (the v0.x namespace is squatted
+# by v1 ghost tags). No source change; the pin stays v0.2.30.
+link_unit_release: "v2.0.0"
