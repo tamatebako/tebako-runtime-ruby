@@ -37,11 +37,16 @@
 #
 # Every leg fans out to _build-platform.yml to BUILD. Publishing lives ONLY
 # here, in the single `release` job that runs once per coordinator run after
-# every platform build: the manifest merge in upload_release.rb is
-# read-modify-write against the one release's manifest.json, so it must
-# serialize — and serializing per-platform publish jobs through a shared
-# concurrency group displaced (cancelled) queued publishes. One release job
-# per run means a run publishes every platform it built, never fewer.
+# every platform build: the release is one shared resource, so publishing
+# must serialize — and serializing per-platform publish jobs through a
+# shared concurrency group displaced (cancelled) queued publishes. One
+# release job per run means a run publishes every platform it built, never
+# fewer. Each per-platform invocation writes ONLY names that platform owns
+# (its payload assets + each package's .sha256 sidecars and .manifest.json
+# shard — issue 139's per-asset metadata, no merge path); the shared
+# monolithic conveniences (manifest.json / SHA256SUMS.txt) and the release
+# notes are derived from the release's own shards + asset listing by the
+# ONE finalize invocation that runs after every platform landed.
 name: publish
 
 on:
@@ -117,13 +122,13 @@ jobs:
       audit: ${{ inputs.audit || false }}
     secrets: inherit
 
-  # The ONE release job per coordinator run. upload_release.rb's manifest
-  # merge is read-modify-write against the single release's manifest.json,
-  # so publishing must serialize — and serializing per-platform jobs through
-  # a shared concurrency group was exactly what displaced (cancelled) queued
-  # publishes. Running the per-platform merges sequentially inside ONE job
-  # gives the merge its serialization with zero group contention: a run
-  # publishes every platform it built, never fewer.
+  # The ONE release job per coordinator run. Publishing writes to the
+  # single shared release, so it must serialize — and serializing
+  # per-platform jobs through a shared concurrency group was exactly what
+  # displaced (cancelled) queued publishes. Running the per-platform
+  # publishes sequentially inside ONE job gives the release its
+  # serialization with zero group contention: a run publishes every
+  # platform it built, never fewer.
   release:
     name: Publish the runtime packages
     needs: [windows, linux-gnu, linux-musl, macos]
@@ -147,9 +152,10 @@ jobs:
           fetch-depth: 1
           submodules: true
 
-      # Every platform's packages land in one workspace; the merge in
-      # upload_release.rb keeps every other platform's manifest entries,
-      # and the idempotent skip keeps unchanged assets from re-uploading.
+      # Every platform's packages land in one workspace; the idempotent
+      # skip keeps unchanged assets from re-uploading, and each platform
+      # invocation writes only its own packages' metadata (sidecars +
+      # shards — issue 139), so platforms never touch a shared file.
       - name: Download the runtime packages
         if: ${{ !inputs.audit }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -166,6 +172,11 @@ jobs:
 
       # One upload_release.rb per platform that built, sequential inside
       # this job. Each platform's completeness gate reads its own matrix.
+      # The finalize pass runs LAST: it derives the monolithic
+      # conveniences (manifest.json / SHA256SUMS.txt) and the release
+      # notes from the release's own shards + asset listing — the one
+      # place the shared files are (re)written, from ground truth only,
+      # never from a job's local knowledge (issue 139).
       - name: Update the release, per platform
         env:
           AUDIT_ONLY: ${{ inputs.audit }}
@@ -205,6 +216,16 @@ jobs:
           publish_platform "$GNU_RUN"  "$GNU_VER"  "$GNU_ENV"  "$GNU_RUBY"  linux-gnu
           publish_platform "$MUSL_RUN" "$MUSL_VER" "$MUSL_ENV" "$MUSL_RUBY" linux-musl
           publish_platform "$MAC_RUN"  "$MAC_VER"  "$MAC_ENV"  "$MAC_RUBY"  macos
+          # The finalize pass (skipped on audit-only runs, which mutate
+          # nothing): one tebako version per coordinator run, so the first
+          # platform that built names it.
+          if [ "${AUDIT_ONLY:-false}" != "true" ]; then
+            FIN_VER="${WIN_VER:-${GNU_VER:-${MUSL_VER:-${MAC_VER:-}}}}"
+            if [ -n "$FIN_VER" ]; then
+              echo "=== finalizing (tebako $FIN_VER)"
+              TEBAKO_VERSION="$FIN_VER" FINALIZE_ONLY=true ./scripts/upload_release.rb || upload_failed="$upload_failed finalize"
+            fi
+          fi
           failed=""
           mark() { # $1=selected? $2=result $3=name
             if [ "$1" = "true" ] && [ "$2" != "success" ] && [ "$2" != "skipped" ]; then
