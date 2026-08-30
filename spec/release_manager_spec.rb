@@ -950,6 +950,16 @@ RSpec.describe ReleaseManager do
       expect(store.attempts[:upload]).to eq(ReleaseManager::UPLOAD_RETRY_DELAYS.size + 1)
     end
 
+    it "retries transport-level drops on the upload path (stale keep-alive SSL EOF), escalating" do
+      store.fail_next(:upload, OpenSSL::SSL::SSLError.new("SSL_read: unexpected eof while reading"))
+      exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
+
+      fake_manager.perform_upload(release, exe, exe.basename.to_s)
+
+      expect(store.attempts[:upload]).to eq(2)
+      expect(store.uploads).to eq([exe.basename.to_s])
+    end
+
     it "retries transient timeouts on idempotent calls" do
       calls = 0
       result = fake_manager.with_transient_retries do
@@ -961,6 +971,19 @@ RSpec.describe ReleaseManager do
 
       expect(result).to eq("ok")
       expect(calls).to eq(3)
+    end
+
+    it "retries transport-level drops (a stale keep-alive answered with SSL EOF)" do
+      calls = 0
+      result = fake_manager.with_transient_retries do
+        calls += 1
+        raise OpenSSL::SSL::SSLError, "SSL_read: unexpected eof while reading" if calls < 2
+
+        "ok"
+      end
+
+      expect(result).to eq("ok")
+      expect(calls).to eq(2)
     end
 
     it "keeps an existing asset unless FORCE_REBUILD is set" do
