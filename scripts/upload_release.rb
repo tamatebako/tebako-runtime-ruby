@@ -556,8 +556,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
       begin
         upload_once(release, package, filename)
         return
-      rescue Octokit::UnprocessableEntity, Net::WriteTimeout, Net::ReadTimeout,
-             Faraday::TimeoutError, Faraday::ConnectionFailed => e
+      rescue Octokit::UnprocessableEntity, *TRANSIENT_ERRORS => e
         # A 422 means the asset name is taken. Two distinct causes: the
         # eventual-consistency race after a same-name delete (the
         # FORCE_REBUILD / content-changed path), or a previous attempt's
@@ -666,8 +665,10 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   end
 
   # The POST rides rate-limit windows out like every other call; its
-  # TRANSIENT retries stay with perform_upload (escalating delays,
-  # 422-by-content resolution, the per-asset budget).
+  # TRANSIENT retries (transport drops included — octokit's internal
+  # release GET inside upload_asset died to a stale-keep-alive SSL EOF on
+  # 2026-08-30) stay with perform_upload (escalating delays, 422-by-content
+  # resolution, the per-asset budget) — ONE retry layer, not two.
   def upload_once(release, package, filename)
     asset = with_rate_limit_rideout do
       @client.upload_asset(release.url, package.to_s,
@@ -1226,16 +1227,28 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   # GET/DELETE/PUT calls other than the asset upload share the same
   # transient network failure modes; retry them (they are idempotent).
   # A 403 rate-limit response is not one of those modes: it rides the
-  # window out and never consumes the transient attempts.
+  # window out and never consumes the transient attempts. Transport-level
+  # drops (SSL EOF, TCP reset) belong here too: a stale keep-alive
+  # connection answered with an SSL EOF is indistinguishable from a fresh
+  # one that works — net-http retries those on EOFError but NOT on
+  # OpenSSL::SSL::SSLError, so we do (the 2026-08-30 backfill crashed on
+  # exactly that, on the verification GET right after a long upload POST).
+  TRANSIENT_ERRORS = [
+    Net::WriteTimeout, Net::ReadTimeout,
+    Faraday::TimeoutError, Faraday::ConnectionFailed,
+    OpenSSL::SSL::SSLError, EOFError, SystemCallError
+  ].freeze
+
   def with_transient_retries(attempts: 4)
     with_rate_limit_rideout do
       yield
-    rescue Net::WriteTimeout, Net::ReadTimeout, Faraday::TimeoutError, Faraday::ConnectionFailed => e
+    rescue *TRANSIENT_ERRORS => e
       attempts -= 1
       raise if attempts <= 0
 
-      puts "#{e.class}; retrying in 5s (#{attempts} attempt(s) left)"
-      sleep 5
+      delay = (5 * (4 - attempts)) + rand(5)
+      puts "#{e.class}; retrying in #{delay}s (#{attempts} attempt(s) left)"
+      sleep delay
       retry
     end
   end
