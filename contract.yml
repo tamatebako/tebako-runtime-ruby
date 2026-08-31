@@ -76,4 +76,8 @@ container_version: "0.16.2"
 # the lock self-deadlocked on ELF (the packed-mn linux-gnu acceptance
 # hang). The v2 era tag line begins here (the v0.x namespace is squatted
 # by v1 ghost tags). No source change; the pin stays v0.2.30.
-link_unit_release: "v2.0.0"
+# v2.1.0 (spec 30): the driver's spawned-runtime planner + the
+# tebako_spawn_runtime_plan FFI (tebako#508) — the ruby side rides the
+# v0.2.32 source pin (ruby#106's FFI head calls it; weak extern, so even
+# a mismatched pair degrades to pass-through, never breaks).
+link_unit_release: "v2.1.0"
