@@ -102,4 +102,11 @@ container_version: "0.16.2"
 # with malloc'd-result semantics — exactly the NULL arm's contract) on
 # linux. Contract unchanged (2). Full-catalog re-cut again: the runtime
 # exe embeds the closure.
-link_unit_release: "v2.1.4"
+# v2.1.5 (tebako#517): the NULL-arm reroute is glibc-scoped — musl has
+# no canonicalize_file_name at all (musl 1.2.5's dynamic table carries
+# zero 'canonicalize' symbols), so the v2.1.4 musl unit's constructor
+# panicked on the RTLD_NEXT lookup and every jailed musl child aborted
+# (all 44 musl legs of the first 0.16.19 re-cut). musl needs no
+# reroute: no symbol versioning → no compat twin → its plain-dlsym
+# realpath is already unambiguous and NULL-safe. Contract unchanged (2).
+link_unit_release: "v2.1.5"
