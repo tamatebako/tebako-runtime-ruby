@@ -91,4 +91,15 @@ container_version: "0.16.2"
 # linux-gnu ClassNotFound; PROGRESS/31). Contract unchanged (2 — the
 # interpose is behavioral, no env/argv change). Every published runtime
 # exe embeds the driver closure, so this re-cut runs the full catalog.
-link_unit_release: "v2.1.3"
+# v2.1.4 (tebako#516): the realpath NULL-buffer arm's host pass-through
+# no longer rides plain dlsym(RTLD_NEXT, "realpath") — on glibc ≤ 2.31
+# (the ubuntu:20.04 build floor, and any equally old host) that lookup
+# lands on the versioned compat twin realpath@GLIBC_2.0, which EINVALs
+# resolved == NULL, so every HostPolicy::bind canonicalize failed and
+# TEBAKO_JAIL refused to install (exit 78) — the 0.16.19 linux-gnu
+# catalog legs all died at the boot smoke's jailed java spawn. The NULL
+# arm now routes to canonicalize_file_name (a single-version GNU symbol
+# with malloc'd-result semantics — exactly the NULL arm's contract) on
+# linux. Contract unchanged (2). Full-catalog re-cut again: the runtime
+# exe embeds the closure.
+link_unit_release: "v2.1.4"
