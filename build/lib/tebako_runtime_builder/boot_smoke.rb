@@ -111,17 +111,17 @@ module TebakoRuntimeBuilder
     # per leg — the support matrix is a function of the platform and the
     # ruby line, both known here. Upstream gates YJIT on rustc resolving
     # on PATH at configure time (AC_CHECK_PROG, auto-off when absent — the
-    # 0.16.19 linux gap) and supports exactly x86_64/aarch64 on
-    # darwin/linux/bsd (configure.ac's YJIT_TARGET_OK arms, verified on
-    # v3_2_11 / v3_3_12 / v3_4_10): the linux-gnu, linux-musl and macos
-    # legs of ruby >= 3.2 build YJIT once rustc is on PATH
-    # (ci/prepare-rust-toolchain.sh). The 3.1 line's YJIT is the pre-Rust
-    # one behind --enable-yjit, a flag this factory never passes.
-    # WINDOWS IS THE OPEN GATE, recorded here deliberately: upstream
-    # carries no mingw arm in the verified lines, so windows expects
-    # "off" — NOT a skip. When upstream adds x64-mingw support and the
-    # leg's toolchain gains rustc, the windows legs go RED here until
-    # this record flips to "ok" in the same PR.
+    # 0.16.19 linux gap) and arms it per arch (configure.ac's
+    # YJIT_TARGET_OK: x86_64 only on the 3.1 line, x86_64/aarch64 from
+    # 3.2, verified on v3_1_7 / v3_2_11 / v3_3_12 / v3_4_10): with
+    # ci/prepare-rust-toolchain.sh on PATH the linux-gnu, linux-musl and
+    # macos legs build YJIT — 3.1 included on x86_64 (the #144 legs
+    # 3.1.6/3.1.7 x86_64 linux-gnu reported enabled; their arm64 twins
+    # reported off). WINDOWS IS THE OPEN GATE, recorded here
+    # deliberately: upstream carries no mingw arm in the verified lines,
+    # so windows expects "off" — NOT a skip. When upstream adds
+    # x64-mingw support and the leg's toolchain gains rustc, the windows
+    # legs go RED here until this record flips to "ok" in the same PR.
     # TEBAKO_SMOKE_EXPECT_YJIT overrides the derivation for probe rounds.
     def expected_yjit_state
       ENV.fetch("TEBAKO_SMOKE_EXPECT_YJIT", nil) || derived_yjit_state
@@ -260,12 +260,17 @@ module TebakoRuntimeBuilder
     end
 
     # The derived half of expected_yjit_state: "ok" exactly where upstream
-    # compiles YJIT by default with rustc present — ruby >= 3.2 (the Rust
-    # YJIT) on non-msys legs; "off" on windows (no mingw arm upstream) and
-    # on the 3.1 line (the pre-Rust YJIT needs --enable-yjit).
+    # compiles YJIT by default with rustc present — non-msys legs of
+    # ruby >= 3.2, plus the 3.1 line on x86_64 (its YJIT_TARGET_OK arms
+    # no aarch64; the #144 3.1.6/3.1.7 x86_64 gnu legs reported enabled,
+    # their arm64 twins off). "off" on windows (no mingw arm upstream)
+    # and on 3.1's non-x86_64 legs.
     def derived_yjit_state
       return "off" if @platform.msys?
-      return "off" if TebakoRuntimeBuilder::RubyVersion.new(artifact.ruby_version).ruby31only?
+
+      if TebakoRuntimeBuilder::RubyVersion.new(artifact.ruby_version).ruby31only?
+        return @platform.x86_64? ? "ok" : "off"
+      end
 
       "ok"
     end
