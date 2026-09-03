@@ -94,6 +94,12 @@ module TebakoRuntimeBuilder
       @msys
     end
 
+    # Exactly x86_64 (never aarch64/arm64): the 3.1 line's YJIT arms on
+    # this arch only — the boot smoke's derivation keys on it.
+    def x86_64?
+      @arch == "x86_64"
+    end
+
     def musl?
       @musl
     end

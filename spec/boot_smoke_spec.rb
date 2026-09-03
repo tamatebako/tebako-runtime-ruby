@@ -159,10 +159,12 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
       end
     end
 
-    it "expects no YJIT on the 3.1 line (the pre-Rust YJIT needs --enable-yjit, never passed here)" do
+    it "expects YJIT on the 3.1 line's x86_64 POSIX legs only (its YJIT_TARGET_OK arms no aarch64)" do
       with_env("TEBAKO_SMOKE_EXPECT_YJIT" => nil) do
-        smoke_for("x86_64-linux-gnu", "3.1.6") { |smoke| expect(smoke.expected_yjit_state).to eq("off") }
+        smoke_for("x86_64-linux-gnu", "3.1.6") { |smoke| expect(smoke.expected_yjit_state).to eq("ok") }
+        smoke_for("x86_64-darwin", "3.1.7") { |smoke| expect(smoke.expected_yjit_state).to eq("ok") }
         smoke_for("arm64-darwin", "3.1.6", "arm64") { |smoke| expect(smoke.expected_yjit_state).to eq("off") }
+        smoke_for("aarch64-linux-musl", "3.1.7", "arm64") { |smoke| expect(smoke.expected_yjit_state).to eq("off") }
       end
     end
 
@@ -550,19 +552,19 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
       # The Class-B gem adapters' (jing/mn2pdf/mnconvert) deletion gate: a
       # spawned JVM reads a VFS-resident jar through the inherited preload
       # shim + mounts — no adapter extracts anything. The jar rides the
-      # InterposeFixture image next to the class-L libraries. Per the §3.1
-      # delivery matrix the shell-string form is an ELF capability; on
-      # macOS the spawn hook drops the inherited insertion for restricted
-      # targets (darwin24 dyld TERMINATES platform binaries under it —
-      # run 31699651270), so the JVM behind /bin/sh answers the honest
-      # jarfile error everywhere and a marker means the scrub regressed.
+      # InterposeFixture image next to the class-L libraries. The shell-
+      # string form's jar OPERAND bridges parent-side on every POSIX leg
+      # (spec 22 §3.1's shell-form argument bridging, ruby#107): the hook
+      # materializes the embedded token and rewrites it to the host twin,
+      # so the JVM runs the jar even where the insertion cannot reach
+      # (macOS restricted targets — the scrub itself is untouched).
       # The array form with the absolute java path is the consumption
       # pattern that works on every POSIX leg. A leg with no JRE reports
       # unsupported (sensed, never faked). Deferred on windows with
       # windows class L.
       let(:run) { smoke.run("class_e_exec") }
 
-      it "shell-string exec of a VFS-resident jar operand (ELF capability; the scrub boundary pinned on macOS)" do
+      it "shell-string exec of a VFS-resident jar operand (operand bridged parent-side on every POSIX leg)" do
         skip "class E is deferred on windows with windows class L" if smoke.platform.msys?
 
         expect(run).to be_booted, boot_failure(run)
@@ -573,9 +575,10 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
 
         if smoke.platform.macos?
           # The spawn hook drops the inherited insertion for restricted
-          # targets (spec 22 §3.1) — the JVM behind /bin/sh must answer
-          # the honest jarfile error. A marker means the scrub regressed.
-          expect(run.detail("shell_string_exec")).to include("SIP boundary holds")
+          # targets AND bridges the jar operand parent-side (spec 22 §3.1,
+          # ruby#107) — the JVM runs the materialized host twin. A jarfile
+          # error here means the bridge regressed.
+          expect(run.detail("shell_string_exec")).to include("operand bridged parent-side")
         else
           expect(run.detail("shell_string_exec")).to include("CLASS-E-EXEC-OK")
         end
