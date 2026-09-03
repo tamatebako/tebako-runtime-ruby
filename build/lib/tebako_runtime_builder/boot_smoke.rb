@@ -48,7 +48,7 @@ module TebakoRuntimeBuilder
     autoload :Run,              File.expand_path("boot_smoke/run", __dir__)
     autoload :InterposeFixture, File.expand_path("boot_smoke/interpose_fixture", __dir__)
 
-    SCENARIOS = %w[boot stat io bundler locks native_ext loader_interpose class_e_exec].freeze
+    SCENARIOS = %w[boot stat io bundler locks native_ext loader_interpose class_e_exec yjit].freeze
     # The scenarios that boot with the spec-22 probe fixture image mounted
     # at /probe (class L's libraries + class E's jar ride the same image).
     INTERPOSE_SCENARIOS = %w[loader_interpose class_e_exec].freeze
@@ -105,6 +105,26 @@ module TebakoRuntimeBuilder
     # never openssl.) Unset defaults to "ok", the only correct state.
     def expected_openssl_state
       ENV.fetch("TEBAKO_SMOKE_EXPECT_OPENSSL", "ok")
+    end
+
+    # The leg's expected YJIT state (YJIT phase 0): DERIVED, not recorded
+    # per leg — the support matrix is a function of the platform and the
+    # ruby line, both known here. Upstream gates YJIT on rustc resolving
+    # on PATH at configure time (AC_CHECK_PROG, auto-off when absent — the
+    # 0.16.19 linux gap) and supports exactly x86_64/aarch64 on
+    # darwin/linux/bsd (configure.ac's YJIT_TARGET_OK arms, verified on
+    # v3_2_11 / v3_3_12 / v3_4_10): the linux-gnu, linux-musl and macos
+    # legs of ruby >= 3.2 build YJIT once rustc is on PATH
+    # (ci/prepare-rust-toolchain.sh). The 3.1 line's YJIT is the pre-Rust
+    # one behind --enable-yjit, a flag this factory never passes.
+    # WINDOWS IS THE OPEN GATE, recorded here deliberately: upstream
+    # carries no mingw arm in the verified lines, so windows expects
+    # "off" — NOT a skip. When upstream adds x64-mingw support and the
+    # leg's toolchain gains rustc, the windows legs go RED here until
+    # this record flips to "ok" in the same PR.
+    # TEBAKO_SMOKE_EXPECT_YJIT overrides the derivation for probe rounds.
+    def expected_yjit_state
+      ENV.fetch("TEBAKO_SMOKE_EXPECT_YJIT", nil) || derived_yjit_state
     end
 
     # The leg's expected CA-roots story (0.16.6): the windows runtime's
@@ -239,6 +259,17 @@ module TebakoRuntimeBuilder
       ["", "boot-smoke: runtime did not exit within #{BOOT_TIMEOUT}s", nil]
     end
 
+    # The derived half of expected_yjit_state: "ok" exactly where upstream
+    # compiles YJIT by default with rustc present — ruby >= 3.2 (the Rust
+    # YJIT) on non-msys legs; "off" on windows (no mingw arm upstream) and
+    # on the 3.1 line (the pre-Rust YJIT needs --enable-yjit).
+    def derived_yjit_state
+      return "off" if @platform.msys?
+      return "off" if TebakoRuntimeBuilder::RubyVersion.new(artifact.ruby_version).ruby31only?
+
+      "ok"
+    end
+
     def boot_env(scenario, mount_root_override: nil)
       env = ENV_SCRUBBED.to_h { |key| [key, nil] }
       image = "#{executable}.tfs"
@@ -250,6 +281,10 @@ module TebakoRuntimeBuilder
       # declares. POSIX legs set nothing — the probe reports unsupported.
       names = TebakoRuntimeBuilder::SupportDlls::NAMES.join(",")
       env["TEBAKO_SMOKE_EXPECT_SUPPORT_DLLS"] = names if @platform.msys?
+      # The yjit scenario boots enabled on purpose: a compiled-in YJIT must
+      # answer RubyVM::YJIT.enabled? under RUBY_YJIT_ENABLE=1, and the env
+      # is inert on runtimes built without it (the "off" expectation).
+      env["RUBY_YJIT_ENABLE"] = "1" if scenario == "yjit"
       env.merge("RUBYOPT" => "-r#{PROBE_PATH}",
                 "TEBAKO_BOOT_PROBE" => scenario,
                 "TEBAKO_BOOT_MOUNT_POINT" => mount_root_override || mount_point)
