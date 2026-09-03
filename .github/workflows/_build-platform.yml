@@ -818,9 +818,17 @@ jobs:
           # (host legs read the stash in place; a mkdwarfs miss is not
           # fatal — the fixture falls back to tfs when one resolves).
           cid="leg-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ matrix.ruby.version }}-${{ matrix.env.arch }}"
+          # RUSTUP_HOME/CARGO_HOME: the rustup proxies that
+          # ci/prepare-rust-toolchain.sh lands in /opt/cargo/bin resolve
+          # their toolchain through this pair (the tpkg-builder images
+          # bake the same two as Dockerfile ENV). Without them the shim
+          # probes an empty HOME/.rustup, ruby configure meets a broken
+          # rustc, and YJIT silently configures out again.
           if ! docker run --name "$cid" -v ${{github.workspace}}:/mnt/w \
             -e TEBAKO_RUST_LIBDIR=/mnt/w/.build/link-unit \
             -e RUST_VERSION="${{ needs.compute.outputs.rust-version }}" \
+            -e RUSTUP_HOME=/opt/rustup \
+            -e CARGO_HOME=/opt/cargo \
             -e runtime="$runtime" \
             -t $container \
             bash -c '
