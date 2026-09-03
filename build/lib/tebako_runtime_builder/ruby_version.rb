@@ -75,6 +75,10 @@ module TebakoRuntimeBuilder
       @ruby32only ||= major_minor == [3, 2]
     end
 
+    def ruby31only?
+      @ruby31only ||= major_minor == [3, 1]
+    end
+
     def ruby33?
       @ruby33 ||= version_at_least?(3, 3)
     end

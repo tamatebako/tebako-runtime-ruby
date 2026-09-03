@@ -37,10 +37,13 @@ platforms:
     - .github/workflows/build-windows.yml
   linux-gnu:
     - ci/link-unit-posix.sh
+    - ci/prepare-gnu-runtime-container.sh
+    - ci/prepare-rust-toolchain.sh  # the in-leg pinned rustc the ruby configure's YJIT probe needs
     - ci/check_symbol_provenance.sh
     - .github/workflows/build-linux-gnu.yml
   linux-musl:
     - ci/link-unit-posix.sh
+    - ci/prepare-rust-toolchain.sh  # the in-leg pinned rustc the ruby configure's YJIT probe needs
     - ci/check_symbol_provenance.sh
     - .github/workflows/build-linux-musl.yml
   macos:

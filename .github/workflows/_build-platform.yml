@@ -250,6 +250,7 @@ jobs:
       container-version: ${{ steps.get-container-version.outputs.version }}
       source-pin: ${{ steps.get-source-pin.outputs.pin }}
       link-unit-release: ${{ steps.get-link-unit-pin.outputs.release }}
+      rust-version: ${{ steps.get-rust-pin.outputs.pin }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -328,6 +329,23 @@ jobs:
           TEBAKO_DRIVER_SRC: tebako-product/crates/tebako-driver/src/lib.rs
         run: |
           ./scripts/check_contract_version.rb
+
+      # The ecosystem Rust pin (YJIT phase 0): the ruby configure
+      # auto-enables YJIT only with rustc on PATH, and the toolchain the
+      # container legs install in-leg (ci/prepare-rust-toolchain.sh) is
+      # exactly the ecosystem's single pin — tamatebako/tebako's
+      # release.yml env RUST_VERSION (the owner tebako-ci-containers'
+      # pins.env names), FLOWED from the chain-gated product checkout,
+      # never a second literal. The macos legs consume the runner image's
+      # rustc instead (0.16.19 proves it resolves there); windows records
+      # YJIT off (BootSmoke#expected_yjit_state).
+      - name: Get the ecosystem Rust pin
+        id: get-rust-pin
+        run: |
+          pin=$(grep -E '^  RUST_VERSION: ' tebako-product/.github/workflows/release.yml | sed -E 's/^  RUST_VERSION: *"([^"]+)".*/\1/')
+          [ -n "$pin" ] || { echo "::error::tebako product release.yml declares no RUST_VERSION"; exit 1; }
+          echo "Ecosystem Rust pin: $pin"
+          echo "pin=$pin" >> "$GITHUB_OUTPUT"
 
       # CHAIN GATE: the matrix's per-version src_sha256 cache keys must
       # come from the roll-source job's SHA256SUMS (the draft chain's
@@ -802,6 +820,7 @@ jobs:
           cid="leg-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ matrix.ruby.version }}-${{ matrix.env.arch }}"
           if ! docker run --name "$cid" -v ${{github.workspace}}:/mnt/w \
             -e TEBAKO_RUST_LIBDIR=/mnt/w/.build/link-unit \
+            -e RUST_VERSION="${{ needs.compute.outputs.rust-version }}" \
             -e runtime="$runtime" \
             -t $container \
             bash -c '
@@ -811,7 +830,16 @@ jobs:
             # exe link'\''s STATICALLY absorbed libstdc++.a resolves new
             # enough (#117). The compiler stays clang-18. No-op elsewhere.
             ${{ matrix.env.os == 'linux-gnu' && '/mnt/w/ci/prepare-gnu-runtime-container.sh &&' || '' }}
-            /mnt/w/tools/build_runtime --ruby "${{ matrix.ruby.version }}" --output "/mnt/w/runtime-packages/$runtime" \
+            # YJIT (phase 0): ruby configure auto-enables YJIT only when
+            # rustc resolves on PATH, and the retired v1 build images ship
+            # no rust toolchain at all (the 0.16.19 linux legs configured
+            # YJIT out). Provision the ecosystem-pinned toolchain in-leg
+            # and lead PATH with it for the configure/make below. The
+            # tpkg-builder images carry the pin baked in (TODO.v2-1/13
+            # moves these legs onto them); the script skips when the pin
+            # is already present.
+            /mnt/w/ci/prepare-rust-toolchain.sh && \
+            PATH="/opt/cargo/bin:$PATH" /mnt/w/tools/build_runtime --ruby "${{ matrix.ruby.version }}" --output "/mnt/w/runtime-packages/$runtime" \
             --prefix /root/.build --src-mirror file:///mnt/w/.build/spec22-src-roll --src-release spec22-chain \
             ${{ matrix.env.os == 'linux-gnu' && '--patchelf' || '' }} && \
             mkdir -p /mnt/w/.build/smoke-headers /mnt/w/.build/smoke-tools && \

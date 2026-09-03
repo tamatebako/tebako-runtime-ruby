@@ -130,6 +130,55 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
     end
   end
 
+  describe "#expected_yjit_state (YJIT phase 0)" do
+    def with_env(vars)
+      old = vars.to_h { |key, _| [key, ENV.fetch(key, nil)] }
+      vars.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
+      yield
+    ensure
+      old.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
+    end
+
+    def smoke_for(ostype, ruby_version, arch = "x86_64")
+      platform = TebakoRuntimeBuilder::Platform.new(ostype, arch)
+      Dir.mktmpdir do |dir|
+        exe = File.join(dir, "tebako-runtime-0.16.19-#{ruby_version}-#{platform.host_id}#{platform.exe_suffix}")
+        FileUtils.touch(exe)
+        yield described_class.new(dir, platform: platform)
+      end
+    end
+
+    it "expects YJIT on the linux-gnu / linux-musl / macos legs of ruby >= 3.2 (rustc on PATH)" do
+      with_env("TEBAKO_SMOKE_EXPECT_YJIT" => nil) do
+        smoke_for("x86_64-linux-gnu", "3.3.12") { |smoke| expect(smoke.expected_yjit_state).to eq("ok") }
+        smoke_for("aarch64-linux-gnu", "3.2.11", "arm64") { |smoke| expect(smoke.expected_yjit_state).to eq("ok") }
+        smoke_for("x86_64-linux-musl", "3.4.10") { |smoke| expect(smoke.expected_yjit_state).to eq("ok") }
+        smoke_for("aarch64-linux-musl", "4.0.6", "arm64") { |smoke| expect(smoke.expected_yjit_state).to eq("ok") }
+        smoke_for("arm64-darwin", "3.3.12", "arm64") { |smoke| expect(smoke.expected_yjit_state).to eq("ok") }
+        smoke_for("x86_64-darwin", "3.2.11") { |smoke| expect(smoke.expected_yjit_state).to eq("ok") }
+      end
+    end
+
+    it "expects no YJIT on the 3.1 line (the pre-Rust YJIT needs --enable-yjit, never passed here)" do
+      with_env("TEBAKO_SMOKE_EXPECT_YJIT" => nil) do
+        smoke_for("x86_64-linux-gnu", "3.1.6") { |smoke| expect(smoke.expected_yjit_state).to eq("off") }
+        smoke_for("arm64-darwin", "3.1.6", "arm64") { |smoke| expect(smoke.expected_yjit_state).to eq("off") }
+      end
+    end
+
+    it "records windows off — the open gate (upstream has no mingw YJIT arm in the verified lines)" do
+      with_env("TEBAKO_SMOKE_EXPECT_YJIT" => nil) do
+        smoke_for("x64-mingw-ucrt", "3.3.12") { |smoke| expect(smoke.expected_yjit_state).to eq("off") }
+        smoke_for("x64-mingw-ucrt", "4.0.6") { |smoke| expect(smoke.expected_yjit_state).to eq("off") }
+      end
+    end
+    it "lets a probe round override the derivation via TEBAKO_SMOKE_EXPECT_YJIT" do
+      with_env("TEBAKO_SMOKE_EXPECT_YJIT" => "off") do
+        smoke_for("x86_64-linux-gnu", "3.3.12") { |smoke| expect(smoke.expected_yjit_state).to eq("off") }
+      end
+    end
+  end
+
   describe "against a built runtime" do
     def boot_failure(run)
       "expected the runtime to boot and report -- #{run.failure_summary}"
@@ -431,6 +480,32 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
         expect(run.state("https_handshake")).to eq("ok"),
                                                 "probe https_handshake detail: #{run.detail("https_handshake")}"
         expect(run.detail("https_handshake")).to match(/\A\S+ HTTP \d{3}\z/)
+      end
+    end
+
+    describe "yjit (phase 0, fail-closed)" do
+      let(:run) { smoke.run("yjit") }
+
+      # The phase-0 platform-gap assertion: the probe boots with
+      # RUBY_YJIT_ENABLE=1 and senses enabled / disabled / not-compiled;
+      # the leg's expectation is derived (BootSmoke#expected_yjit_state):
+      # "ok" on linux-gnu/linux-musl/macos legs of ruby >= 3.2, "off" on
+      # the 3.1 line and on windows (the open gate — upstream carries no
+      # mingw YJIT arm in the verified lines; a windows leg gaining YJIT
+      # goes RED here until the record flips in the same PR, never a
+      # silent skip). The enabled arm also pins the +YJIT RUBY_DESCRIPTION
+      # marker, so ruby -v tells the truth when YJIT is on.
+      it "matches the leg's derived YJIT expectation, either way" do
+        expect(run).to be_booted, boot_failure(run)
+        expect(run.state("yjit")).to eq("ok"), "probe yjit detail: #{run.detail("yjit")}"
+        expected_detail = { "ok" => "enabled", "off" => "not-compiled" }.fetch(smoke.expected_yjit_state)
+        expect(run.detail("yjit")).to eq(expected_detail),
+                                      "yjit probe: the runtime reports '#{run.detail("yjit")}' but this leg " \
+                                      "expects '#{smoke.expected_yjit_state}' (#{expected_detail}). " \
+                                      "A linux/musl leg reporting not-compiled lost its rustc at configure " \
+                                      "time (the 0.16.19 class — ci/prepare-rust-toolchain.sh); a windows or " \
+                                      "3.1-line leg reporting enabled means upstream moved — flip the " \
+                                      "derivation in BootSmoke#expected_yjit_state in the same PR."
       end
     end
 

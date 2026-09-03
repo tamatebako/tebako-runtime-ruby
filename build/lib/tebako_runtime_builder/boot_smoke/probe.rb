@@ -139,7 +139,23 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
     report("jailed_exec") { jailed_exec_check }
   end
 
-  SCENARIO_NAMES = %w[boot stat io bundler locks native_ext loader_interpose class_e_exec].freeze
+  # YJIT phase 0: the fail-closed platform-gap assertion. The boot env
+  # carries RUBY_YJIT_ENABLE=1 (BootSmoke#boot_env), so a runtime COMPILED
+  # with YJIT must answer RubyVM::YJIT.enabled?, and its RUBY_DESCRIPTION
+  # must then carry the +YJIT marker (upstream composes the description at
+  # option-processing time — version.c's define_ruby_description gates the
+  # marker on enablement, so it is only assertable from this enabled boot).
+  # The probe only senses (enabled / disabled / not-compiled); the spec
+  # compares against the leg's derived expectation
+  # (BootSmoke#expected_yjit_state) and fails on any drift, either way —
+  # a linux/musl leg that lost its rustc (the 0.16.19 class) goes red, and
+  # a windows leg that GAINS YJIT upstream goes red until the recorded
+  # expectation flips deliberately.
+  def self.yjit
+    report("yjit") { yjit_check }
+  end
+
+  SCENARIO_NAMES = %w[boot stat io bundler locks native_ext loader_interpose class_e_exec yjit].freeze
 
   def self.run
     scenario = ENV.fetch("TEBAKO_BOOT_PROBE", "")
@@ -175,6 +191,25 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
   def self.openssl_check
     require "openssl"
     OpenSSL::OPENSSL_VERSION
+  end
+
+  # Senses the YJIT state of the booted runtime under RUBY_YJIT_ENABLE=1:
+  # "not-compiled" (the RubyVM::YJIT constant is absent — configure found
+  # no rustc, or the platform/line carries no YJIT), "disabled" (compiled
+  # but the enable env did not switch it on — a drift from upstream
+  # semantics, red under EITHER expectation), "enabled". The enabled arm
+  # also asserts the +YJIT description marker: a YJIT runtime whose
+  # ruby -v hides the fact fails here (the marker is the user-visible
+  # diagnosability the phase-0 audit asked for).
+  def self.yjit_check
+    return "not-compiled" unless defined?(RubyVM::YJIT)
+    return "disabled" unless RubyVM::YJIT.enabled?
+
+    unless RUBY_DESCRIPTION.include?("+YJIT")
+      raise "YJIT enabled but RUBY_DESCRIPTION lacks the +YJIT marker: #{RUBY_DESCRIPTION}"
+    end
+
+    "enabled"
   end
 
   # Windows CA roots (0.16.6): the exe's boot shim exports SSL_CERT_FILE
