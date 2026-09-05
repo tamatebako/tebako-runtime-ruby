@@ -109,4 +109,12 @@ container_version: "0.16.2"
 # (all 44 musl legs of the first 0.16.19 re-cut). musl needs no
 # reroute: no symbol versioning → no compat twin → its plain-dlsym
 # realpath is already unambiguous and NULL-safe. Contract unchanged (2).
-link_unit_release: "v2.1.5"
+# v2.3.0 (tebako#532, tebako-packages/metanorma#40): the embedded driver
+# gains manifest schema_minor 5 — the kind:executable DEPENDS edge
+# (payload as a spawned dependency, spec 32). The v2.1.5 unit refuses
+# such manifests fail-closed at boot (unknown variant `executable`),
+# which is correct-and-total but blocks every consumer edge; the refusal
+# wording is tebako#536. Also rides the shim-routing arc (#533/#535 —
+# driver-side untouched; the shim/resolve crates carry it). Contract
+# unchanged (2). Full-catalog re-cut: the runtime exe embeds the unit.
+link_unit_release: "v2.3.0"
