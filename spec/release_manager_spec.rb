@@ -373,10 +373,27 @@ RSpec.describe ReleaseManager do
 
     expect(entry.keys).to contain_exactly(:tebako_version, :contract_era, :contract_version, :ruby_version,
                                           :platform, :filename, :sha256, :size_bytes,
-                                          :mount_root, :image_layout, :built_from, :image)
+                                          :mount_root, :image_layout, :built_from, :capabilities, :image)
     expect(entry[:tebako_version]).to eq(SPEC_VERSION)
     expect(entry[:sha256]).to eq(Digest::SHA256.file(exe).hexdigest)
     expect(entry[:size_bytes]).to eq(exe.size)
+    expect(entry[:capabilities]).to eq(["yjit"])
+  end
+
+  # Plan 04: the additive capabilities key — display metadata owned by the
+  # factory (Capabilities truth table), never a selector axis.
+  it "emits the capabilities key per the Capabilities truth table" do
+    cases = {
+      "3.3.7-macos-arm64" => ["yjit"],
+      "3.3.7-windows-ucrt64" => [],
+      "3.1.6-linux-gnu-x86_64" => ["yjit"],
+      "3.1.6-linux-gnu-arm64" => []
+    }
+    cases.each do |stem, expected|
+      exe = package("tebako-runtime-#{SPEC_VERSION}-#{stem}#{stem.include?("windows") ? ".exe" : ""}")
+      entry = manager.build_manifest_entries([exe]).first
+      expect(entry[:capabilities]).to eq(expected), "capabilities for #{stem}"
+    end
   end
 
   # Spec 18 C2: the era-2 contract card — contract_era / mount_root /

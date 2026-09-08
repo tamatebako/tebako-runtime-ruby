@@ -259,20 +259,16 @@ module TebakoRuntimeBuilder
       ["", "boot-smoke: runtime did not exit within #{BOOT_TIMEOUT}s", nil]
     end
 
-    # The derived half of expected_yjit_state: "ok" exactly where upstream
-    # compiles YJIT by default with rustc present — non-msys legs of
-    # ruby >= 3.2, plus the 3.1 line on x86_64 (its YJIT_TARGET_OK arms
-    # no aarch64; the #144 3.1.6/3.1.7 x86_64 gnu legs reported enabled,
-    # their arm64 twins off). "off" on windows (no mingw arm upstream)
-    # and on 3.1's non-x86_64 legs.
+    # The derived half of expected_yjit_state, delegated to the shared
+    # truth table (Capabilities) so the release manifest's `capabilities`
+    # key and this expectation can never drift apart (plan 04 parity):
+    # "ok" exactly where upstream compiles YJIT by default with rustc
+    # present — non-msys legs of ruby >= 3.2, plus the 3.1 line on x86_64
+    # (its YJIT_TARGET_OK arms no aarch64; the #144 3.1.6/3.1.7 x86_64
+    # gnu legs reported enabled, their arm64 twins off). "off" on windows
+    # (no mingw arm upstream) and on 3.1's non-x86_64 legs.
     def derived_yjit_state
-      return "off" if @platform.msys?
-
-      if TebakoRuntimeBuilder::RubyVersion.new(artifact.ruby_version).ruby31only?
-        return @platform.x86_64? ? "ok" : "off"
-      end
-
-      "ok"
+      Capabilities.yjit(ruby_version: artifact.ruby_version, platform_id: @platform.host_id) ? "ok" : "off"
     end
 
     def boot_env(scenario, mount_root_override: nil)
