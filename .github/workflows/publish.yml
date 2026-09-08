@@ -243,3 +243,15 @@ jobs:
             echo "::error::these platforms' upload_release.rb failed:$upload_failed"
           fi
           [ -z "$failed" ] && [ -z "$upload_failed" ]
+
+      - name: Ping the versions catalog
+        if: ${{ always() && success() }}
+        continue-on-error: true
+        # Refreshes www.tebako.org/versions within minutes of a publish
+        # (versions plan 05; the daily cron stays the backstop). The org
+        # TEBAKO_CI_PAT_TOKEN must carry actions:write on
+        # tamatebako/versions for the dispatch — until proven, a failed
+        # ping never blocks a release.
+        run: gh api repos/tamatebako/versions/dispatches -f event_type=runtime-published
+        env:
+          GH_TOKEN: ${{ secrets.TEBAKO_CI_PAT_TOKEN || secrets.GITHUB_TOKEN }}
