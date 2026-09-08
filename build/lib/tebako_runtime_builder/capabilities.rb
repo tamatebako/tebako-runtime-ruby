@@ -37,10 +37,19 @@ module TebakoRuntimeBuilder
   # -- non-msys legs of ruby >= 3.2, plus the 3.1 line on x86_64 only
   # (its YJIT_TARGET_OK arms no aarch64). Off on windows (upstream
   # carries no mingw-x64 YJIT arm) and on 3.1's non-x86_64 legs.
-  # zjit (the ruby-4 line, upstream #147) joins this table the same way
-  # when it ships -- never a site-side derivation.
+  # zjit: the ruby-4 line's second compiler (#147) -- merged upstream in
+  # 4.0, compiled in by default where rustc >= 1.85 resolves (the
+  # ecosystem pin 1.94.1 covers it on the container legs; the macos
+  # runner image's rustc proves itself on every build) and the target is
+  # macOS/Linux/BSD x86_64 or arm64 (upstream zjit.md's support list --
+  # no windows arm). Off on windows, off on every ruby < 4.0 leg. Row
+  # locked by the v0.16.22 evidence: every POSIX 4.0.6 leg's exe carries
+  # the ZJIT word-exact strings (19 vs the windows leg's calibrated 0),
+  # and the macos-arm64 exe answers RubyVM::ZJIT.enabled? true under
+  # RUBY_ZJIT_ENABLE=1 with the +ZJIT RUBY_DESCRIPTION marker.
   class Capabilities
     YJIT = "yjit"
+    ZJIT = "zjit"
 
     class << self
       def yjit(ruby_version:, platform_id:)
@@ -51,10 +60,19 @@ module TebakoRuntimeBuilder
         true
       end
 
+      def zjit(ruby_version:, platform_id:)
+        return false if platform_id.include?("windows")
+
+        RubyVersion.new(ruby_version).ruby40?
+      end
+
       # The manifest value: always an array (empty when the runtime has no
       # derived capabilities), additive -- pre-key readers ignore it.
       def for(ruby_version:, platform_id:)
-        yjit(ruby_version: ruby_version, platform_id: platform_id) ? [YJIT] : []
+        caps = []
+        caps << YJIT if yjit(ruby_version: ruby_version, platform_id: platform_id)
+        caps << ZJIT if zjit(ruby_version: ruby_version, platform_id: platform_id)
+        caps
       end
     end
   end

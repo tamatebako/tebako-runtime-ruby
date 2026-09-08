@@ -48,7 +48,7 @@ module TebakoRuntimeBuilder
     autoload :Run,              File.expand_path("boot_smoke/run", __dir__)
     autoload :InterposeFixture, File.expand_path("boot_smoke/interpose_fixture", __dir__)
 
-    SCENARIOS = %w[boot stat io bundler locks native_ext loader_interpose class_e_exec yjit].freeze
+    SCENARIOS = %w[boot stat io bundler locks native_ext loader_interpose class_e_exec yjit zjit].freeze
     # The scenarios that boot with the spec-22 probe fixture image mounted
     # at /probe (class L's libraries + class E's jar ride the same image).
     INTERPOSE_SCENARIOS = %w[loader_interpose class_e_exec].freeze
@@ -125,6 +125,27 @@ module TebakoRuntimeBuilder
     # TEBAKO_SMOKE_EXPECT_YJIT overrides the derivation for probe rounds.
     def expected_yjit_state
       ENV.fetch("TEBAKO_SMOKE_EXPECT_YJIT", nil) || derived_yjit_state
+    end
+
+    # The leg's expected ZJIT state (#147), same fail-closed shape as
+    # YJIT's: DERIVED from the shared truth table (Capabilities.zjit), so
+    # the release manifest's `capabilities` key and this expectation can
+    # never drift apart. Upstream merged ZJIT into ruby 4.0 (never a 3.x
+    # line) and compiles it in by default where rustc >= 1.85 resolves at
+    # configure time and the target is macOS/Linux/BSD on x86_64 or arm64
+    # (zjit.md's support list — no windows arm): with the ecosystem pin
+    # (1.94.1, ci/prepare-rust-toolchain.sh) every POSIX 4.x leg builds
+    # ZJIT — the v0.16.22 exes prove it (the ZJIT word-exact string count
+    # is 18-19 on every POSIX 4.0.6 leg against the windows leg's
+    # calibrated 0, and the macos-arm64 4.0.6 exe answers
+    # RubyVM::ZJIT.enabled? true under RUBY_ZJIT_ENABLE=1 with the +ZJIT
+    # description marker). WINDOWS IS THE OPEN GATE, recorded here
+    # deliberately: windows expects "off" — NOT a skip — until upstream
+    # carries a mingw arm; a windows leg gaining ZJIT goes RED here until
+    # this record flips to "ok" in the same PR.
+    # TEBAKO_SMOKE_EXPECT_ZJIT overrides the derivation for probe rounds.
+    def expected_zjit_state
+      ENV.fetch("TEBAKO_SMOKE_EXPECT_ZJIT", nil) || derived_zjit_state
     end
 
     # The leg's expected CA-roots story (0.16.6): the windows runtime's
@@ -271,6 +292,15 @@ module TebakoRuntimeBuilder
       Capabilities.yjit(ruby_version: artifact.ruby_version, platform_id: @platform.host_id) ? "ok" : "off"
     end
 
+    # The derived half of expected_zjit_state, delegated to the same
+    # shared truth table: "ok" exactly where upstream compiles ZJIT by
+    # default with rustc >= 1.85 present — non-msys legs of ruby >= 4.0,
+    # both arches. "off" on windows (no mingw arm upstream) and on every
+    # ruby < 4.0 leg (ZJIT was merged in 4.0 — no 3.x line carries it).
+    def derived_zjit_state
+      Capabilities.zjit(ruby_version: artifact.ruby_version, platform_id: @platform.host_id) ? "ok" : "off"
+    end
+
     def boot_env(scenario, mount_root_override: nil)
       env = ENV_SCRUBBED.to_h { |key| [key, nil] }
       image = "#{executable}.tfs"
@@ -282,13 +312,23 @@ module TebakoRuntimeBuilder
       # declares. POSIX legs set nothing — the probe reports unsupported.
       names = TebakoRuntimeBuilder::SupportDlls::NAMES.join(",")
       env["TEBAKO_SMOKE_EXPECT_SUPPORT_DLLS"] = names if @platform.msys?
-      # The yjit scenario boots enabled on purpose: a compiled-in YJIT must
-      # answer RubyVM::YJIT.enabled? under RUBY_YJIT_ENABLE=1, and the env
-      # is inert on runtimes built without it (the "off" expectation).
-      env["RUBY_YJIT_ENABLE"] = "1" if scenario == "yjit"
+      arm_jit_scenario_env(env, scenario)
       env.merge("RUBYOPT" => "-r#{PROBE_PATH}",
                 "TEBAKO_BOOT_PROBE" => scenario,
                 "TEBAKO_BOOT_MOUNT_POINT" => mount_root_override || mount_point)
+    end
+
+    # The jit scenarios boot enabled on purpose: a compiled-in JIT must
+    # answer its RubyVM::<JIT>.enabled? under the enable env
+    # (RUBY_YJIT_ENABLE=1; RUBY_ZJIT_ENABLE=1 on the ruby-4 line, whose
+    # ZJIT ships compiled-in but run-time-off upstream, so the arm is what
+    # flips it — #147), and the env is inert on runtimes built without the
+    # compiler (the "off" expectation).
+    JIT_SCENARIO_ENABLE_ENV = { "yjit" => "RUBY_YJIT_ENABLE", "zjit" => "RUBY_ZJIT_ENABLE" }.freeze
+
+    def arm_jit_scenario_env(env, scenario)
+      enable_var = JIT_SCENARIO_ENABLE_ENV[scenario]
+      env[enable_var] = "1" if enable_var
     end
   end
 end

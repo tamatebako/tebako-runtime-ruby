@@ -155,7 +155,24 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
     report("yjit") { yjit_check }
   end
 
-  SCENARIO_NAMES = %w[boot stat io bundler locks native_ext loader_interpose class_e_exec yjit].freeze
+  # ZJIT (#147), the ruby-4 twin of the yjit scenario: the boot env
+  # carries RUBY_ZJIT_ENABLE=1 (BootSmoke#boot_env), so a runtime COMPILED
+  # with ZJIT must answer RubyVM::ZJIT.enabled? — upstream ships ZJIT
+  # compiled-in but run-time-OFF by default on the 4.0 line, so the env
+  # arm is what flips it — and its RUBY_DESCRIPTION must then carry the
+  # +ZJIT marker (version.c gates the marker on enablement, same as
+  # +YJIT; both verified against the v0.16.22 4.0.6 macos-arm64 exe).
+  # The probe only senses (enabled / disabled / not-compiled); the spec
+  # compares against the leg's derived expectation
+  # (BootSmoke#expected_zjit_state) and fails on any drift, either way —
+  # a 4.x POSIX leg that lost its rustc >= 1.85 at configure time goes
+  # red, and a windows or 3.x leg that GAINS ZJIT upstream goes red until
+  # the recorded expectation flips deliberately.
+  def self.zjit
+    report("zjit") { zjit_check }
+  end
+
+  SCENARIO_NAMES = %w[boot stat io bundler locks native_ext loader_interpose class_e_exec yjit zjit].freeze
 
   def self.run
     scenario = ENV.fetch("TEBAKO_BOOT_PROBE", "")
@@ -207,6 +224,27 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
 
     unless RUBY_DESCRIPTION.include?("+YJIT")
       raise "YJIT enabled but RUBY_DESCRIPTION lacks the +YJIT marker: #{RUBY_DESCRIPTION}"
+    end
+
+    "enabled"
+  end
+
+  # Senses the ZJIT state of the booted runtime under RUBY_ZJIT_ENABLE=1:
+  # "not-compiled" (the RubyVM::ZJIT constant is absent — a ruby < 4.0
+  # line, a windows leg, or a configure that found no rustc >= 1.85),
+  # "disabled" (compiled but the enable env did not switch it on — a
+  # drift from upstream semantics, red under EITHER expectation),
+  # "enabled". The enabled arm also asserts the +ZJIT description marker,
+  # the same diagnosability pin as +YJIT's. The API surface is verified
+  # against the shipped v0.16.22 4.0.6 runtime: RubyVM::ZJIT answers both
+  # enabled? and enable, and the description gains +ZJIT exactly when
+  # enabled ("ruby 4.0.6 (...) +ZJIT +PRISM [arm64-darwin23]").
+  def self.zjit_check
+    return "not-compiled" unless defined?(RubyVM::ZJIT)
+    return "disabled" unless RubyVM::ZJIT.enabled?
+
+    unless RUBY_DESCRIPTION.include?("+ZJIT")
+      raise "ZJIT enabled but RUBY_DESCRIPTION lacks the +ZJIT marker: #{RUBY_DESCRIPTION}"
     end
 
     "enabled"

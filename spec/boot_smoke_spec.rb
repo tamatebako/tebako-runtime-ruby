@@ -181,6 +181,57 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
     end
   end
 
+  describe "#expected_zjit_state (#147)" do
+    def with_env(vars)
+      old = vars.to_h { |key, _| [key, ENV.fetch(key, nil)] }
+      vars.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
+      yield
+    ensure
+      old.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
+    end
+
+    def smoke_for(ostype, ruby_version, arch = "x86_64")
+      platform = TebakoRuntimeBuilder::Platform.new(ostype, arch)
+      Dir.mktmpdir do |dir|
+        exe = File.join(dir, "tebako-runtime-0.16.22-#{ruby_version}-#{platform.host_id}#{platform.exe_suffix}")
+        FileUtils.touch(exe)
+        yield described_class.new(dir, platform: platform)
+      end
+    end
+
+    it "expects ZJIT on the linux-gnu / linux-musl / macos legs of ruby >= 4.0, both arches" do
+      with_env("TEBAKO_SMOKE_EXPECT_ZJIT" => nil) do
+        smoke_for("x86_64-linux-gnu", "4.0.6") { |smoke| expect(smoke.expected_zjit_state).to eq("ok") }
+        smoke_for("aarch64-linux-gnu", "4.0.0", "arm64") { |smoke| expect(smoke.expected_zjit_state).to eq("ok") }
+        smoke_for("x86_64-linux-musl", "4.0.6") { |smoke| expect(smoke.expected_zjit_state).to eq("ok") }
+        smoke_for("aarch64-linux-musl", "4.1.0", "arm64") { |smoke| expect(smoke.expected_zjit_state).to eq("ok") }
+        smoke_for("arm64-darwin", "4.0.6", "arm64") { |smoke| expect(smoke.expected_zjit_state).to eq("ok") }
+        smoke_for("x86_64-darwin", "4.0.6") { |smoke| expect(smoke.expected_zjit_state).to eq("ok") }
+      end
+    end
+
+    it "expects ZJIT off on every ruby < 4.0 leg — no 3.x line carries the compiler" do
+      with_env("TEBAKO_SMOKE_EXPECT_ZJIT" => nil) do
+        smoke_for("x86_64-linux-gnu", "3.3.12") { |smoke| expect(smoke.expected_zjit_state).to eq("off") }
+        smoke_for("arm64-darwin", "3.4.10", "arm64") { |smoke| expect(smoke.expected_zjit_state).to eq("off") }
+        smoke_for("x86_64-linux-musl", "3.1.6") { |smoke| expect(smoke.expected_zjit_state).to eq("off") }
+      end
+    end
+
+    it "records windows off — the open gate (upstream's zjit.md arms macOS/Linux/BSD only)" do
+      with_env("TEBAKO_SMOKE_EXPECT_ZJIT" => nil) do
+        smoke_for("x64-mingw-ucrt", "4.0.6") { |smoke| expect(smoke.expected_zjit_state).to eq("off") }
+        smoke_for("x64-mingw-ucrt", "3.3.12") { |smoke| expect(smoke.expected_zjit_state).to eq("off") }
+      end
+    end
+
+    it "lets a probe round override the derivation via TEBAKO_SMOKE_EXPECT_ZJIT" do
+      with_env("TEBAKO_SMOKE_EXPECT_ZJIT" => "off") do
+        smoke_for("x86_64-linux-gnu", "4.0.6") { |smoke| expect(smoke.expected_zjit_state).to eq("off") }
+      end
+    end
+  end
+
   describe "against a built runtime" do
     def boot_failure(run)
       "expected the runtime to boot and report -- #{run.failure_summary}"
@@ -508,6 +559,33 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
                                       "time (the 0.16.19 class — ci/prepare-rust-toolchain.sh); a windows or " \
                                       "3.1-line leg reporting enabled means upstream moved — flip the " \
                                       "derivation in BootSmoke#expected_yjit_state in the same PR."
+      end
+    end
+
+    describe "zjit (#147, fail-closed)" do
+      let(:run) { smoke.run("zjit") }
+
+      # The ruby-4 twin of the yjit gate: the probe boots with
+      # RUBY_ZJIT_ENABLE=1 and senses enabled / disabled / not-compiled;
+      # the leg's expectation is derived (BootSmoke#expected_zjit_state):
+      # "ok" on linux-gnu/linux-musl/macos legs of ruby >= 4.0 (both
+      # arches — the v0.16.22 exes carry ZJIT on every POSIX 4.0.6 leg),
+      # "off" on windows and on every ruby < 4.0 leg (the open gate — a
+      # leg gaining ZJIT outside the record goes RED here until the
+      # record flips in the same PR, never a silent skip). The enabled
+      # arm also pins the +ZJIT RUBY_DESCRIPTION marker, so ruby -v tells
+      # the truth when ZJIT is on.
+      it "matches the leg's derived ZJIT expectation, either way" do
+        expect(run).to be_booted, boot_failure(run)
+        expect(run.state("zjit")).to eq("ok"), "probe zjit detail: #{run.detail("zjit")}"
+        expected_detail = { "ok" => "enabled", "off" => "not-compiled" }.fetch(smoke.expected_zjit_state)
+        expect(run.detail("zjit")).to eq(expected_detail),
+                                      "zjit probe: the runtime reports '#{run.detail("zjit")}' but this leg " \
+                                      "expects '#{smoke.expected_zjit_state}' (#{expected_detail}). " \
+                                      "A 4.x linux/musl leg reporting not-compiled lost its rustc >= 1.85 at " \
+                                      "configure time (the 0.16.19 yjit class — ci/prepare-rust-toolchain.sh); " \
+                                      "a windows or 3.x leg reporting enabled means upstream moved — flip the " \
+                                      "derivation in BootSmoke#expected_zjit_state in the same PR."
       end
     end
 

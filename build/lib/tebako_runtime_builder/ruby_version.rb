@@ -101,6 +101,10 @@ module TebakoRuntimeBuilder
       @ruby34 ||= version_at_least?(3, 4)
     end
 
+    def ruby40?
+      @ruby40 ||= version_at_least?(4, 0)
+    end
+
     def version_check_format
       return if @ruby_version =~ /^\d+\.\d+\.\d+$/
 
