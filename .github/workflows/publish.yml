@@ -244,6 +244,24 @@ jobs:
           fi
           [ -z "$failed" ] && [ -z "$upload_failed" ]
 
+      # Spec 09 §2: every runtime package, env image and dll facet, plus
+      # the SHA256SUMS.txt / manifest.json indexes, ships a detached .asc
+      # from the release signing subkey (scripts/sign_release.rb), made by
+      # the latest tamatebako/tebako release's pinned, sha256-verified
+      # tebako-pkg. TEBAKO_RELEASE_SIGNING_ENABLED=true arms the pass;
+      # armed + a missing TEBAKO_RELEASE_SIGNING_KEY secret is a fast
+      # named failure; disarmed ships unsigned (unsigned stays
+      # first-class — spec 09 §3). Runs only when every selected
+      # platform's upload above succeeded — a partial release is never
+      # signed.
+      - name: Sign the release assets (spec 09)
+        if: ${{ !inputs.audit && success() }}
+        env:
+          TEBAKO_VERSION: ${{ needs.windows.outputs.tebako-version || needs.linux-gnu.outputs.tebako-version || needs.linux-musl.outputs.tebako-version || needs.macos.outputs.tebako-version }}
+          TEBAKO_RELEASE_SIGNING_ENABLED: ${{ vars.TEBAKO_RELEASE_SIGNING_ENABLED }}
+          TEBAKO_RELEASE_SIGNING_KEY: ${{ secrets.TEBAKO_RELEASE_SIGNING_KEY }}
+        run: ./scripts/sign_release.rb
+
       - name: Ping the versions catalog
         if: ${{ always() && success() }}
         continue-on-error: true
