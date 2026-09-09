@@ -1080,6 +1080,33 @@ jobs:
           test -s "$img" || { echo "::error::missing runtime filesystem image $img"; exit 1; }
           ls -l "$exe" "$img"
 
+      # Spec 31 §5/§8.4: sign (Developer ID Application, hardened
+      # runtime, the ci/runtime.entitlements pair) + notarize the macOS
+      # runtime exe IN-LEG, before the S51 provenance check and the boot
+      # smoke — every downstream gate, and the publish stage's .sha256
+      # sidecar, anchors the exact SIGNED bytes (sign-then-hash is
+      # mandatory). Gated on the repo variable APPLE_SIGNING_ENABLED
+      # (unsigned stays first-class without it — spec 00 invariant 7;
+      # armed + a missing secret is a fast named failure). The exe is
+      # left quarantine-marked: the boot smoke — with its JIT canaries —
+      # then runs under Gatekeeper's exact download path, proving the
+      # allow-jit/disable-library-validation pair on the signed exe.
+      - name: Sign + notarize the runtime exe (macos, spec 31)
+        if: matrix.env.os == 'macos'
+        shell: bash
+        env:
+          APPLE_SIGNING_ENABLED: ${{ vars.APPLE_SIGNING_ENABLED }}
+          APPLE_DEVELOPER_ID_P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
+          APPLE_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_ASC_KEY_P8: ${{ secrets.APPLE_ASC_KEY_P8 }}
+          APPLE_ASC_KEY_ID: ${{ secrets.APPLE_ASC_KEY_ID }}
+          APPLE_ASC_ISSUER_ID: ${{ secrets.APPLE_ASC_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          runtime="tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
+          bash ci/macos-sign-notarize-runtime.sh "runtime-packages/$runtime"
+
       # Issue 40: the shared-build artifact set -- the exe must import the
       # ruby DLL by its PE name and the DLL must export the tebako_fs_*
       # surface (the mkexports def plus the appended tebako_* fragment),
