@@ -162,10 +162,18 @@ class ReleaseSigner # rubocop:disable Metrics/ClassLength
   end
 
   # The signing subkey export, base64-decoded to a 0600 file that lives
-  # and dies with the pass's tmpdir.
+  # and dies with the pass's tmpdir. The secret IS the base64 text —
+  # `[key].pack("m0")` (Array#pack) would ENCODE it a second time and an
+  # armed run could only die on rnp's BadFormat; the rt-python port's
+  # rehearsal (real tebako-pkg, throwaway key) caught it — the spec
+  # fakes never run real rnp. Garbage secrets fail named, never raw.
   def materialize_key(work)
     key_file = work.join("release-key.asc")
-    key_file.write([signing_key].pack("m0"))
+    begin
+      key_file.write(signing_key.unpack1("m0"))
+    rescue ArgumentError
+      raise SigningGateError, "NAMED FAILURE: the TEBAKO_RELEASE_SIGNING_KEY secret is not valid base64"
+    end
     key_file.chmod(0o600)
     key_file
   end
