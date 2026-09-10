@@ -688,6 +688,26 @@ jobs:
     # The longest green leg on record runs ~75 min cold; a hung leg fails
     # loudly at 150, never silently.
     timeout-minutes: 150
+    # Spec 34 §3/§8.2 (the factory mirror of tamatebako/tebako PR #566):
+    # the workflow-level grant restated — a job-level block REPLACES the
+    # workflow-level one — plus id-token:write, the OIDC boundary: the
+    # Entra federated credential issues Azure tokens only to a job of
+    # this repo running in the windows-signing environment. The signing
+    # steps below are gated on WINDOWS_SIGNING_ENABLED: unsigned runs
+    # carry the environment but never request a token. A reusable
+    # workflow can never ELEVATE past the caller's grant, so every caller
+    # (the four build-<platform>.yml triggers + publish.yml) declares the
+    # same three permissions.
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+    # Spec 34's attestation boundary (see the id-token note above). The
+    # build job is shared by every platform's legs — only windows legs
+    # ever arm the signing chain, but ALL legs carry the environment:
+    # it must NEVER gain required reviewers (that would gate every
+    # platform's build on an approval); protection rules stay empty.
+    environment: windows-signing
     strategy:
       fail-fast: false
       matrix:
@@ -1150,6 +1170,142 @@ jobs:
           # asserts cparse.so binds from the image on msys).
           [ "$found" -ge 1 ] || { echo "::error::no dynamic extensions found in .build/o/s — an empty glob proves nothing"; exit 1; }
           echo "all $found dynamic extensions import the ruby DLL by name"
+
+      # Spec 34 §8.2 — the Windows Authenticode leg (the factory mirror of
+      # the tebako product repo's PR #566, commit dbbd904b): when the repo
+      # variable WINDOWS_SIGNING_ENABLED=true, the leg's PE artifacts (the
+      # runtime exe + the ruby DLL, enumerated by EXTENSION) are Azure
+      # Trusted Signed IN PLACE here — after the artifact checks, before
+      # the S51 provenance check (the windows S51 reads the build-tree
+      # ruby.exe, unaffected), the boot smoke (which then exercises the
+      # SIGNED bytes — the on-platform proof) and the upload. Sign-then-
+      # hash (spec 34 §1.3) needs NO re-hash step in this repo: the
+      # release's .sha256 sidecars / SHA256SUMS.txt are computed at
+      # publish time by scripts/upload_release.rb from the uploaded bytes,
+      # so signing before upload anchors the signed bytes by construction.
+      # Gate off: every step below skips and the leg ships unsigned,
+      # byte-identically to today (spec 00 invariant 7 — §7.4 gate-off
+      # parity).
+      - name: Arm check — Windows signing (spec 34 §4)
+        if: matrix.env.os == 'windows'
+        id: signgate
+        shell: bash
+        env:
+          WINDOWS_SIGNING_ENABLED: ${{ vars.WINDOWS_SIGNING_ENABLED }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZURE_ENDPOINT: ${{ vars.AZURE_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT_NAME: ${{ vars.AZURE_SIGNING_ACCOUNT_NAME }}
+          AZURE_SIGNING_CERT_PROFILE: ${{ vars.AZURE_SIGNING_CERT_PROFILE }}
+        run: bash ci/windows-sign-gate.sh
+
+      # OIDC workload-identity federation (spec 34 §3): no stored client
+      # secret anywhere; the federated credential is scoped to this repo
+      # × the windows-signing environment this job runs in.
+      - name: Azure login (OIDC, spec 34 §8.2)
+        if: steps.signgate.outputs.armed == 'true'
+        uses: azure/login@v2 # TODO(sha-pin): pin on first armed run
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # Signs the leg's PE artifacts IN PLACE. The account input is
+      # `signing-account-name` — spec 34 §5's draft
+      # `trusted-signing-account-name` is the deprecated alias at this
+      # action's @v1 (the PR #566 deviation, verified against the action's
+      # action.yml); do not "upgrade" the action — @v2 dropped it.
+      - name: Sign the runtime exe + ruby DLL (spec 34 §8.2)
+        if: steps.signgate.outputs.armed == 'true'
+        uses: Azure/artifact-signing-action@v1 # TODO(sha-pin): pin on first armed run
+        with:
+          endpoint: ${{ vars.AZURE_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ vars.AZURE_SIGNING_CERT_PROFILE }}
+          files-folder: runtime-packages
+          # The enumeration gate (§7.3): everything PE in the package dir
+          # signs by EXTENSION, never a name list — a new PE artifact must
+          # not ship unsigned by omission. (The exe's .exe suffix is the
+          # builder's settled msys spelling; a suffixless exe would be
+          # missed here and the verify step below would then fail LOUDLY
+          # on the empty exe set — never a partial release.)
+          files-folder-filter: exe,dll
+          file-digest: SHA256
+          # §1.4: the RFC 3161 countersignature is mandatory (the action's
+          # default timestamp server; set explicitly per spec).
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          description: tebako ruby runtime (tamatebako)
+
+      - name: Verify the signatures (spec 34 §7.1/§7.2)
+        if: steps.signgate.outputs.armed == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # §7.3: enumerate the PE set by EXTENSION, never a name list —
+          # both artifact kinds this leg ships (the runtime exe + the
+          # ruby DLL; the boot diagnostics may already have dropped the
+          # PE-named dll copy here — it is the same bytes and verifies
+          # the same).
+          $exes = @(Get-ChildItem -Path 'runtime-packages' -Filter '*.exe' -File)
+          $dlls = @(Get-ChildItem -Path 'runtime-packages' -Filter '*.dll' -File)
+          if ($exes.Count -eq 0) {
+            Write-Host "::error::spec 34 §7.3: no .exe artifact under runtime-packages — the runtime exe escaped signing (a suffixless spelling?)"
+            exit 1
+          }
+          if ($dlls.Count -eq 0) {
+            Write-Host "::error::spec 34 §7.3: no .dll artifact under runtime-packages — the ruby DLL (issue 40) escaped signing"
+            exit 1
+          }
+          $pes = @($exes) + @($dlls)
+          # signtool.exe: the action's cached BuildTools first (the
+          # TrustedSigning module still owns that directory name at
+          # action @v1; the ArtifactSigning spelling is kept as a
+          # forward-compat fallback), then the runner image's Windows
+          # Kits; newest path first.
+          $signtool = @(
+            Get-ChildItem -Path "$env:LOCALAPPDATA\TrustedSigning\Microsoft.Windows.SDK.BuildTools" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue
+            Get-ChildItem -Path "$env:LOCALAPPDATA\ArtifactSigning\Microsoft.Windows.SDK.BuildTools" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue
+            Get-ChildItem -Path 'C:\Program Files (x86)\Windows Kits\10\bin' -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue
+          ) | Where-Object { $_.FullName -match '\\x64\\' } |
+              Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $signtool) {
+            Write-Host "::error::spec 34 §7.1: signtool.exe not found (action BuildTools cache and Windows Kits both empty)"
+            exit 1
+          }
+          Write-Host "signtool: $($signtool.FullName)"
+          $failed = $false
+          foreach ($pe in $pes) {
+            Write-Host "== signtool verify /pa /v $($pe.Name)"
+            $out = & $signtool.FullName verify /pa /v $pe.FullName 2>&1 | Out-String
+            Write-Host $out
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "::error::spec 34 §7.1: signtool verify /pa FAILED for $($pe.Name)"
+              $failed = $true
+              continue
+            }
+            # §7.2/§1.4: the RFC 3161 countersignature is mandatory — an
+            # untimestamped signature fails the leg, never a warning.
+            if ($out -notmatch 'signature is timestamped' -and $out -notmatch 'RFC ?3161') {
+              Write-Host "::error::spec 34 §7.2: no RFC 3161 timestamp countersignature in signtool output for $($pe.Name)"
+              $failed = $true
+              continue
+            }
+            $sig = Get-AuthenticodeSignature $pe.FullName
+            if ($sig.Status -ne 'Valid') {
+              Write-Host "::error::spec 34 §7.1: Get-AuthenticodeSignature status '$($sig.Status)' (not Valid) for $($pe.Name)"
+              $failed = $true
+              continue
+            }
+            if ($null -eq $sig.TimeStamperCertificate) {
+              Write-Host "::error::spec 34 §7.2: Get-AuthenticodeSignature reports no TimeStamperCertificate for $($pe.Name)"
+              $failed = $true
+              continue
+            }
+            Write-Host "signed+timestamped: $($pe.Name) — $($sig.SignerCertificate.Subject)"
+          }
+          if ($failed) { exit 1 }
 
       # Spec 18 S51 (C4): the nm provenance assert — the exe's tebako_main
       # must resolve from the fs TU (the CMake-built libtebako-fs.a),
