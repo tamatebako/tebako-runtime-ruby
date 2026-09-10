@@ -142,6 +142,14 @@ RSpec.describe ReleaseSigner do
       .to raise_error(ReleaseSigner::SigningGateError, /TEBAKO_RELEASE_SIGNING_KEY secret is not set/)
   end
 
+  it "fails named when the key secret is not valid base64 (the decode is real)" do
+    signer, = signer_for([], env: { "TEBAKO_RELEASE_SIGNING_ENABLED" => "true",
+                                    "TEBAKO_RELEASE_SIGNING_KEY" => "!!! not base64 !!!",
+                                    "TEBAKO_VERSION" => version })
+    expect { signer.sign_release }
+      .to raise_error(ReleaseSigner::SigningGateError, /not valid base64/)
+  end
+
   it "selects the payload assets and the two index files, never the derived metadata" do
     signer, = signer_for([])
     names = ["tebako-runtime-0.9.9-3.3.12-linux-gnu-x86_64",
