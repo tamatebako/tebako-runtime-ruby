@@ -10,12 +10,12 @@
 # 34 §7.5; the same discipline as ci/macos-sign-notarize-runtime.sh's
 # spec 31 gate).
 #
-# Emits armed=<true|false> to GITHUB_OUTPUT; the leg's azure/login,
-# artifact-signing and signtool-verify steps all gate on it. No re-hash
-# step exists here: the release's .sha256 sidecars / SHA256SUMS.txt are
-# computed at publish time by scripts/upload_release.rb from the
-# uploaded bytes, so signing before upload anchors the SIGNED bytes by
-# construction (spec 34 §1.3 sign-then-hash).
+# Emits armed=<true|false> to GITHUB_OUTPUT; the leg's PE staging,
+# azure/login, artifact-signing and signtool-verify steps all gate on it.
+# No re-hash step exists here: the release's .sha256 sidecars /
+# SHA256SUMS.txt are computed at publish time by scripts/upload_release.rb
+# from the uploaded bytes, so signing before upload anchors the SIGNED
+# bytes by construction (spec 34 §1.3 sign-then-hash).
 #
 # Required env when armed (spec 34 §3): AZURE_CLIENT_ID,
 # AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID (org secrets — the OIDC

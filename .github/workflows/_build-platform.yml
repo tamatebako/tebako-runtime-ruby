@@ -1174,18 +1174,28 @@ jobs:
       # Spec 34 §8.2 — the Windows Authenticode leg (the factory mirror of
       # the tebako product repo's PR #566, commit dbbd904b): when the repo
       # variable WINDOWS_SIGNING_ENABLED=true, the leg's PE artifacts (the
-      # runtime exe + the ruby DLL, enumerated by EXTENSION) are Azure
-      # Trusted Signed IN PLACE here — after the artifact checks, before
-      # the S51 provenance check (the windows S51 reads the build-tree
-      # ruby.exe, unaffected), the boot smoke (which then exercises the
-      # SIGNED bytes — the on-platform proof) and the upload. Sign-then-
-      # hash (spec 34 §1.3) needs NO re-hash step in this repo: the
-      # release's .sha256 sidecars / SHA256SUMS.txt are computed at
-      # publish time by scripts/upload_release.rb from the uploaded bytes,
-      # so signing before upload anchors the signed bytes by construction.
-      # Gate off: every step below skips and the leg ships unsigned,
-      # byte-identically to today (spec 00 invariant 7 — §7.4 gate-off
-      # parity).
+      # runtime exe + the ruby DLL) are Azure Trusted Signed here — after
+      # the artifact checks, before the S51 provenance check (the windows
+      # S51 reads the build-tree ruby.exe, unaffected), the boot smoke
+      # (which then exercises the SIGNED bytes — the on-platform proof) and
+      # the upload. Signing rides a sign-staging RENAME, never the
+      # contract paths directly: the runtime exe ships SUFFIXLESS on
+      # Windows BY CONTRACT (the bootstrap downloads and the store keys on
+      # exactly that spelling — renaming the artifact is a wire break),
+      # while the signing action enumerates by EXTENSION — run 34490217493
+      # signed only the .dll and the §7.3 gate failed closed on the
+      # escaped suffixless exe. The staging step below copies every PE
+      # under sign-staging/ with a PE extension (extension enumeration then
+      # covers everything PE by construction, §7.3 preserved), the action
+      # signs there, and the verify step moves the signed bytes BACK over
+      # the contract-named paths before signtool-verifying them in place
+      # (signtool verifies content, not filename). Sign-then-hash (spec 34
+      # §1.3) needs NO re-hash step in this repo: the release's .sha256
+      # sidecars / SHA256SUMS.txt are computed at publish time by
+      # scripts/upload_release.rb from the uploaded bytes, so signing
+      # before upload anchors the signed bytes by construction. Gate off:
+      # every step below skips and the leg ships unsigned, byte-identically
+      # to today (spec 00 invariant 7 — §7.4 gate-off parity).
       - name: Arm check — Windows signing (spec 34 §4)
         if: matrix.env.os == 'windows'
         id: signgate
@@ -1200,6 +1210,30 @@ jobs:
           AZURE_SIGNING_CERT_PROFILE: ${{ vars.AZURE_SIGNING_CERT_PROFILE }}
         run: bash ci/windows-sign-gate.sh
 
+      # The sign-staging rename (the §7.3 soundness fix): the action below
+      # enumerates by EXTENSION, so the contract-suffixless runtime exe is
+      # staged as sign-staging/<runtime>.exe and the ruby DLL(s) under
+      # their own names — the filter then covers every staged PE by
+      # construction. COPY, never move: the unsigned originals keep the
+      # contract paths until the verify step replaces them with the signed
+      # bytes. The exe spelling idiom mirrors the artifact checks above
+      # (suffixless today, .exe tolerated); a missing PE fails closed by
+      # name before any Azure round-trip.
+      - name: Stage the PE artifacts for signing (spec 34 §7.3)
+        if: steps.signgate.outputs.armed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtime="tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
+          exe="runtime-packages/$runtime"
+          [ -s "$exe" ] || exe="$exe.exe"
+          test -s "$exe" || { echo "::error::spec 34 §7.3: no runtime executable at runtime-packages/$runtime[.exe] — nothing to sign"; exit 1; }
+          compgen -G "runtime-packages/*.dll" > /dev/null || { echo "::error::spec 34 §7.3: no .dll artifact under runtime-packages — the ruby DLL (issue 40) escaped signing"; exit 1; }
+          mkdir -p sign-staging
+          cp "$exe" "sign-staging/$runtime.exe"
+          for d in runtime-packages/*.dll; do cp "$d" "sign-staging/$(basename "$d")"; done
+          ls -l sign-staging/
+
       # OIDC workload-identity federation (spec 34 §3): no stored client
       # secret anywhere; the federated credential is scoped to this repo
       # × the windows-signing environment this job runs in.
@@ -1211,8 +1245,10 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      # Signs the leg's PE artifacts IN PLACE. The account input is
-      # `signing-account-name` — spec 34 §5's draft
+      # Signs the leg's PE artifacts in the staging dir (the staging step
+      # above renamed the contract-suffixless exe for extension
+      # enumeration; the verify step below restores the contract paths).
+      # The account input is `signing-account-name` — spec 34 §5's draft
       # `trusted-signing-account-name` is the deprecated alias at this
       # action's @v1 (the PR #566 deviation, verified against the action's
       # action.yml); do not "upgrade" the action — @v2 dropped it.
@@ -1223,13 +1259,13 @@ jobs:
           endpoint: ${{ vars.AZURE_ENDPOINT }}
           signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT_NAME }}
           certificate-profile-name: ${{ vars.AZURE_SIGNING_CERT_PROFILE }}
-          files-folder: runtime-packages
-          # The enumeration gate (§7.3): everything PE in the package dir
-          # signs by EXTENSION, never a name list — a new PE artifact must
-          # not ship unsigned by omission. (The exe's .exe suffix is the
-          # builder's settled msys spelling; a suffixless exe would be
-          # missed here and the verify step below would then fail LOUDLY
-          # on the empty exe set — never a partial release.)
+          files-folder: sign-staging
+          # The enumeration gate (§7.3): everything PE signs by EXTENSION,
+          # never a name list — a new PE artifact must not ship unsigned by
+          # omission. Sound by construction here: the staging dir carries
+          # only PE-extension files (the contract exe entered as
+          # <runtime>.exe), so the filter can miss nothing the gate below
+          # would not also catch by name.
           files-folder-filter: exe,dll
           file-digest: SHA256
           # §1.4: the RFC 3161 countersignature is mandatory (the action's
@@ -1243,22 +1279,43 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          # §7.3: enumerate the PE set by EXTENSION, never a name list —
-          # both artifact kinds this leg ships (the runtime exe + the
-          # ruby DLL; the boot diagnostics may already have dropped the
-          # PE-named dll copy here — it is the same bytes and verifies
-          # the same).
-          $exes = @(Get-ChildItem -Path 'runtime-packages' -Filter '*.exe' -File)
-          $dlls = @(Get-ChildItem -Path 'runtime-packages' -Filter '*.dll' -File)
+          $runtime = "tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
+          # §7.3: enumerate the SIGNED set by EXTENSION at the staging dir,
+          # never a name list — both artifact kinds this leg ships (the
+          # runtime exe + the ruby DLL; the boot diagnostics may already
+          # have dropped the PE-named dll copy into runtime-packages, which
+          # the staging step carried along — same bytes, verifies the
+          # same).
+          $exes = @(Get-ChildItem -Path 'sign-staging' -Filter '*.exe' -File)
+          $dlls = @(Get-ChildItem -Path 'sign-staging' -Filter '*.dll' -File)
           if ($exes.Count -eq 0) {
-            Write-Host "::error::spec 34 §7.3: no .exe artifact under runtime-packages — the runtime exe escaped signing (a suffixless spelling?)"
+            Write-Host "::error::spec 34 §7.3: no .exe artifact under sign-staging — the runtime exe escaped signing"
             exit 1
           }
           if ($dlls.Count -eq 0) {
-            Write-Host "::error::spec 34 §7.3: no .dll artifact under runtime-packages — the ruby DLL (issue 40) escaped signing"
+            Write-Host "::error::spec 34 §7.3: no .dll artifact under sign-staging — the ruby DLL (issue 40) escaped signing"
             exit 1
           }
-          $pes = @($exes) + @($dlls)
+          $stagedExe = "sign-staging/$runtime.exe"
+          if (-not (Test-Path $stagedExe -PathType Leaf)) {
+            Write-Host "::error::spec 34 §7.3: $stagedExe missing after the sign action — the runtime exe escaped signing"
+            exit 1
+          }
+          # Restore the CONTRACT-named paths with the signed bytes,
+          # replacing the unsigned originals the staging step left in place
+          # — the publish upload ships exactly these names (the bootstrap
+          # downloads and the store keys on them), and the boot smoke then
+          # exercises the signed bytes. The verify loop below runs at the
+          # restored paths: signtool verifies content, not filename.
+          $exe = "runtime-packages/$runtime"
+          if (-not (Test-Path $exe -PathType Leaf)) { $exe = "$exe.exe" }
+          Move-Item -Force $stagedExe $exe
+          $pes = @(Get-Item $exe)
+          foreach ($d in $dlls) {
+            $target = "runtime-packages/$($d.Name)"
+            Move-Item -Force $d.FullName $target
+            $pes += Get-Item $target
+          }
           # signtool.exe: the action's cached BuildTools first (the
           # TrustedSigning module still owns that directory name at
           # action @v1; the ArtifactSigning spelling is kept as a
