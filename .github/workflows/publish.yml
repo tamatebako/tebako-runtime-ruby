@@ -35,18 +35,17 @@
 #     the versions whose tarballs moved rebuild (a 4.0-only source release
 #     rebuilds 4.0.x), on every platform, and publishes.
 #
-# Every leg fans out to _build-platform.yml to BUILD. Publishing lives ONLY
-# here, in the single `release` job that runs once per coordinator run after
-# every platform build: the release is one shared resource, so publishing
-# must serialize — and serializing per-platform publish jobs through a
-# shared concurrency group displaced (cancelled) queued publishes. One
-# release job per run means a run publishes every platform it built, never
-# fewer. Each per-platform invocation writes ONLY names that platform owns
-# (its payload assets + each package's .sha256 sidecars and .manifest.json
-# shard — issue 139's per-asset metadata, no merge path); the shared
-# monolithic conveniences (manifest.json / SHA256SUMS.txt) and the release
-# notes are derived from the release's own shards + asset listing by the
-# ONE finalize invocation that runs after every platform landed.
+# Every leg fans out to _build-platform.yml to BUILD, and — spec 13 §2a's
+# de-rendezvous (roadmap 85) — to PUBLISH and SIGN in-leg: the leg that
+# built a package uploads its write-once names (payload + .sha256 sidecars
+# + .manifest.json shard) and signs every served name, all inside the leg
+# that holds the fresh bytes. No shared mutable file exists anymore (the
+# monolithic manifest.json / SHA256SUMS.txt are gone — `tebako-pkg
+# release-index` derives them consumer-side), so N legs publish
+# concurrently with zero rendezvous. What remains here is the ONE release
+# job per coordinator run: it AUDITS the whole matrix against the release
+# (read-only) and renders + publishes the tpkg-registry.yaml mirror by bot
+# PR (spec 04 §2) — the two duties that genuinely need the full matrix.
 name: publish
 
 on:
@@ -100,6 +99,8 @@ jobs:
       ruby_filter: ${{ inputs.ruby_filter || '' }}
       arch_filter: ${{ inputs.arch_filter || '' }}
       audit: ${{ inputs.audit || false }}
+      publish: ${{ github.event_name == 'repository_dispatch' || inputs.publish }}
+      force_rebuild: ${{ inputs.force_rebuild || false }}
     secrets: inherit
 
   linux-gnu:
@@ -120,6 +121,8 @@ jobs:
       ruby_filter: ${{ inputs.ruby_filter || '' }}
       arch_filter: ${{ inputs.arch_filter || '' }}
       audit: ${{ inputs.audit || false }}
+      publish: ${{ github.event_name == 'repository_dispatch' || inputs.publish }}
+      force_rebuild: ${{ inputs.force_rebuild || false }}
     secrets: inherit
 
   linux-musl:
@@ -140,6 +143,8 @@ jobs:
       ruby_filter: ${{ inputs.ruby_filter || '' }}
       arch_filter: ${{ inputs.arch_filter || '' }}
       audit: ${{ inputs.audit || false }}
+      publish: ${{ github.event_name == 'repository_dispatch' || inputs.publish }}
+      force_rebuild: ${{ inputs.force_rebuild || false }}
     secrets: inherit
 
   macos:
@@ -160,23 +165,26 @@ jobs:
       ruby_filter: ${{ inputs.ruby_filter || '' }}
       arch_filter: ${{ inputs.arch_filter || '' }}
       audit: ${{ inputs.audit || false }}
+      publish: ${{ github.event_name == 'repository_dispatch' || inputs.publish }}
+      force_rebuild: ${{ inputs.force_rebuild || false }}
     secrets: inherit
 
-  # The ONE release job per coordinator run. Publishing writes to the
-  # single shared release, so it must serialize — and serializing
-  # per-platform jobs through a shared concurrency group was exactly what
-  # displaced (cancelled) queued publishes. Running the per-platform
-  # publishes sequentially inside ONE job gives the release its
-  # serialization with zero group contention: a run publishes every
-  # platform it built, never fewer.
+  # The ONE release job per coordinator run. Spec 13 §2a's de-rendezvous
+  # moved the publish into the legs (write-once per-leg names — no shared
+  # release-asset mutation remains); what serializes here is only the two
+  # duties that need the whole matrix: the AUDIT (every platform's
+  # expected names verified against the release, read-only) and the
+  # registry render + bot PR (git arbitrates the PR — the concurrency
+  # group is politeness now, not correctness).
   release:
-    name: Publish the runtime packages
+    name: Audit the release + publish the registry
     needs: [windows, linux-gnu, linux-musl, macos]
     runs-on: ubuntu-latest
-    # The 2026-08-09 lesson: a runner that dies mid-publish never reports,
-    # and the job-level group (cancel-in-progress: false) then holds every
-    # later publish hostage for the 6 h platform cap. Bound it.
-    timeout-minutes: 150
+    # The legs publish; this job only reads the release and pushes one
+    # registry branch. The 2026-08-09 hostage lesson still bounds it —
+    # but there is no 2.5 GB download here anymore, so the bound drops
+    # from the platform-publish 150 to 30.
+    timeout-minutes: 30
     concurrency:
       group: publish-runtime-packages
       cancel-in-progress: false
@@ -189,20 +197,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # The registry bot PR pushes the publish branch — that needs the
+          # PAT, not the runner's default (read-only) token.
+          token: ${{ secrets.TEBAKO_CI_PAT_TOKEN || secrets.GITHUB_TOKEN }}
           fetch-depth: 1
           submodules: true
-
-      # Every platform's packages land in one workspace; the idempotent
-      # skip keeps unchanged assets from re-uploading, and each platform
-      # invocation writes only its own packages' metadata (sidecars +
-      # shards — issue 139), so platforms never touch a shared file.
-      - name: Download the runtime packages
-        if: ${{ !inputs.audit }}
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          pattern: runtime-packages-*
-          path: runtime-packages
-          merge-multiple: true
 
       - name: Setup Ruby gems
         uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
@@ -210,16 +209,15 @@ jobs:
           ruby-version: '3.3'
           bundler-cache: true
 
-      # One upload_release.rb per platform that built, sequential inside
-      # this job. Each platform's completeness gate reads its own matrix.
-      # The finalize pass runs LAST: it derives the monolithic
-      # conveniences (manifest.json / SHA256SUMS.txt) and the release
-      # notes from the release's own shards + asset listing — the one
-      # place the shared files are (re)written, from ground truth only,
-      # never from a job's local knowledge (issue 139).
-      - name: Update the release, per platform
+      # The audit, per platform that built: the legs already published
+      # their packages in-leg, so this job never downloads a byte — it
+      # verifies each platform's expected names (payloads, .sha256
+      # sidecars, shards, and — on signing-enabled lines — every .asc,
+      # spec 09 §5) against the release's own listing, read-only.
+      - name: Audit the release, per platform
         env:
-          AUDIT_ONLY: ${{ inputs.audit }}
+          AUDIT_ONLY: "true"
+          TEBAKO_RELEASE_SIGNING_ENABLED: ${{ vars.TEBAKO_RELEASE_SIGNING_ENABLED }}
           WIN_RUN: ${{ needs.windows.outputs.run }}
           WIN_VER: ${{ needs.windows.outputs.tebako-version }}
           WIN_ENV: ${{ needs.windows.outputs.env-matrix }}
@@ -238,34 +236,24 @@ jobs:
           MAC_RUBY: ${{ needs.macos.outputs.ruby-matrix }}
         run: |
           set -uo pipefail
-          # Publish every platform that built green; THEN fail loudly naming
-          # any selected platform that did not — a green platform's packages
-          # always land, and a coverage gap never goes unreported.
-          upload_failed=""
-          publish_platform() {
+          # Audit every platform that built green; THEN fail loudly naming
+          # any selected platform that did not — a green platform's audit
+          # always runs, and a coverage gap never goes unreported.
+          audit_failed=""
+          audit_platform() {
             local run="$1" ver="$2" envm="$3" rubym="$4" name="$5"
             if [ "$run" != "true" ]; then
-              echo "--- $name did not build this run; skipping its merge"
+              echo "--- $name did not build this run; skipping its audit"
               return 0
             fi
-            echo "=== publishing $name (tebako $ver)"
+            echo "=== auditing $name (tebako $ver)"
             TEBAKO_VERSION="$ver" EXPECTED_ENV_MATRIX="$envm" EXPECTED_RUBY_MATRIX="$rubym" \
-              ./scripts/upload_release.rb || upload_failed="$upload_failed $name"
+              ./scripts/upload_release.rb || audit_failed="$audit_failed $name"
           }
-          publish_platform "$WIN_RUN"  "$WIN_VER"  "$WIN_ENV"  "$WIN_RUBY"  windows
-          publish_platform "$GNU_RUN"  "$GNU_VER"  "$GNU_ENV"  "$GNU_RUBY"  linux-gnu
-          publish_platform "$MUSL_RUN" "$MUSL_VER" "$MUSL_ENV" "$MUSL_RUBY" linux-musl
-          publish_platform "$MAC_RUN"  "$MAC_VER"  "$MAC_ENV"  "$MAC_RUBY"  macos
-          # The finalize pass (skipped on audit-only runs, which mutate
-          # nothing): one tebako version per coordinator run, so the first
-          # platform that built names it.
-          if [ "${AUDIT_ONLY:-false}" != "true" ]; then
-            FIN_VER="${WIN_VER:-${GNU_VER:-${MUSL_VER:-${MAC_VER:-}}}}"
-            if [ -n "$FIN_VER" ]; then
-              echo "=== finalizing (tebako $FIN_VER)"
-              TEBAKO_VERSION="$FIN_VER" FINALIZE_ONLY=true ./scripts/upload_release.rb || upload_failed="$upload_failed finalize"
-            fi
-          fi
+          audit_platform "$WIN_RUN"  "$WIN_VER"  "$WIN_ENV"  "$WIN_RUBY"  windows
+          audit_platform "$GNU_RUN"  "$GNU_VER"  "$GNU_ENV"  "$GNU_RUBY"  linux-gnu
+          audit_platform "$MUSL_RUN" "$MUSL_VER" "$MUSL_ENV" "$MUSL_RUBY" linux-musl
+          audit_platform "$MAC_RUN"  "$MAC_VER"  "$MAC_ENV"  "$MAC_RUBY"  macos
           failed=""
           mark() { # $1=selected? $2=result $3=name
             if [ "$1" = "true" ] && [ "$2" != "success" ] && [ "$2" != "skipped" ]; then
@@ -279,28 +267,59 @@ jobs:
           if [ -n "$failed" ]; then
             echo "::error::these platforms were selected but did not build green — their packages did not land:$failed"
           fi
-          if [ -n "$upload_failed" ]; then
-            echo "::error::these platforms' upload_release.rb failed:$upload_failed"
+          if [ -n "$audit_failed" ]; then
+            echo "::error::these platforms' audits FAILED — the release is incomplete:$audit_failed"
           fi
-          [ -z "$failed" ] && [ -z "$upload_failed" ]
+          [ -z "$failed" ] && [ -z "$audit_failed" ]
 
-      # Spec 09 §2: every runtime package, env image and dll facet, plus
-      # the SHA256SUMS.txt / manifest.json indexes, ships a detached .asc
-      # from the release signing subkey (scripts/sign_release.rb), made by
-      # the latest tamatebako/tebako release's pinned, sha256-verified
-      # tebako-pkg. TEBAKO_RELEASE_SIGNING_ENABLED=true arms the pass;
-      # armed + a missing TEBAKO_RELEASE_SIGNING_KEY secret is a fast
-      # named failure; disarmed ships unsigned (unsigned stays
-      # first-class — spec 09 §3). Runs only when every selected
-      # platform's upload above succeeded — a partial release is never
-      # signed.
-      - name: Sign the release assets (spec 09)
-        if: ${{ !inputs.audit && success() }}
+      # The registry mirror (spec 04 §2): rendered from the release's own
+      # shards — the write-once per-leg metadata units, ground truth —
+      # never from a job's local knowledge. One tebako version per
+      # coordinator run, so the first platform that built names it.
+      - name: Render the registry entries
+        if: ${{ !inputs.audit }}
         env:
           TEBAKO_VERSION: ${{ needs.windows.outputs.tebako-version || needs.linux-gnu.outputs.tebako-version || needs.linux-musl.outputs.tebako-version || needs.macos.outputs.tebako-version }}
-          TEBAKO_RELEASE_SIGNING_ENABLED: ${{ vars.TEBAKO_RELEASE_SIGNING_ENABLED }}
-          TEBAKO_RELEASE_SIGNING_KEY: ${{ secrets.TEBAKO_RELEASE_SIGNING_KEY }}
-        run: ./scripts/sign_release.rb
+        run: ./tools/registry_update.rb
+
+      # main is branch-protected: the registry lands by bot PR +
+      # auto-merge, never by direct push. Idempotent across re-runs of the
+      # same version (an unchanged registry exits before the branch).
+      - name: Publish the registry via pull request
+        if: ${{ !inputs.audit }}
+        env:
+          GH_TOKEN: ${{ secrets.TEBAKO_CI_PAT_TOKEN || secrets.GITHUB_TOKEN }}
+          TEBAKO_VERSION: ${{ needs.windows.outputs.tebako-version || needs.linux-gnu.outputs.tebako-version || needs.linux-musl.outputs.tebako-version || needs.macos.outputs.tebako-version }}
+        run: |
+          set -euo pipefail
+          cp tpkg-registry.yaml "$RUNNER_TEMP/registry.yaml"
+          git config user.name "tebako-ci"
+          git config user.email "tebako@ribose.com"
+          git fetch origin main
+          branch="publish/v${TEBAKO_VERSION}-registry"
+          git checkout -b "$branch" origin/main
+          cp "$RUNNER_TEMP/registry.yaml" tpkg-registry.yaml
+          if git diff --quiet origin/main -- tpkg-registry.yaml; then
+            echo "registry unchanged (or the entries already landed on main)"
+            exit 0
+          fi
+          git add tpkg-registry.yaml
+          git commit -m "publish v${TEBAKO_VERSION}: registry entries"
+          # force-with-lease on the bot branch: a re-publish re-creates it.
+          git push --force-with-lease origin "$branch"
+          if ! gh pr view "$branch" >/dev/null 2>&1; then
+            body="$RUNNER_TEMP/registry-pr-body.md"
+            cat > "$body" <<EOF
+          Automated registry entries for v${TEBAKO_VERSION} — rendered from the
+          release's per-package .manifest.json shards by tools/registry_update.rb
+          (spec 13 §2a's audit+registry job; spec 04 §2's mirror). main is
+          protected, so the registry lands by PR.
+          EOF
+            gh pr create --base main --head "$branch" \
+              --title "publish v${TEBAKO_VERSION}: registry entries" \
+              --body-file "$body"
+          fi
+          gh pr merge --auto --squash "$branch" || gh pr merge --squash "$branch"
 
       - name: Ping the versions catalog
         if: ${{ always() && success() }}

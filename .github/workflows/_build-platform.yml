@@ -44,11 +44,16 @@
 # Stage 3 (build): the matrix legs, exactly the retired monolith's steps,
 #   consuming the staged unit via TEBAKO_RUST_LIBDIR instead of rebuilding
 #   the native closure per ruby version.
-# Stage 4 (publish): uploads THIS platform's packages; the manifest merge
-#   (scripts/upload_release.rb) keeps every other platform's entries, so
-#   platforms publish independently. A globally serialized concurrency
-#   group makes two simultaneous publishes impossible (the merge is
-#   read-modify-write).
+# Stage 4 (publish + sign): the leg that built a package publishes it
+#   (scripts/upload_release.rb) and signs its served names
+#   (scripts/sign_release.rb) in the same invocation — spec 13 §2a's
+#   de-rendezvous (roadmap 85): write-once names this leg owns alone
+#   (payload + .sha256 sidecars + .manifest.json shard + every .asc),
+#   so N legs publish concurrently with zero rendezvous and no shared
+#   mutable file exists (the monolithic manifest.json / SHA256SUMS.txt
+#   are gone — `tebako-pkg release-index` derives them consumer-side).
+#   The coordinator (publish.yml) keeps ONE release job: the audit of
+#   the whole matrix + the registry render/PR.
 
 name: build-platform (reusable)
 
@@ -75,9 +80,17 @@ on:
         description: 'Audit only: no builds, no uploads — verify the release against the expected matrix'
         type: boolean
         default: false
-    # The coordinator (publish.yml) reads these to feed upload_release.rb
-    # from its single release job — the publish never lives here, so N
-    # platform runs never contend for the one manifest merge.
+      publish:
+        description: 'Publish each leg''s runtime package to the release and sign its served names (spec 13 §2a / spec 09 §5)'
+        type: boolean
+        default: false
+      force_rebuild:
+        description: 'Re-upload even unchanged assets'
+        type: boolean
+        default: false
+    # The coordinator (publish.yml) reads these for its release job's
+    # AUDIT (the legs publish their own packages in-leg — spec 13 §2a's
+    # de-rendezvous — so the coordinator never touches a package byte).
     outputs:
       run:
         value: ${{ jobs.compute.outputs.run }}
@@ -107,9 +120,9 @@ env:
 
 # One run per (platform, ref, slice): a re-push cancels the stale run of
 # the SAME slice; different slices (a debugging dispatch vs the push legs)
-# never cancel each other. There is no publish stage here — the coordinator
-# (publish.yml) publishes from a single release job, so N platform runs
-# never contend for the one manifest merge.
+# never cancel each other. The publish lives in-leg (spec 13 §2a): legs
+# write only names they own, so concurrent legs never rendezvous — no
+# shared-group serialization needed anywhere on the publish path.
 concurrency:
   group: "platform-${{ inputs.platform }}-${{ github.head_ref || github.ref_name }}-${{ inputs.ruby_filter || 'auto' }}-${{ inputs.arch_filter || 'all' }}"
   cancel-in-progress: true
@@ -1535,6 +1548,55 @@ jobs:
           if-no-files-found: error
           path: devkit/
           retention-days: 1
+
+      # Spec 13 §2a (the de-rendezvous, roadmap 85): the leg that built a
+      # package publishes it — payload assets + .sha256 sidecars + the
+      # .manifest.json shard, write-once names this leg owns alone — and
+      # then signs every served name in the same invocation (spec 09 §5's
+      # no-fold rule). No shared file exists, so N legs publish
+      # concurrently with zero rendezvous.
+      - name: Setup Ruby for the publish tooling
+        if: ${{ inputs.publish && !inputs.audit }}
+        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+
+      - name: Publish the leg's runtime package (spec 13 §2a)
+        if: ${{ inputs.publish && !inputs.audit }}
+        shell: bash
+        continue-on-error: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.TEBAKO_CI_PAT_TOKEN || secrets.GITHUB_TOKEN }}
+          TEBAKO_VERSION: ${{ needs.compute.outputs.tebako-version }}
+          EXPECTED_ENV_MATRIX: '[${{ toJSON(matrix.env) }}]'
+          EXPECTED_RUBY_MATRIX: '[${{ toJSON(matrix.ruby) }}]'
+          FORCE_REBUILD: ${{ inputs.force_rebuild && 'true' || 'false' }}
+          TEBAKO_RELEASE_SIGNING_ENABLED: ${{ vars.TEBAKO_RELEASE_SIGNING_ENABLED }}
+          TEBAKO_RELEASE_SIGNING_KEYID: ${{ vars.TEBAKO_RELEASE_SIGNING_KEYID }}
+        run: |
+          set -euo pipefail
+          # The boot smoke / windows diagnostics materialize PE-named ruby
+          # DLL copies (x64-ucrt-ruby<ABI>.dll) next to the exe — never
+          # release assets (the release ships the DLL as <runtime>.dll;
+          # the artifact upload's exclusion pattern above is this rm's
+          # twin).
+          rm -f runtime-packages/x64-*-ruby*.dll
+          ./scripts/upload_release.rb
+
+      - name: Sign the leg's release assets (spec 09 §5)
+        if: ${{ inputs.publish && !inputs.audit }}
+        shell: bash
+        continue-on-error: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.TEBAKO_CI_PAT_TOKEN || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.TEBAKO_CI_PAT_TOKEN || secrets.GITHUB_TOKEN }}
+          TEBAKO_VERSION: ${{ needs.compute.outputs.tebako-version }}
+          TEBAKO_PKG_HOST_ID: ${{ matrix.env.host_id }}
+          TEBAKO_RELEASE_SIGNING_ENABLED: ${{ vars.TEBAKO_RELEASE_SIGNING_ENABLED }}
+          TEBAKO_RELEASE_SIGNING_KEY: ${{ secrets.TEBAKO_RELEASE_SIGNING_KEY }}
+          SIGN_ONLY_STEMS: tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}
+        run: ./scripts/sign_release.rb
 
   # Spec 22 C3 — the windows dogfood: the spec22-gems gem-level acceptance
   # (tamatebako/ruby's ci/spec22-gems/run-msys.sh) against THIS run's fresh
