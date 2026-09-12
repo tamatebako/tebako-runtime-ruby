@@ -129,8 +129,8 @@ matrix builds, and by `spec/contract_spec.rb`):
 - `contract.yml` (schema: `schema/contract.schema.yml`) — the release
   pipeline's single source of truth. `scripts/upload_release.rb` emits it
   as an additive `contract_version` key in every package's manifest entry
-  (the `<package>.manifest.json` shard, and the derived `manifest.json`;
-  consumers ignoring the key keep working, same rule as `image`).
+  (the `<package>.manifest.json` shard; consumers ignoring the key keep
+  working, same rule as `image`).
 - `TEBAKO_CONTRACT_VERSION` in `build/src/tebako-main.cpp` — the constant
   compiled into the runtime itself. The driver exports it as the
   `TEBAKO_CONTRACT_VERSION` environment variable before the entry dispatch,
@@ -143,10 +143,12 @@ build otherwise. The bootstrap side (negotiation, `min_contract..max_contract`
 range, `ContractMismatch` named error) lives in the tebako-rs workspace; the
 version → semantics changelog table is spec 06's.
 
-## Release metadata: per-asset sidecars, per-package shards (issue 139)
+## Release metadata: per-asset sidecars, per-package shards (issue 139, roadmap 85)
 
-The release's asset listing IS the package index. A platform publish writes
-ONLY the names it owns — its payload assets plus, for each package:
+The release's asset listing IS the package index. A build leg publishes and
+signs IN-LEG (spec 13 §2a's de-rendezvous): the leg that built a package
+uploads ONLY the write-once names it owns — its payload assets plus, for
+each package:
 
 - **`<asset>.sha256`** — the checksum sidecar next to every payload asset
   (exe, `.tfs`, windows `.dll`), in the tebako store's own trust-anchor
@@ -157,27 +159,38 @@ ONLY the names it owns — its payload assets plus, for each package:
   `size_bytes` / `mount_root` / `image_layout` / `built_from` /
   `contract_era` / `contract_version`, plus the additive `abi` / `image` /
   `dll` keys). The non-derivable fields (the windows DLL's `install_as`,
-  the image sibling, the contract version) live here and nowhere else.
+  the image sibling, the contract version) live here and nowhere else. On
+  signing-enabled lines the entry also declares its `signature` block
+  (`{keyid, asc}` — the exact `.asc` asset name within the release, spec 09
+  §5), at the entry and facet levels.
+- **`<asset>.asc`** — on signing-enabled lines, every served name (payload,
+  sidecar, shard, contract card) carries its own detached OpenPGP
+  signature, made in-leg from the fresh bytes (spec 09 §5's no-fold rule:
+  nothing is ever "covered by" another artifact's signature).
 
 Payload assets stay byte-immutable per name; metadata is DERIVABLE, so it
 replaces on drift (and a settled package's metadata describes the served
-bytes — the previous entry — never the fresh bytes that did not land).
+bytes — the previous entry — never the fresh bytes that did not land). No
+leg ever read-modify-writes a shared file, so N legs publish concurrently
+with zero rendezvous; the release notes are written once at release
+creation and never rewritten.
 
-The monolithic **`manifest.json`** and **`SHA256SUMS.txt`** still ship —
-as DERIVED conveniences: one finalize pass (`FINALIZE_ONLY=true`, the
-publish.yml release job's last step) regenerates them from the shards +
-the asset listing after every platform landed, along with the release
-notes. No platform publish ever read-modify-writes a shared file, so a
-scoped re-publish cannot shrink the index and the same-name 422
-propagation window is bounded to names the job itself owns. A stem no
-shard covers falls back to the previous monolith loudly, or fails closed.
+The monolithic **`manifest.json`** and **`SHA256SUMS.txt`** are GONE as
+release assets: both are derivable conveniences, computed consumer-side
+from the shards + the asset listing (`tebako-pkg release-index`). The
+machine-readable resolution index is this repo's **`tpkg-registry.yaml`**
+(spec 04 §2), rendered from the release's shards by the publish
+coordinator's audit+registry job (`tools/registry_update.rb`) and landed
+on main by bot PR — never hand-edited except `status: withdrawn` marks.
+The same job AUDITS the whole matrix against the release (read-only) —
+on signing-enabled lines it requires every served name's `.asc`.
 
 `BACKFILL_METADATA=true` is the one-shot migration / repair pass for a
 pre-shard release: it writes the missing sidecars from the listing's
 server-computed digests (the served bytes' truth — a disagreement with
 the monolith's record is named loudly and the digest wins) and the
 missing shards from the monolith's entries (sha fields re-anchored to
-the digests), then finalizes.
+the digests). It never touches a monolith or the notes.
 
 ## Layout
 
@@ -202,8 +215,10 @@ the digests), then finalizes.
   coordinator — one version everywhere / one platform all versions / one
   version on one platform, via workflow dispatch). `scripts/` holds the
   dependency-tree matrix computer (`compute_matrix.rb`, walking
-  `.github/build-graph.yaml`) and the hardened per-platform release
-  assembly (`upload_release.rb` — manifest merge, idempotent skip, audit).
+  `.github/build-graph.yaml`), the in-leg release assembly
+  (`upload_release.rb` — write-once per-leg publish + audit) and the
+  in-leg signer (`sign_release.rb`); `tools/registry_update.rb` renders
+  the `tpkg-registry.yaml` mirror from a release's shards.
   **The architecture and the cache/determinism invariants are documented
   in `docs/build-chain.md` — read it before touching any workflow, the
   roll tooling, or a cache key.**

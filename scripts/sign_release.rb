@@ -38,43 +38,49 @@ require "tmpdir"
 # writes' real times (the 2026-08-20 wedge lesson, upload_release.rb).
 $stdout.sync = true
 
+# The Platform model owns this runner's release platform id (host_id) —
+# the signing tool's asset name is built through it, never by formula.
+$LOAD_PATH.unshift(File.expand_path("../build/lib", __dir__))
+require "tebako_runtime_builder"
+
 RUNTIME_REPO = "tamatebako/tebako-runtime-ruby" unless defined?(RUNTIME_REPO)
 TEBAKO_REPO = "tamatebako/tebako"
 
-# Signs one tebako-runtime-ruby release (tebako spec 09 §2): every runtime
-# package, env image, and dll facet, plus the two monolithic index files
-# (SHA256SUMS.txt, manifest.json), ships a detached OpenPGP .asc made by
-# the tamatebako release signing subkey. The signing tool is the LATEST
-# tamatebako/tebako release's tebako-pkg, pinned by asset name and
-# sha256-verified against that release's own sidecar before it runs.
+# Signs one tebako-runtime-ruby release (tebako spec 09 §5, the no-fold
+# rule): EVERY served name carries its own detached OpenPGP .asc — the
+# runtime packages, the env images, the dll facets, AND the derived
+# metadata (the per-asset .sha256 sidecars, the per-package .manifest.json
+# shards, the .contract.yaml cards). Nothing folds into a signed monolith:
+# spec 13 §2a's de-rendezvous retired the monolithic manifest.json and
+# SHA256SUMS.txt as release assets (the consumer-side
+# `tebako-pkg release-index` replaces them), so no monolith .asc exists
+# either. Each build leg signs its own fresh bytes in-leg, in the same
+# invocation that published them — the write-once names that leg owns
+# alone (roadmap 85).
 #
-# The derived metadata — the per-asset .sha256 sidecars, the per-package
-# .manifest.json shards, and the builder's .contract.yaml cards — is NOT
-# separately signed: each sidecar is a line of the signed SHA256SUMS.txt
-# and each shard/card folds into the signed manifest.json (the tebako
-# repo's sign-release.sh rule, applied to this release's shape).
+# The signing tool is the LATEST tamatebako/tebako release's tebako-pkg
+# for THIS runner's platform (TEBAKO_PKG_HOST_ID overrides the detection),
+# pinned by asset name and sha256-verified against that release's own
+# sidecar before it runs. Every signed byte is provenance-checked against
+# the release listing's digest: the leg's own workspace bytes are used
+# only when they hash to the listed digest; a download that disagrees with
+# the listing is never signed.
 #
 # Gate (the spec 31 §5 house style): TEBAKO_RELEASE_SIGNING_ENABLED=true
 # arms the pass; armed + an empty TEBAKO_RELEASE_SIGNING_KEY is a fast
 # named failure; disarmed exits 0 and the release ships unsigned
-# (unsigned stays first-class — spec 09 §3).
+# (unsigned stays first-class — spec 09 §3). SIGN_ONLY_STEMS scopes the
+# pass to the caller's own write-once names (the in-leg case); empty signs
+# everything stale (the operator backfill case).
 class ReleaseSigner # rubocop:disable Metrics/ClassLength
   # Armed-but-cannot, provenance, and coverage failures: the pass never
   # ships a partially signed release silently.
   class SigningGateError < StandardError; end
 
-  # The signing tool asset on a tamatebako/tebako release (the publish
-  # job's runner is ubuntu-latest — linux-gnu x86_64).
-  TOOL_ASSET_PATTERN = /\Atebako-pkg-\d+\.\d+\.\d+-linux-gnu-x86_64\z/
-
-  # The two derived index files that DO carry their own .asc (all other
-  # derived metadata — .sha256 sidecars, .manifest.json shards,
-  # .contract.yaml cards — is covered by the signed indexes).
-  INDEX_FILES = ["SHA256SUMS.txt", "manifest.json"].freeze
-
-  # This run's fresh package bytes, materialized by the publish job's
-  # runtime-packages-* artifact download — signing prefers them over a
-  # re-download (only a backfill onto an older release downloads).
+  # This run's fresh package bytes, materialized in the leg's workspace —
+  # signing prefers them over a re-download, but only when they hash to
+  # the release listing's digest (only a backfill onto an older release
+  # downloads).
   LOCAL_PACKAGES_DIR = "runtime-packages"
 
   # upload convergence: a tiny metadata asset either lands or cycles;
@@ -106,31 +112,36 @@ class ReleaseSigner # rubocop:disable Metrics/ClassLength
       key_file = materialize_key(work)
       assets = @client.release_assets(release.url)
       targets = signature_targets(assets.map(&:name))
-      missing_indexes = INDEX_FILES - targets
-      unless missing_indexes.empty?
-        raise SigningGateError,
-              "NAMED FAILURE: #{@tag} lacks the index files #{missing_indexes.join(", ")} — " \
-              "the finalize pass must land them before signing"
-      end
-
       stale = stale_targets(targets, assets)
       puts "#{@tag}: #{targets.size} signature targets, #{stale.size} need (re)signing"
-      stale.each { |name| sign_one(work, key_file, tool, release, name) }
+      by_name = assets.to_h { |asset| [asset.name, asset] }
+      stale.each do |name|
+        digest = listed_sha(by_name.fetch(name))
+        if digest.empty?
+          raise SigningGateError,
+                "NAMED FAILURE: the release listing carries no digest for #{name} — " \
+                "signing needs the listing's sha256 to prove the signed bytes are the served bytes"
+        end
+
+        sign_one(work, key_file, tool, release, name, digest)
+      end
       assert_coverage!(release, targets)
     end
     :signed
   end
 
-  # The asset names that carry a .asc: everything that is not derived
-  # metadata (class comment) — the packages, the images, the dlls, and
-  # the two index files. The shard suffix would swallow the monolithic
-  # manifest.json itself, so it excludes by shape, not by suffix alone.
+  # The asset names that carry a .asc (spec 09 §5's no-fold rule): every
+  # served name — payloads, .sha256 sidecars, .manifest.json shards,
+  # .contract.yaml cards — except the .asc files themselves. SIGN_ONLY_STEMS
+  # scopes the set to the caller's write-once names: a name matches when it
+  # IS the stem or starts with "<stem>." (stems end in the platform id, so
+  # one package's stem can never swallow another package's names).
   def signature_targets(asset_names)
-    asset_names.reject do |name|
-      next true if name.end_with?(".sha256", ".contract.yaml", ".asc")
+    names = asset_names.reject { |name| name.end_with?(".asc") }
+    stems = sign_only_stems
+    return names.sort if stems.empty?
 
-      name.end_with?(".manifest.json") && name != "manifest.json"
-    end.sort
+    names.select { |name| stems.any? { |stem| name == stem || name.start_with?("#{stem}.") } }.sort
   end
 
   # The targets whose .asc is absent or older than the asset itself: a
@@ -153,6 +164,27 @@ class ReleaseSigner # rubocop:disable Metrics/ClassLength
 
   def signing_key
     (@env["TEBAKO_RELEASE_SIGNING_KEY"] || "").strip
+  end
+
+  # The in-leg scope: comma/space-separated package stems this invocation
+  # owns (e.g. "tebako-runtime-0.17.0-3.4.2-macos-arm64"). Empty means the
+  # operator backfill case — every stale target on the release.
+  def sign_only_stems
+    (@env["SIGN_ONLY_STEMS"] || "").split(/[\s,]+/)
+  end
+
+  # The platform this pass runs on — the signing tool's asset name flows
+  # from it (TEBAKO_PKG_HOST_ID pins it in CI/specs; the Platform model
+  # detects it otherwise).
+  def tool_host_id
+    @tool_host_id ||= @env["TEBAKO_PKG_HOST_ID"] || TebakoRuntimeBuilder::Platform.new.host_id
+  end
+
+  # The tebako-pkg asset name grammar on a tamatebako/tebako release, for
+  # this runner's platform (windows carries the .exe suffix).
+  def tool_asset_pattern
+    suffix = tool_host_id.start_with?("windows") ? ".exe" : ""
+    /\Atebako-pkg-\d+\.\d+\.\d+-#{Regexp.escape(tool_host_id)}#{Regexp.escape(suffix)}\z/
   end
 
   def find_release
@@ -178,13 +210,14 @@ class ReleaseSigner # rubocop:disable Metrics/ClassLength
     key_file
   end
 
-  # The latest tebako release's tebako-pkg, provenance-pinned: downloaded
-  # with its .sha256 sidecar and executed only when the digest matches.
+  # The latest tebako release's tebako-pkg for this runner's platform,
+  # provenance-pinned: downloaded with its .sha256 sidecar and executed
+  # only when the digest matches.
   def fetch_verified_tool(work) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
     latest = @client.latest_release(TEBAKO_REPO)
     names = @client.release_assets(latest.url).map(&:name)
-    tool_name = names.find { |name| name.match?(TOOL_ASSET_PATTERN) }
-    raise SigningGateError, "NAMED FAILURE: no tebako-pkg linux-gnu-x86_64 asset on #{latest.tag_name}" unless tool_name
+    tool_name = names.find { |name| name.match?(tool_asset_pattern) }
+    raise SigningGateError, "NAMED FAILURE: no tebako-pkg #{tool_host_id} asset on #{latest.tag_name}" unless tool_name
 
     tool_dir = work.join("tool")
     FileUtils.mkdir_p(tool_dir)
@@ -204,25 +237,37 @@ class ReleaseSigner # rubocop:disable Metrics/ClassLength
     tool.to_s
   end
 
-  # One stale target: bytes from this run's workspace when present (the
-  # publish job already materialized them), a targeted download only for
-  # the backfill case; sign, verify against the freshly registered key,
-  # then converge the .asc onto the release.
-  def sign_one(work, key_file, tool, release, name) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
+  # One stale target: the leg's own workspace bytes when they hash to the
+  # release listing's digest, otherwise a digest-verified download; sign,
+  # verify against the freshly registered key, then converge the .asc onto
+  # the release. The digest is the no-fold rule's provenance: the signed
+  # bytes are provably the bytes the release serves.
+  def sign_one(work, key_file, tool, release, name, digest) # rubocop:disable Metrics/AbcSize, Metrics/ParameterLists
     local = Pathname.new(LOCAL_PACKAGES_DIR).join(name)
-    dir = work.join("assets")
-    FileUtils.mkdir_p(dir)
-    target = if local.exist?
+    target = if local.exist? && Digest::SHA256.file(local).hexdigest == digest
                local
              else
-               @executor.run("gh", "release", "download", @tag, "--repo", RUNTIME_REPO,
-                             "--pattern", name, "--dir", dir.to_s, "--clobber")
-               dir.join(name)
+               download_served_bytes(work.join("assets"), name, digest)
              end
     @executor.run(tool, "sign", "--key-file", key_file.to_s, "--no-sums", name, chdir: File.dirname(target.to_s))
     @executor.run(tool, "verify", name, chdir: File.dirname(target.to_s))
     converge_asc(release, Pathname.new(File.join(File.dirname(target.to_s), "#{name}.asc")))
     puts "#{name}: signed and converged"
+  end
+
+  # The backfill byte source: download the served asset and refuse to sign
+  # anything but the listing's bytes.
+  def download_served_bytes(dir, name, digest)
+    FileUtils.mkdir_p(dir)
+    @executor.run("gh", "release", "download", @tag, "--repo", RUNTIME_REPO,
+                  "--pattern", name, "--dir", dir.to_s, "--clobber")
+    target = dir.join(name)
+    actual = Digest::SHA256.file(target).hexdigest
+    return target if actual == digest
+
+    raise SigningGateError,
+          "NAMED FAILURE: refusing to sign bytes the release does not serve — " \
+          "#{name} downloaded with sha256 #{actual}, the listing says #{digest}"
   end
 
   # A tiny metadata upload, converged: replace whatever the name serves,
