@@ -88,6 +88,20 @@ grep -q 'status: Accepted' "$work/notary.txt" || {
   echo "::error::notarytool did not Accept the submission"; exit 1; }
 
 step "verify the online ticket + quarantine-mark (the boot smoke is the exec canary)"
-codesign --verify --strict --check-notarization -R=notarized "$exe"
+# notarytool's "status: Accepted" and the ticket's visibility to
+# codesign's online --check-notarization lookup are NOT atomic: the
+# ticket service can lag the submission status by minutes (the v0.16.23
+# macos-x86_64 4.0.6 leg died here 0.2s after Accepted, run
+# 34654997530). Poll with a bounded budget — a genuine signature defect
+# fails the same check on every attempt, so the retry never masks it.
+verified=""
+for _ in $(seq 1 10); do
+  if codesign --verify --strict --check-notarization -R=notarized "$exe"; then
+    verified=1
+    break
+  fi
+  sleep 30
+done
+[ -n "$verified" ] || { echo "::error::the notarization ticket never became visible to codesign within 5 minutes"; exit 1; }
 xattr -w com.apple.quarantine '0081;00000000;Safari;' "$exe"
 echo "signed + notarized + quarantine-marked: $(basename "$exe")"
