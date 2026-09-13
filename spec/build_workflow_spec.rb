@@ -158,12 +158,46 @@ RSpec.describe "build-platform reusable workflow" do
     end
   end
 
-  # The publish job is GONE from the per-platform builder: N platform runs
-  # sharing one publish group displaced (cancelled) queued publishes. The
-  # coordinator (publish.yml) publishes from a single release job. Locked
-  # structurally so the per-platform publish can never creep back in.
-  it "carries no publish job (publishing is the coordinator's single release job)" do
-    expect(workflow.fetch("jobs")).not_to have_key("publish")
+  # Spec 13 §2a's de-rendezvous (roadmap 85): the leg that built a package
+  # publishes it and signs its served names IN-LEG — write-once names the
+  # leg owns alone, so N legs publish concurrently with zero rendezvous.
+  # Locked structurally so the publish can never creep back out into a
+  # shared coordinator-side mutation.
+  it "publishes and signs in-leg, gated on inputs.publish && !inputs.audit" do
+    steps = workflow.fetch("jobs").fetch("build").fetch("steps")
+    names = steps.map { |step| step["name"].to_s }
+    publish = steps.find { |step| step["name"] == "Publish the leg's runtime package (spec 13 §2a)" }
+    sign = steps.find { |step| step["name"] == "Sign the leg's release assets (spec 09 §5)" }
+    expect(publish).not_to be_nil
+    expect(sign).not_to be_nil
+    [publish, sign].each do |step|
+      expect(step["if"]).to eq("${{ inputs.publish && !inputs.audit }}")
+    end
+    # The leg scopes both tools to its own (ruby, platform) slice: the
+    # publish reads a one-row expected matrix, the signer a one-stem scope.
+    expect(publish.dig("env", "EXPECTED_ENV_MATRIX")).to eq("[${{ toJSON(matrix.env) }}]")
+    expect(publish.dig("env", "EXPECTED_RUBY_MATRIX")).to eq("[${{ toJSON(matrix.ruby) }}]")
+    expect(publish.dig("env", "TEBAKO_VERSION")).to eq("${{ needs.compute.outputs.tebako-version }}")
+    expect(publish.dig("env", "FORCE_REBUILD")).to eq("${{ inputs.force_rebuild && 'true' || 'false' }}")
+    expect(publish.dig("env", "TEBAKO_RELEASE_SIGNING_ENABLED")).to eq("${{ vars.TEBAKO_RELEASE_SIGNING_ENABLED }}")
+    expect(publish.dig("env", "TEBAKO_RELEASE_SIGNING_KEYID")).to eq("${{ vars.TEBAKO_RELEASE_SIGNING_KEYID }}")
+    expect(sign.dig("env", "SIGN_ONLY_STEMS")).to eq(
+      "tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
+    )
+    expect(sign.dig("env", "TEBAKO_RELEASE_SIGNING_KEY")).to eq("${{ secrets.TEBAKO_RELEASE_SIGNING_KEY }}")
+    # Both run after the leg's artifact upload (the publish consumes the
+    # same workspace bytes the upload ships).
+    upload_index = names.index("Upload runtime package")
+    expect(names.index(publish["name"])).to be > upload_index
+    expect(names.index(sign["name"])).to be > upload_index
+  end
+
+  it "accepts publish and force_rebuild as workflow_call inputs" do
+    inputs = workflow.dig(true, "workflow_call", "inputs") # YAML 1.1: the `on:` key parses as boolean true
+    expect(inputs.dig("publish", "type")).to eq("boolean")
+    expect(inputs.dig("publish", "default")).to be(false)
+    expect(inputs.dig("force_rebuild", "type")).to eq("boolean")
+    expect(inputs.dig("force_rebuild", "default")).to be(false)
   end
 
   it "exposes the compute matrices and version as workflow_call outputs for the coordinator" do
@@ -197,6 +231,64 @@ RSpec.describe "build-platform reusable workflow" do
     expect(smoke_steps).not_to be_empty
     smoke_steps.each do |step|
       expect(step.dig("env", "TEBAKO_SMOKE_EXPECT_OPENSSL")).to(satisfy { |value| %w[ok fail].include?(value) })
+    end
+  end
+end
+
+# The coordinator after spec 13 §2a's de-rendezvous (roadmap 85): the legs
+# publish and sign; the ONE release job only audits (read-only) and renders
+# + publishes the registry mirror by bot PR. Locked structurally: no
+# artifact download, no sign step, no shared-name mutation can creep back.
+RSpec.describe "publish coordinator workflow" do
+  let(:workflow_path) { File.join(REPO_ROOT, ".github", "workflows", "publish.yml") }
+  let(:workflow) { YAML.load_file(workflow_path) }
+  let(:release) { workflow.fetch("jobs").fetch("release") }
+  let(:release_steps) { release.fetch("steps") }
+  let(:release_step_names) { release_steps.map { |step| step["name"].to_s } }
+
+  it "audits + publishes the registry — and never downloads, uploads, or signs a package byte" do
+    expect(release.fetch("name")).to eq("Audit the release + publish the registry")
+    forbidden = release_steps.select do |step|
+      step.fetch("uses", "").to_s.start_with?("actions/download-artifact@") ||
+        step["name"].to_s.match?(/\A(Sign|Publish the runtime|Update the release)/)
+    end
+    expect(forbidden).to be_empty
+    expect(release.fetch("timeout-minutes")).to eq(30)
+  end
+
+  it "runs the per-platform audit read-only (AUDIT_ONLY=true), threaded with the signing gate" do
+    audit = release_steps.find { |step| step["name"] == "Audit the release, per platform" }
+    expect(audit).not_to be_nil
+    expect(audit.dig("env", "AUDIT_ONLY")).to eq("true")
+    expect(audit.dig("env", "TEBAKO_RELEASE_SIGNING_ENABLED")).to eq("${{ vars.TEBAKO_RELEASE_SIGNING_ENABLED }}")
+    expect(audit.fetch("run")).to include("./scripts/upload_release.rb")
+    expect(audit.fetch("run")).not_to include("FINALIZE_ONLY")
+  end
+
+  it "renders and publishes the registry only on publish runs (never audit-only)" do
+    render = release_steps.find { |step| step["name"] == "Render the registry entries" }
+    publish = release_steps.find { |step| step["name"] == "Publish the registry via pull request" }
+    [render, publish].each do |step|
+      expect(step).not_to be_nil
+      expect(step["if"]).to eq("${{ !inputs.audit }}")
+    end
+    expect(render.fetch("run")).to include("./tools/registry_update.rb")
+    # The registry lands by bot PR against origin/main — git arbitrates.
+    expect(publish.fetch("run")).to include("git checkout -b", "origin/main",
+                                            "gh pr create", "--body-file", "gh pr merge --auto --squash")
+    # The audit precedes the registry work.
+    expect(release_step_names.index("Audit the release, per platform"))
+      .to be < release_step_names.index("Render the registry entries")
+  end
+
+  it "threads publish and force_rebuild from the coordinator into every platform caller" do
+    %w[windows linux-gnu linux-musl macos].each do |platform|
+      with = workflow.fetch("jobs").fetch(platform).fetch("with")
+      expect(with["publish"])
+        .to(eq("${{ github.event_name == 'repository_dispatch' || inputs.publish }}"),
+            "#{platform} must thread publish")
+      expect(with["force_rebuild"])
+        .to(eq("${{ inputs.force_rebuild || false }}"), "#{platform} must thread force_rebuild")
     end
   end
 end

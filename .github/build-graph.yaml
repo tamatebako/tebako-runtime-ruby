@@ -59,13 +59,17 @@ validation_only:
   - .rubocop*.yml
 
 # Publish/release tooling — consumed AT RELEASE time against already-built
-# artifacts (the coordinator's release job, the pin-bump bot, the
-# bare-launch probe), never read by any build leg. A diff touching only
-# these cannot change build outputs: NO legs at all, on any platform —
-# the publish-hardening class (a scripts/upload_release.rb-only PR once
-# spent the tidy matrix on every platform for zero build signal).
+# artifacts (the legs' in-leg publish/sign steps, the coordinator's
+# audit+registry job, the pin-bump bot, the bare-launch probe), never read
+# by any build leg's compile. A diff touching only these cannot change
+# build outputs: NO legs at all, on any platform — the publish-hardening
+# class (a scripts/upload_release.rb-only PR once spent the tidy matrix on
+# every platform for zero build signal).
 publish_only:
-  - scripts/upload_release.rb              # the release job's manifest merge/upload
+  - scripts/upload_release.rb              # the in-leg publish + the coordinator's audit (spec 13 §2a)
+  - scripts/sign_release.rb                # the in-leg signer (spec 09 §5) — consumed at release time
+  - tools/registry_update.rb               # the registry renderer (spec 04 §2) — the coordinator's release job
+  - tpkg-registry.yaml                     # the registry mirror — a bot-PR landing must never trigger build legs
   - .github/workflows/publish.yml          # the release coordinator (dispatch-only)
   - .github/workflows/bump-source-pin.yml  # the pin-bump bot — its OUTPUT (a pin PR) triggers the builds
   - .github/workflows/probe-bare-launch.yml # the bare-machine launch probe (dispatch-only)

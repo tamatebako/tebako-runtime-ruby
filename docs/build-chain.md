@@ -23,9 +23,16 @@ call it; it is never dispatched directly. Stages:
    the triplet only, never on the ruby version.
 3. **build** — the matrix legs (env × ruby), consuming the staged unit
    via `TEBAKO_RUST_LIBDIR`.
-4. **publish** — uploads this platform's packages; the manifest merge
-   keeps every other platform's entries, and a serialized concurrency
-   group makes simultaneous publishes impossible.
+4. **publish + sign** — IN-LEG (spec 13 §2a's de-rendezvous, roadmap 85):
+   the leg that built a package publishes its write-once names (payload +
+   `.sha256` sidecars + `.manifest.json` shard) and signs every served
+   name (`spec 09 §5`'s no-fold rule) in the same invocation. No shared
+   file exists, so N legs publish concurrently with zero rendezvous — the
+   serialized publish group is gone. The `publish.yml` coordinator keeps
+   ONE release job for the two duties that need the whole matrix: the
+   read-only AUDIT of every platform's expected names against the
+   release, and the registry render (`tools/registry_update.rb`) landed
+   on main by bot PR.
 
 ## The diff-routing law (build-graph.yaml)
 
@@ -33,9 +40,10 @@ call it; it is never dispatched directly. Stages:
   build workflow, the matrix planner, the matrix vocabulary).
 - `platforms:<p>:` inputs reach only that platform.
 - `publish_only:` paths (release tooling consumed at release time —
-  `scripts/upload_release.rb`, the `publish.yml` coordinator, the
-  pin-bump bot, the bare-launch probe) produce no legs: a change there
-  cannot affect build outputs.
+  `scripts/upload_release.rb`, `scripts/sign_release.rb`,
+  `tools/registry_update.rb`, `tpkg-registry.yaml`, the `publish.yml`
+  coordinator, the pin-bump bot, the bare-launch probe) produce no legs:
+  a change there cannot affect build outputs.
 - `ignore:` paths (docs, etc.) produce no legs.
 - `validation_only:` paths validate on the tidy set, never build-shaped.
 - A source-pin move (`DEFAULT_RELEASE` in

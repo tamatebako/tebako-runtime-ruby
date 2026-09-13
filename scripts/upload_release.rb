@@ -76,18 +76,23 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   CONTRACT_SIDECAR_SUFFIX = ".contract.yaml"
   CONTRACT_ERA = 2
 
-  # Per-asset metadata, no merge path (issue 139): the release's asset
-  # listing IS the package index. Every payload asset ships with a
+  # Per-asset metadata, write-once, no shared name (issue 139, the
+  # de-rendezvous — spec 13 §2a, roadmap 85): the release's asset listing
+  # IS the package index. Every payload asset ships with a
   # `<asset>.sha256` sidecar in the store's trust-anchor shape (spec 00
   # §8: "<sha256>  <filename>\n"), and every package with a
-  # `<stem>.manifest.json` shard carrying exactly its manifest entry. The
-  # job that built a package uploads its own metadata and nothing else —
-  # the monolithic manifest.json / SHA256SUMS.txt are never
-  # read-modify-written by a platform publish (the 2026-08-29
-  # partial-merge + 422-wedge incident); they are DERIVED conveniences
-  # regenerated from the shards + the listing by the finalize pass
-  # (FINALIZE_ONLY) after every platform landed, and BACKFILL_METADATA is
-  # the one-shot migration that writes shards/sidecars onto a pre-shard
+  # `<stem>.manifest.json` shard carrying exactly its manifest entry (on
+  # signing-enabled lines also declaring each artifact's `signature`
+  # block — spec 09 §5). The leg that built a package uploads its own
+  # assets and metadata and nothing else — the monolithic
+  # manifest.json / SHA256SUMS.txt are NEVER release assets (they are
+  # consumer-side derivations, `tebako-pkg release-index`), the release
+  # notes are written once at creation, and no invocation ever
+  # read-modify-writes a name another leg owns (the 2026-08-29
+  # partial-merge + 422-wedge incident; the 2026-09-12 finalize wedge —
+  # same physics: aggregation forces mutation, mutation forces
+  # delete-then-replace, replace is the wedge). BACKFILL_METADATA is the
+  # one-shot migration that writes shards/sidecars onto a pre-shard
   # release.
   SHARD_SUFFIX = ".manifest.json"
   SIDECAR_SUFFIX = ".sha256"
@@ -150,15 +155,70 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     [executables, images, dlls]
   end
 
-  # The release's existing manifest.json, symbolized (entry[:image]
-  # included), [] when absent/unreadable (a named warning, never a
-  # crash — the completeness gate is the arbiter). Two transitional
-  # readers remain (issue 139): the byte-immutable keep reverts a settled
-  # package's metadata to the previous entry, and the finalize/backfill
-  # passes cover shard-less packages from it. No platform publish ever
-  # MERGES into it.
-  def previous_manifest_entries
+  # The byte-immutable keep machinery's previous-entry source,
+  # shards-first (spec 13 §2a): the release's per-package shards ARE the
+  # authority, and this invocation reads only the shards THIS leg's
+  # expected matrix can name (an unscoped invocation — no matrix — reads
+  # them all). A stem no shard covers falls back to the monolithic
+  # manifest.json loudly (the pre-de-rendezvous migration window) —
+  # never an error: a stem neither source covers simply has no previous
+  # entry, and a first publish is exactly that.
+  def previous_manifest_entries # rubocop:disable Metrics/MethodLength
     @previous_manifest_entries ||= begin
+      release = find_release
+      if release.nil?
+        []
+      else
+        entries = relevant_shard_entries(release)
+        entries.concat(monolith_fallback_entries(covered_stems(entries)))
+        entries
+      end
+    rescue StandardError => e
+      puts "::warning::could not read the release's previous entries (#{e.class}: #{e.message}) — merging nothing"
+      []
+    end
+  end
+
+  # This leg's shards, downloaded and symbolized. Scoped to the expected
+  # matrix BEFORE downloading (the shard's stem is in its asset name);
+  # an invocation without a matrix (ad-hoc) reads every shard.
+  def relevant_shard_entries(release)
+    assets = shard_assets(release)
+    expected = expected_package_names
+    assets = assets.select { |asset| expected.include?(asset.name.delete_suffix(SHARD_SUFFIX)) } unless expected.empty?
+    assets.map { |asset| download_shard_entry(asset) }
+  end
+
+  # The migration window: a package stem no shard covers can still have
+  # its previous entry in the monolithic manifest.json (the pre-shard
+  # index — never written anymore, immutable forever). Scoped to this
+  # invocation's expected matrix; an invocation WITHOUT a matrix covers
+  # every shard-less monolith stem (the pre-de-rendezvous behavior).
+  # Loud when used, never an error.
+  def monolith_fallback_entries(shard_covered) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
+    monolith = previous_monolith_entries.reject do |entry|
+      shard_covered.include?(package_stem(entry[:filename].to_s))
+    end
+    return [] if monolith.empty?
+
+    expected = expected_package_names
+    found = expected.empty? ? monolith : monolith.select { |e| expected.include?(package_stem(e[:filename].to_s)) }
+    return [] if found.empty?
+
+    puts "::warning::#{found.size} package(s) carry no #{SHARD_SUFFIX} shard — reading their previous entries from " \
+         "the monolithic manifest.json (the pre-de-rendezvous migration window): " \
+         "#{found.map { |entry| entry[:filename] }.sort.join(", ")}"
+    found
+  end
+
+  # The release's monolithic manifest.json, symbolized (entry[:image]
+  # included), [] when absent/unreadable (a named warning, never a
+  # crash — the completeness gate is the arbiter). The monolith is a
+  # PRE-de-rendezvous artifact: two readers remain — the migration-window
+  # fallback above and the BACKFILL_METADATA repair pass (its shard
+  # source). Nothing ever writes it again (spec 13 §2a).
+  def previous_monolith_entries
+    @previous_monolith_entries ||= begin
       data = read_previous_manifest
       data.is_a?(Array) ? data.map { |entry| deep_symbolize(entry) } : []
     rescue StandardError => e
@@ -185,25 +245,6 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
 
   def download_asset_json(asset)
     JSON.parse(with_transient_retries { @client.get(asset.browser_download_url) }.to_s)
-  end
-
-  def categorize_packages(filenames)
-    categorize(filenames, images: false)
-  end
-
-  def categorize_images(filenames)
-    categorize(filenames, images: true)
-  end
-
-  def categorize(filenames, images:)
-    sections = initialize_sections
-    filenames.each do |filename|
-      next unless filename.end_with?(".tfs") == images
-
-      platform = %w[windows macos linux-gnu linux-musl].find { |p| filename.include?(p) }
-      sections[platform] << filename if platform
-    end
-    sections
   end
 
   def expected_package_names
@@ -244,11 +285,10 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   # runs out — a metadata rewrite never dies on the first bad cycle.
   # The convergence cycle sleeps, ~46 min of patience. Tonight's backend
   # (2026-08-03) blocked a deleted name's re-upload for 4.5+ HOURS.
-  # Since issue 139 the shared monoliths are rewritten ONCE per run by the
-  # finalize pass (a platform publish rewrites only its own packages'
-  # shards/sidecars) — but an incident night is an incident night; the
-  # publishes serialize globally anyway, and grinding here never blocks
-  # another platform's build.
+  # Since the de-rendezvous (spec 13 §2a, roadmap 85) a leg rewrites only
+  # its OWN packages' shards/sidecars — every name it touches is one it
+  # owns, so a convergence grind can never rendezvous with another leg;
+  # an incident night is an incident night, and the legs run concurrently.
   METADATA_CONVERGENCE_DELAYS = [5, 15, 30, 60, 120, 240, 480, 600, 600, 600].freeze
 
   def force_upload(release, file, delays: METADATA_CONVERGENCE_DELAYS)
@@ -333,90 +373,72 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     "https://github.com/#{RUNTIME_REPO}/releases/download/#{@tag}/#{filename}"
   end
 
-  def generate_manifest(entries)
-    path = Pathname.new("manifest.json")
-    path.write("#{JSON.pretty_generate(entries)}\n")
-    path
-  end
-
-  def generate_release_notes(sections, image_sections = nil)
-    body = <<~BODY
+  # The release notes are written ONCE at release creation and never
+  # rewritten (spec 13 §2a — no shared mutable name; an asset-derived
+  # body would be the retired finalize pass's read-modify-write in
+  # disguise). They point at the per-package shards + sidecars (the
+  # authority), the consumer-side index derivation, and the in-repo
+  # registry — nothing in them enumerates the release's assets.
+  def release_notes
+    <<~BODY
       ## Tebako runtime packages
 
       Release version: #{@tag}
-      Build date: #{Time.now.strftime("%Y-%m-%d")}
 
+      Every runtime package (the interpreter executable + its `.tfs` env image + the
+      windows ruby DLL) ships with its own metadata, written once by the build leg that
+      produced it (spec 13 §2a): the `<asset>.sha256` sidecar next to every asset is the
+      trust anchor (the tebako store's own sidecar shape, spec 00 §8), and the
+      `<package>.manifest.json` shard next to every package carries exactly its
+      release-index entry. On signing-enabled lines every served name also carries its
+      own detached `.asc` (spec 09 §5).
+
+      There is no monolithic `manifest.json` / `SHA256SUMS.txt` release asset: both are
+      derivable conveniences, computed consumer-side from the shards + the asset listing
+      (`tebako-pkg release-index`). The machine-readable resolution index is this repo's
+      `tpkg-registry.yaml` (spec 04 §2).
     BODY
-
-    body + sections_markup(sections) +
-      (image_sections ? sections_markup(image_sections, kind: "filesystem images") : "") +
-      release_metadata_footer
   end
 
-  # The notes' metadata pointer: per-asset sidecars + per-package shards
-  # are the authority; the monoliths are the finalize pass's derived
-  # conveniences (issue 139).
-  def release_metadata_footer
-    "\nChecksums: the `<asset>.sha256` sidecar next to every asset is the trust anchor " \
-      "(the tebako store's own sidecar shape, spec 00 §8); `SHA256SUMS.txt` carries the same " \
-      "lines as one derived convenience file.\n" \
-      "Machine-readable package index: the `<package>.manifest.json` shard next to every package " \
-      "(one manifest entry each) is the authority; `manifest.json` is the shards' union as one " \
-      "derived convenience file. Both monoliths are regenerated from the shards by the publish's " \
-      "finalize pass, never merged by hand.\n"
-  end
-
-  def sections_markup(sections, kind: "executables")
-    sections.map { |platform, files| generate_section(platform, files, kind: kind) }.join
-  end
-
-  def generate_section(platform, files, kind: "executables")
-    return "" if files.empty?
-
-    section = "\n### #{platform_display_name(platform)} #{kind}\n"
-    files.each { |file| section += "- #{file}\n" }
-    section
-  end
-
-  # The executable, its filesystem image and (windows) its ruby DLL are
-  # checksummed; each facet line directly follows its package's line.
-  def generate_sha256sums(entries)
-    path = Pathname.new("SHA256SUMS.txt")
-    path.write("#{sha256sum_lines(entries).join("\n")}\n")
-    path
-  end
-
-  def sha256sum_lines(entries)
-    entries.flat_map do |entry|
-      lines = ["#{entry[:sha256]}  #{entry[:filename]}"]
-      image = entry[:image]
-      lines << "#{image[:sha256]}  #{image[:filename]}" if image
-      dll = entry[:dll]
-      lines << "#{dll[:sha256]}  #{dll[:filename]}" if dll
-      lines
-    end
-  end
+  # The release is created by the FIRST leg that finds it missing — the
+  # matrix legs of one publish run race here (spec 13 §2a's
+  # de-rendezvous: no leg waits on another). The loser's create 422s on
+  # the taken tag; it polls for the winner's release to become visible
+  # and rides it. Creation is write-once, never a wedge.
+  RELEASE_CREATE_POLL_DELAYS = [5, 5, 5, 5, 5, 5].freeze
 
   def get_or_create_release # rubocop:disable Naming/AccessorMethodName
     puts "Looking for release with tag: #{@tag}"
     @client.release_for_tag(RUNTIME_REPO, @tag)
   rescue Octokit::NotFound
+    create_release_race_safe
+  end
+
+  # A rescue clause's own exceptions never re-enter the sibling rescues —
+  # the create's 422 handling lives in its own method.
+  def create_release_race_safe # rubocop:disable Metrics/MethodLength
     puts "Creating new release for tag: #{@tag}"
     @client.create_release(RUNTIME_REPO, @tag,
                            name: @release_title,
-                           body: generate_release_notes(initialize_sections))
+                           body: release_notes)
+  rescue Octokit::UnprocessableEntity
+    # A concurrent leg won the create. Poll for its release to become
+    # visible, then ride it — never re-attempt the create.
+    RELEASE_CREATE_POLL_DELAYS.each do |pause|
+      sleep pause
+      release = find_release
+      return release if release
+    end
+    raise "the release for #{@tag} rejected the create (tag already exists) but never became visible — " \
+          "another leg's creation is wedged; re-run this leg"
   end
 
-  # The read-only lookup (the manifest merge + the idempotent skip read the
+  # The read-only lookup (the previous-entry reads + the audit read the
   # existing release): nil when the tag has no release, never creates one.
   def find_release
     with_transient_retries { @client.release_for_tag(RUNTIME_REPO, @tag) }
   rescue Octokit::NotFound
     nil
-  end
-
-  def initialize_sections
-    { "windows" => [], "macos" => [], "linux-gnu" => [], "linux-musl" => [] }
   end
 
   def manifest_entry(package, image = nil, dll = nil) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
@@ -455,7 +477,44 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
       )
       entry[:image] = image_entry(image) if image
       entry[:dll] = dll_entry(dll, ruby_version) if dll
+      declare_signatures(entry)
     end
+  end
+
+  # Spec 13 §2a / spec 09 §5: on signing-enabled lines every artifact the
+  # entry names declares its own `signature` block — {keyid, asc}: the
+  # signer's 16-lowercase-hex PRIMARY keyid (spec 09 §9) and the exact
+  # `.asc` asset name within this release, declared by the factory and
+  # flowed verbatim by consumers (never synthesized — the same SSOT rule
+  # as `filename`). A declaration the in-leg sign pass does not fulfill
+  # fails the leg (the signer asserts coverage), never ships.
+  def declare_signatures(entry)
+    return unless signing_enabled?
+
+    keyid = signing_keyid
+    entry[:signature] = { keyid: keyid, asc: "#{entry[:filename]}.asc" }
+    %i[image dll].each do |facet|
+      block = entry[facet]
+      block[:signature] = { keyid: keyid, asc: "#{block[:filename]}.asc" } if block
+    end
+  end
+
+  # The signing arm (spec 09 §5's house style): TEBAKO_RELEASE_SIGNING_ENABLED=true
+  # marks the line signing-enabled — the publish declares the signature
+  # blocks and the leg's sign pass produces the `.asc` assets.
+  def signing_enabled?
+    ENV["TEBAKO_RELEASE_SIGNING_ENABLED"] == "true"
+  end
+
+  # The declared keyid: the signer's PRIMARY keyid, 16 lowercase hex —
+  # validated, never guessed (a malformed keyid in a shard is an invalid
+  # signing state shipped).
+  def signing_keyid
+    keyid = ENV.fetch("TEBAKO_RELEASE_SIGNING_KEYID", "").strip
+    return keyid if keyid.match?(/\A[0-9a-f]{16}\z/)
+
+    raise "TEBAKO_RELEASE_SIGNING_KEYID must be the signer's 16-lowercase-hex PRIMARY keyid " \
+          "(spec 09 §9), got #{keyid.inspect}"
   end
 
   def current_shas
@@ -685,20 +744,9 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     record_asset_upload(asset) # the landed asset joins the listing
   end
 
-  def platform_display_name(platform)
-    case platform
-    when "windows" then "Windows"
-    when "macos" then "macOS"
-    when "linux-gnu" then "Linux GNU"
-    when "linux-musl" then "Linux musl"
-    else platform.capitalize
-    end
-  end
-
   def process_release
     return audit_release if audit_only?
     return backfill_release if backfill_only?
-    return finalize_release if finalize_only?
 
     release = get_or_create_release
     puts "Working with release ID: #{release.id}"
@@ -706,32 +754,37 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     packages = validate_packages_directory
     report_missing_packages(packages)
     # Entries BEFORE uploads: the sha256s they compute feed the idempotent
-    # upload skip (same name + same sha = no re-upload). This platform's
+    # upload skip (same name + same sha = no re-upload). This leg's
     # entries only — nothing merges (issue 139).
     entries = build_manifest_entries(packages)
     publish_release(release, packages, entries)
+    # The leg signs AFTER its own publish (the .asc assets land in the
+    # same leg — spec 13 §2a), so the publish-time gate cannot require
+    # them; the coordinator's release-job audit does.
     verify_completeness(release)
   end
 
-  # AUDIT_ONLY (the 04 audit / a publish dry run): strictly read-only —
-  # finds the release (never creates one), needs no local packages,
-  # uploads nothing, touches no notes; the release's assets are verified
-  # against the expected matrix. The release IS the truth.
+  # AUDIT_ONLY (the coordinator's release job / a publish dry run):
+  # strictly read-only — finds the release (never creates one), needs no
+  # local packages, uploads nothing, touches no notes; the release's
+  # assets are verified against the expected matrix. The release IS the
+  # truth. On signing-enabled lines the audit also requires every served
+  # name's `.asc` (spec 09 §5's no-fold rule).
   def audit_release
     release = find_release
     raise "AUDIT: no release found for tag #{@tag} — nothing to audit" unless release
 
     puts "Working with release ID: #{release.id} (AUDIT mode: no uploads, no notes)"
-    verify_completeness(release)
+    verify_completeness(release, require_signatures: signing_enabled?)
     nil
   end
 
-  # A platform publish writes ONLY names this platform owns (issue 139):
-  # the payload assets (byte-immutable keep / FORCE_REBUILD replace
+  # A leg's publish writes ONLY names this leg owns (issue 139, spec 13
+  # §2a): the payload assets (byte-immutable keep / FORCE_REBUILD replace
   # machinery) and each package's own metadata — its `<asset>.sha256`
-  # sidecars and its `<stem>.manifest.json` shard. No shared file is
-  # touched; the monolithic conveniences and the release notes are the
-  # finalize pass's job, derived from the release's ground truth.
+  # sidecars and its `<stem>.manifest.json` shard. No shared file exists:
+  # the monoliths are consumer-side derivations and the release notes are
+  # written once at creation.
   def publish_release(release, packages, entries)
     packages.each { |package| upload_package(release, package) }
     entries.each { |entry| ensure_package_metadata(release, entry) }
@@ -793,55 +846,8 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     ENV["AUDIT_ONLY"] == "true"
   end
 
-  def finalize_only?
-    ENV["FINALIZE_ONLY"] == "true"
-  end
-
   def backfill_only?
     ENV["BACKFILL_METADATA"] == "true"
-  end
-
-  # The finalize pass — ONE invocation after every platform landed (the
-  # publish.yml release job's last step). The release's ground truth (its
-  # per-package shards + the asset listing) regenerates the monolithic
-  # conveniences and the release notes. No job-local knowledge is merged,
-  # so a scoped re-publish can never shrink the index — the 2026-08-29
-  # incident's root cause (issue 139).
-  def finalize_release
-    release = find_release
-    raise "FINALIZE: no release found for tag #{@tag} — the platform publishes run first" unless release
-
-    puts "Working with release ID: #{release.id} (FINALIZE mode: deriving the monolithic conveniences from the shards)"
-    entries = shard_entries(release)
-    force_upload(release, generate_manifest(entries))
-    force_upload(release, generate_sha256sums(entries))
-    refresh_release_notes(release, entries)
-    verify_metadata_coverage(release, entries)
-    puts "Finalize complete: #{entries.size} package entries derived from the shards"
-  end
-
-  # The release notes list the DERIVED catalog (every shard's package),
-  # refreshed from the release's ground truth — never from one platform's
-  # local knowledge.
-  def refresh_release_notes(release, entries)
-    sections = categorize_packages(entries.map { |entry| entry[:filename] })
-    images = categorize_images(entries.filter_map { |entry| entry.dig(:image, :filename) })
-    with_transient_retries { @client.update_release(release.url, body: generate_release_notes(sections, images)) }
-    puts "Successfully updated release notes"
-  end
-
-  # The release's package entries, one per shard, sorted by package name.
-  # A payload stem without its shard is the migration window (the release
-  # predates per-package shards): its monolithic manifest.json entry
-  # covers it — loudly, and only ever as the transitional fallback; a
-  # stem covered by neither is a named error (fail closed — a derived
-  # index that silently dropped a package is exactly the incident this
-  # redesign kills).
-  def shard_entries(release)
-    entries = shard_assets(release).map { |asset| download_shard_entry(asset) }
-    missing = payload_stems(release) - covered_stems(entries)
-    entries.concat(monolith_fallback_entries(missing)) unless missing.empty?
-    entries.sort_by { |entry| entry[:filename].to_s }
   end
 
   def shard_assets(release)
@@ -858,75 +864,23 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
            .map { |name| package_stem(name) }.uniq
   end
 
-  # The package stems the release's payload assets belong to (metadata
-  # assets themselves never count).
-  def payload_stems(release)
-    all_assets(release).map(&:name)
-                       .select { |name| name.start_with?("tebako-runtime-") }
-                       .reject { |name| name.end_with?(SIDECAR_SUFFIX, SHARD_SUFFIX) }
-                       .map { |name| package_stem(name) }.uniq
-  end
-
-  def monolith_fallback_entries(stems)
-    puts "::warning::#{stems.size} package(s) carry no #{SHARD_SUFFIX} shard yet — covering them from the " \
-         "monolithic manifest.json (transitional; BACKFILL_METADATA=true writes the shards): #{stems.sort.join(", ")}"
-    found = previous_manifest_entries.select { |entry| stems.include?(package_stem(entry[:filename].to_s)) }
-    raise_uncovered_stems(stems - found.map { |entry| package_stem(entry[:filename].to_s) })
-    found
-  end
-
-  # Fail closed on a stem neither a shard nor the monolith covers — never
-  # a silently incomplete derived manifest.
-  def raise_uncovered_stems(uncovered)
-    return if uncovered.empty?
-
-    raise "no shard and no manifest.json entry for #{uncovered.sort.join(", ")} — " \
-          "republish those platforms or repair the release metadata first"
-  end
-
-  # The finalize gate: every payload asset on the release carries its
-  # .sha256 sidecar — a platform invocation that died mid-publish leaves
-  # assets without metadata, and the derived conveniences must never
-  # describe such a gap as complete. (Shard coverage itself is already
-  # guaranteed by shard_entries: a stem no shard covers falls back to the
-  # monolith loudly, or fails closed.)
-  def verify_metadata_coverage(release, entries)
-    missing = missing_sidecars(release, entries)
-    return if missing.empty?
-
-    missing.sort.each { |name| puts "::error::Missing metadata asset: #{name}" }
-    raise "Release #{@tag} has #{missing.size} payload asset(s) without their metadata — " \
-          "republish the owning platform (or run BACKFILL_METADATA=true for a pre-shard release)"
-  end
-
-  # The sidecars the shard-covered entries promise, minus what the release
-  # actually carries.
-  def missing_sidecars(release, entries)
-    present = all_assets(release).map(&:name)
-    entries.flat_map { |entry| metadata_assets(entry).keys }
-           .map { |name| "#{name}#{SIDECAR_SUFFIX}" }
-           .uniq
-           .reject { |name| present.include?(name) }
-  end
-
   # BACKFILL_METADATA=true — the one-shot migration / repair pass for a
   # release published before per-asset metadata: every listed payload
   # asset gets its sidecar (the listing's server-computed digest is the
   # served bytes' truth; the monolith's recorded sha is the digest-less
   # fallback, and a disagreement is named loudly) and every package its
   # shard (synthesized from the monolithic manifest.json — the only other
-  # place the non-derivable fields live). Then the finalize pass runs:
-  # the derived conveniences come out of the new shards.
+  # place the non-derivable fields live). It never touches a monolith or
+  # the notes (spec 13 §2a: nothing derives them server-side anymore).
   def backfill_release
     release = find_release
     raise "BACKFILL: no release found for tag #{@tag}" unless release
 
-    entries = previous_manifest_entries
+    entries = previous_monolith_entries
     raise "BACKFILL needs the release's monolithic manifest.json as the shard source — none found" if entries.empty?
 
     backfill_sidecars(release, entries)
     backfill_shards(release, entries)
-    finalize_release
   end
 
   def backfill_sidecars(release, entries)
@@ -1022,23 +976,26 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
          "the end of the publish fails the run if these are still missing"
   end
 
-  # The per-platform gate (also the audit's): the release job runs with
-  # always(), so packages from failed matrix legs simply never land — the
-  # publish must not LOOK complete when it is not. After the uploads,
-  # re-list the release assets (paginated) and compare against this
-  # platform's expected set: every matrix package (windows names may carry
-  # .exe), its filesystem image, its windows ruby DLL, each landed file's
-  # .sha256 sidecar and the package's .manifest.json shard (issue 139).
+  # The per-leg gate (also the audit's): a failed build leg simply never
+  # lands its package — the release must not LOOK complete when it is
+  # not. After the uploads, re-list the release assets (paginated) and
+  # compare against this leg's expected set: every matrix package
+  # (windows names may carry .exe), its filesystem image, its windows
+  # ruby DLL, each landed file's .sha256 sidecar and the package's
+  # .manifest.json shard (issue 139).
   # Any gap fails the run loudly; without an expected matrix there is
-  # nothing to verify against (warn and pass).
-  def verify_completeness(release)
+  # nothing to verify against (warn and pass). With require_signatures
+  # (the coordinator's audit on a signing-enabled line), every landed
+  # name additionally owes its own `.asc` (spec 09 §5's no-fold rule) —
+  # the publish-time gate passes false: the leg signs AFTER its upload.
+  def verify_completeness(release, require_signatures: false)
     packages = expected_package_names
     if packages.empty?
       puts "::warning::No expected matrix available; release completeness is not verifiable"
       return
     end
 
-    missing = missing_assets(release, packages)
+    missing = missing_assets(release, packages, require_signatures: require_signatures)
     return if missing.empty?
 
     puts "::error::Release #{@tag} is incomplete: #{missing.size} expected asset(s) missing"
@@ -1046,9 +1003,9 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     raise "Release #{@tag} is incomplete (#{missing.size} missing asset(s))"
   end
 
-  def missing_assets(release, packages)
+  def missing_assets(release, packages, require_signatures: false)
     present = all_assets(release).map(&:name)
-    packages.flat_map { |name| missing_package_assets(present, name) }
+    packages.flat_map { |name| missing_package_assets(present, name, require_signatures: require_signatures) }
   end
 
   # One expected package's gaps. Windows executables may or may not carry
@@ -1056,13 +1013,13 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   # expectation matches both. Metadata expectations ride on what actually
   # landed — a package whose exe never landed reports its own name only,
   # never a cascade of secondary sidecar/shard gaps (one error per gap).
-  def missing_package_assets(present, name)
+  def missing_package_assets(present, name, require_signatures: false)
     exe = [name, "#{name}.exe"].find { |candidate| present.include?(candidate) }
     landed, missing = expected_facets(name).partition { |facet| present.include?(facet) }
     missing.unshift(name) unless exe
     return missing if exe.nil?
 
-    missing + missing_metadata(present, name, [exe] + landed)
+    missing + missing_metadata(present, name, [exe] + landed, require_signatures: require_signatures)
   end
 
   # The non-executable artifacts a package is expected to carry: the
@@ -1074,9 +1031,12 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   end
 
   # The metadata a landed package owes: one sidecar per landed asset plus
-  # its shard.
-  def missing_metadata(present, name, landed)
+  # its shard — and, when signatures are required (spec 09 §5: no
+  # artifact is ever "covered by" another's signature), one `.asc` per
+  # landed asset, per sidecar, and per shard.
+  def missing_metadata(present, name, landed, require_signatures: false)
     expected = landed.map { |asset| "#{asset}#{SIDECAR_SUFFIX}" } + ["#{name}#{SHARD_SUFFIX}"]
+    expected += (landed + expected).map { |asset| "#{asset}.asc" } if require_signatures
     expected.reject { |asset| present.include?(asset) }
   end
 
@@ -1542,6 +1502,12 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     %w[GITHUB_TOKEN TEBAKO_VERSION].each do |var|
       raise "#{var} environment variable is required" unless ENV[var]
     end
+    # Armed signing on a publish leg: the keyid must be present and sane
+    # BEFORE any mutation — a shard's `signature` declaration names it
+    # (spec 09 §5/§9), and a leg that cannot declare must fail before
+    # uploading, never ship an under-declared shard. Audits/backfills
+    # declare nothing, so they never gate on it.
+    signing_keyid if signing_enabled? && !audit_only? && !backfill_only?
   end
 
   def validate_packages_directory

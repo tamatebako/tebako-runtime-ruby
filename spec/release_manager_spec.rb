@@ -80,7 +80,7 @@ class FakeRelease
 end
 
 class FakeAssetStore
-  attr_reader :assets, :uploads, :deletes, :updates, :attempts, :upload_content_types
+  attr_reader :assets, :uploads, :deletes, :updates, :attempts, :upload_content_types, :creates
   attr_accessor :manifest_json, :delete_propagation, :page_size
 
   def initialize(names = [])
@@ -93,10 +93,11 @@ class FakeAssetStore
     init_recorders
   end
 
-  def init_recorders
+  def init_recorders # rubocop:disable Metrics/MethodLength
     @uploads = []
     @deletes = []
     @updates = []
+    @creates = []
     @attempts = Hash.new(0)
     @upload_content_types = {}
     @contents = {}
@@ -195,6 +196,14 @@ class FakeClient
     @release
   end
 
+  # The release-create seam: races are scriptable via fail_next(:create, …)
+  # (a concurrent winner's 422), and every create records its notes body.
+  def create_release(_repo, _tag, **opts)
+    @store.attempt(:create)
+    @store.creates << opts
+    @release
+  end
+
   def upload_asset(_url, path, content_type:, name:)
     @store.attempt(:upload)
     @store.assert_uploadable!(name)
@@ -236,14 +245,16 @@ end
 RSpec.describe ReleaseManager do
   around do |example|
     old = %w[GITHUB_TOKEN TEBAKO_VERSION EXPECTED_ENV_MATRIX EXPECTED_RUBY_MATRIX FORCE_REBUILD AUDIT_ONLY
-             FINALIZE_ONLY BACKFILL_METADATA TEBAKO_PUBLISH_SETTLED_PATH].to_h { |key| [key, ENV.fetch(key, nil)] }
+             BACKFILL_METADATA TEBAKO_PUBLISH_SETTLED_PATH
+             TEBAKO_RELEASE_SIGNING_ENABLED TEBAKO_RELEASE_SIGNING_KEYID].to_h { |key| [key, ENV.fetch(key, nil)] }
     ENV["GITHUB_TOKEN"] = "test-token"
     ENV["TEBAKO_VERSION"] = SPEC_VERSION
     ENV["EXPECTED_ENV_MATRIX"] = '[{"host":"macos-15","container":null,"os":"macos","arch":"arm64"}]'
     ENV["EXPECTED_RUBY_MATRIX"] = '["3.3.7"]'
     ENV.delete("FORCE_REBUILD")
-    ENV.delete("FINALIZE_ONLY")
     ENV.delete("BACKFILL_METADATA")
+    ENV.delete("TEBAKO_RELEASE_SIGNING_ENABLED")
+    ENV.delete("TEBAKO_RELEASE_SIGNING_KEYID")
     Dir.mktmpdir do |dir|
       @dir = Pathname.new(dir)
       # The settled-asset ledger (cross-invocation wedge memory) lives in
@@ -336,24 +347,6 @@ RSpec.describe ReleaseManager do
       sha256: Digest::SHA256.file(dll).hexdigest,
       size_bytes: dll.size
     )
-  end
-
-  it "checksummes the windows ruby DLL after its package and image" do
-    exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-windows-ucrt64")
-    img = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-windows-ucrt64.tfs")
-    dll = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-windows-ucrt64.dll")
-    entries = manager.build_manifest_entries([exe, img, dll])
-
-    with_packages do
-      sums = manager.generate_sha256sums(entries).read.lines.map(&:chomp)
-      expect(sums).to eq(
-        [
-          "#{Digest::SHA256.file(exe).hexdigest}  #{exe.basename}",
-          "#{Digest::SHA256.file(img).hexdigest}  #{img.basename}",
-          "#{Digest::SHA256.file(dll).hexdigest}  #{dll.basename}"
-        ]
-      )
-    end
   end
 
   it "warns when a windows package lacks its ruby DLL and when a DLL is orphaned" do
@@ -512,55 +505,6 @@ RSpec.describe ReleaseManager do
     end
   end
 
-  it "checksummes both the package and its image, image line following its package" do
-    exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
-    img = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64.tfs")
-    lone = package("tebako-runtime-#{SPEC_VERSION}-3.1.6-linux-gnu-x86_64")
-    entries = manager.build_manifest_entries([exe, img, lone])
-
-    with_packages do
-      sums = manager.generate_sha256sums(entries).read.lines.map(&:chomp)
-      # Entries (and their sums lines) sort by package name: 3.1.6 < 3.3.7
-      expect(sums).to eq(
-        [
-          "#{Digest::SHA256.file(lone).hexdigest}  #{lone.basename}",
-          "#{Digest::SHA256.file(exe).hexdigest}  #{exe.basename}",
-          "#{Digest::SHA256.file(img).hexdigest}  #{img.basename}"
-        ]
-      )
-    end
-  end
-
-  it "splits images out of the executables sections into their own" do
-    files = [
-      "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64",
-      "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64.tfs",
-      "tebako-runtime-#{SPEC_VERSION}-3.3.7-linux-gnu-x86_64",
-      "tebako-runtime-#{SPEC_VERSION}-3.3.7-linux-gnu-x86_64.tfs"
-    ]
-
-    executables = manager.categorize_packages(files)
-    images = manager.categorize_images(files)
-
-    expect(executables["macos"]).to eq(["tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64"])
-    expect(executables["linux-gnu"]).to eq(["tebako-runtime-#{SPEC_VERSION}-3.3.7-linux-gnu-x86_64"])
-    expect(images["macos"]).to eq(["tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64.tfs"])
-    expect(images["linux-gnu"]).to eq(["tebako-runtime-#{SPEC_VERSION}-3.3.7-linux-gnu-x86_64.tfs"])
-    expect(images["linux-musl"]).to be_empty
-  end
-
-  it "lists image sections in the release notes after the executables" do
-    sections = manager.initialize_sections
-    sections["macos"] = ["tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64"]
-    images = manager.initialize_sections
-    images["macos"] = ["tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64.tfs"]
-
-    notes = manager.generate_release_notes(sections, images)
-
-    expect(notes).to include("### macOS executables\n- tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64\n")
-    expect(notes).to include("### macOS filesystem images\n- tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64.tfs\n")
-  end
-
   it "warns when a package lacks its image" do
     exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
 
@@ -591,43 +535,9 @@ RSpec.describe ReleaseManager do
       .to output(/Missing runtime package: tebako-runtime-#{SPEC_VERSION}-3\.3\.7-macos-arm64/).to_stdout
   end
 
-  it "writes the manifest.json asset with the image entries" do
-    exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
-    img = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64.tfs")
-    entries = manager.build_manifest_entries([exe, img])
-
-    with_packages do
-      manifest = JSON.parse(manager.generate_manifest(entries).read)
-      expect(manifest.size).to eq(1)
-      expect(manifest.first["image"]["filename"])
-        .to eq("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64.tfs")
-      expect(manifest.first["image"]["sha256"]).to eq(Digest::SHA256.file(img).hexdigest)
-      expect(manifest.first["image"]["size_bytes"]).to eq(img.size)
-    end
-  end
-
-  # Spec 18 C2: the published manifest.json IS the release card — the
-  # loader reads the contract set before any download, so the JSON must
-  # carry every era-2 field (validated here, at the producer).
-  it "writes the era-2 contract set into the manifest.json asset" do
-    exe = package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")
-    entries = manager.build_manifest_entries([exe])
-
-    with_packages do
-      manifest = JSON.parse(manager.generate_manifest(entries).read)
-      entry = manifest.first
-      expect(entry["contract_era"]).to eq(2)
-      expect(entry["contract_version"]).to eq(YAML.load_file(File.join(REPO_ROOT, "contract.yml"))
-                                                 .fetch("contract_version"))
-      expect(entry["mount_root"]).to eq("/__tfs__")
-      expect(entry["image_layout"]).to eq(1)
-      expect(entry["built_from"]).to eq(
-        "release" => "v0.2.13",
-        "sources" => [{ "name" => "tfs-ruby-3.3.7-src.tar.gz", "sha256" => "0" * 64 }]
-      )
-    end
-  end
-
+  # The era-2 contract set the monolithic manifest.json used to carry now
+  # lives in the per-package shard (spec 13 §2a) — the shard-content
+  # assertions ride the "per-package metadata (issue 139)" describe below.
   describe "#verify_completeness" do
     let(:store) { FakeAssetStore.new }
     let(:release) { FakeRelease.new(store) }
@@ -635,8 +545,8 @@ RSpec.describe ReleaseManager do
     let(:stem) { "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64" }
     # The sidecar-era expected set (issue 139): the payload files, each
     # landed file's .sha256 sidecar, and the package's .manifest.json
-    # shard. The monolithic conveniences are the finalize pass's business,
-    # never a platform gate's.
+    # shard. The monolithic conveniences are gone (spec 13 §2a —
+    # consumer-side derivations now), never a gate's business.
     let(:expected) do
       [stem, "#{stem}.tfs",
        "#{stem}.manifest.json", "#{stem}.sha256", "#{stem}.tfs.sha256"]
@@ -704,6 +614,33 @@ RSpec.describe ReleaseManager do
 
       expect { fake_manager.verify_completeness(release) }
         .to output(/completeness is not verifiable/).to_stdout
+    end
+
+    # Spec 09 §5's no-fold rule, gate side: a signing-enabled line expects
+    # every served name's own .asc — the coordinator's release-job audit
+    # passes require_signatures: true (via TEBAKO_RELEASE_SIGNING_ENABLED).
+    it "requires every served name's .asc when signatures are required" do
+      expected.each { |name| store.assets << FakeAsset.new(store.assets.size + 1, name) }
+      # Only the exe's .asc landed: the image's and the metadata's .asc
+      # files are missing.
+      store.assets << FakeAsset.new(store.assets.size + 1, "#{stem}.asc")
+
+      expect { fake_manager.verify_completeness(release, require_signatures: true) }
+        .to raise_error(/incomplete.*4 missing/)
+        .and output(/Missing asset: #{Regexp.escape("#{stem}.tfs.asc")}/).to_stdout
+    end
+
+    it "passes the signature-requiring audit when every served name carries its .asc" do
+      (expected + expected.map { |name| "#{name}.asc" })
+        .each { |name| store.assets << FakeAsset.new(store.assets.size + 1, name) }
+
+      expect { fake_manager.verify_completeness(release, require_signatures: true) }.not_to raise_error
+    end
+
+    it "tolerates unsigned releases when signatures are not required (unsigned stays first-class)" do
+      expected.each { |name| store.assets << FakeAsset.new(store.assets.size + 1, name) }
+
+      expect { fake_manager.verify_completeness(release, require_signatures: false) }.not_to raise_error
     end
   end
 
@@ -1377,37 +1314,74 @@ RSpec.describe ReleaseManager do
       entry
     end
 
-    it "reads the previous monolithic manifest for the byte-truth revert (transitional)" do
-      previous_manifest([
-                          previous_entry("tebako-runtime-#{SPEC_VERSION}-3.1.6-linux-gnu-x86_64",
-                                         "linux-gnu-x86_64", "a" * 64, image_sha256: "b" * 64),
-                          previous_entry("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64",
-                                         "macos-arm64", "c" * 64)
-                        ])
+    # Spec 13 §2a: the shards are the previous-entry authority — this leg
+    # reads only the shards its expected matrix names, symbolized, image
+    # facet included.
+    it "reads this leg's previous entries from the shards (the authority)" do
+      stem = "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64"
+      other = "tebako-runtime-#{SPEC_VERSION}-3.1.6-linux-gnu-x86_64"
+      entry = { "filename" => stem, "platform" => "macos-arm64", "sha256" => "c" * 64, "size_bytes" => 10,
+                "image" => { "filename" => "#{stem}.tfs", "sha256" => "d" * 64, "size_bytes" => 20 } }
+      store.assets << FakeAsset.new(90, "#{stem}.manifest.json", "https://download.test/#{stem}.manifest.json")
+      store.set_content("https://download.test/#{stem}.manifest.json", JSON.generate(entry))
+      # Another platform's shard: outside this leg's expected matrix —
+      # never downloaded, never returned.
+      store.assets << FakeAsset.new(91, "#{other}.manifest.json", "https://download.test/#{other}.manifest.json")
+      store.set_content("https://download.test/#{other}.manifest.json",
+                        JSON.generate({ "filename" => other, "platform" => "linux-gnu-x86_64",
+                                        "sha256" => "e" * 64, "size_bytes" => 1 }))
 
       entries = fake_manager.previous_manifest_entries
 
-      # The kept entries survive the JSON round trip, image facet included
-      expect(entries.map { |entry| entry[:filename] }).to eq(
-        ["tebako-runtime-#{SPEC_VERSION}-3.1.6-linux-gnu-x86_64",
-         "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64"]
-      )
-      kept = entries.find { |entry| entry[:platform] == "linux-gnu-x86_64" }
-      expect(kept[:sha256]).to eq("a" * 64)
-      expect(kept[:image][:sha256]).to eq("b" * 64)
-      expect(fake_manager.previous_entry_for("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64")[:sha256])
-        .to eq("c" * 64)
+      expect(entries.map { |e| e[:filename] }).to eq([stem])
+      expect(entries.first[:image][:sha256]).to eq("d" * 64)
+      expect(fake_manager.previous_entry_for(stem)[:sha256]).to eq("c" * 64)
+    end
+
+    # The pre-de-rendezvous migration window: a stem no shard covers falls
+    # back to the monolithic manifest.json — loudly, scoped to this leg's
+    # matrix, never an error.
+    it "covers a shard-less expected stem from the monolith, loudly (the migration window)" do
+      stem = "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64"
+      previous_manifest([
+                          previous_entry("tebako-runtime-#{SPEC_VERSION}-3.1.6-linux-gnu-x86_64",
+                                         "linux-gnu-x86_64", "a" * 64, image_sha256: "b" * 64),
+                          previous_entry(stem, "macos-arm64", "c" * 64)
+                        ])
+
+      entries = nil
+      expect { entries = fake_manager.previous_manifest_entries }
+        .to output(/pre-de-rendezvous migration window.*#{Regexp.escape(stem)}/).to_stdout
+
+      # The out-of-matrix monolith entry stays unread for this leg.
+      expect(entries.map { |e| e[:filename] }).to eq([stem])
+      expect(fake_manager.previous_entry_for(stem)[:sha256]).to eq("c" * 64)
+    end
+
+    # An unscoped invocation (no expected matrix — the ad-hoc/operator
+    # case) reads every shard, the pre-de-rendezvous behavior's successor.
+    it "reads every shard when no expected matrix scopes the invocation" do
+      ENV.delete("EXPECTED_ENV_MATRIX")
+      ENV.delete("EXPECTED_RUBY_MATRIX")
+      stems = ["tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64",
+               "tebako-runtime-#{SPEC_VERSION}-3.1.6-linux-gnu-x86_64"]
+      stems.each_with_index do |stem, index|
+        store.assets << FakeAsset.new(90 + index, "#{stem}.manifest.json",
+                                      "https://download.test/#{stem}.manifest.json")
+        store.set_content("https://download.test/#{stem}.manifest.json",
+                          JSON.generate({ "filename" => stem, "sha256" => index.to_s * 64, "size_bytes" => 1 }))
+      end
+
+      expect(fake_manager.previous_manifest_entries.map { |e| e[:filename] }).to eq(stems)
     end
 
     it "covers a facet lookup through the package entry (previous_entry_covering)" do
-      previous_manifest([
-                          previous_entry("tebako-runtime-#{SPEC_VERSION}-3.1.6-linux-gnu-x86_64",
-                                         "linux-gnu-x86_64", "a" * 64, image_sha256: "b" * 64)
-                        ])
+      stem = "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64"
+      previous_manifest([previous_entry(stem, "macos-arm64", "a" * 64, image_sha256: "b" * 64)])
 
-      covering = fake_manager.previous_entry_covering("tebako-runtime-#{SPEC_VERSION}-3.1.6-linux-gnu-x86_64.tfs")
+      covering = fake_manager.previous_entry_covering("#{stem}.tfs")
 
-      expect(covering[:filename]).to eq("tebako-runtime-#{SPEC_VERSION}-3.1.6-linux-gnu-x86_64")
+      expect(covering[:filename]).to eq(stem)
       expect(fake_manager.previous_entry_covering("tebako-runtime-#{SPEC_VERSION}-9.9.9-nowhere")).to be_nil
     end
 
@@ -1549,8 +1523,9 @@ RSpec.describe ReleaseManager do
       stem = "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64"
       expect(store.uploads).to contain_exactly(stem, "#{stem}.tfs",
                                                "#{stem}.manifest.json", "#{stem}.sha256", "#{stem}.tfs.sha256")
-      # The monolithic conveniences and the release notes are the
-      # finalize pass's job — a platform publish never writes them.
+      # No shared file exists anymore (spec 13 §2a): the monoliths are
+      # consumer-side derivations and the notes are written once at
+      # release creation — a platform publish never writes either.
       expect(store.uploads).not_to include("SHA256SUMS.txt", "manifest.json")
       expect(store.updates).to be_empty
     end
@@ -1692,11 +1667,11 @@ RSpec.describe ReleaseManager do
     end
   end
 
-  # Issue 139's single writer for the shared files: after every platform
-  # landed, the finalize pass derives the monolithic conveniences and the
-  # release notes from the release's own shards + asset listing — ground
-  # truth only, never a job's local merge.
-  describe "the finalize pass (issue 139)" do
+  # Spec 13 §2a's de-rendezvous: N legs create the release concurrently.
+  # The create is the natural race — find-miss then create meets another
+  # leg's create — and the loser's 422 rides the winner's release once it
+  # becomes visible. Never an error in itself.
+  describe "the race-safe release create" do
     let(:store) { FakeAssetStore.new }
     let(:release) { FakeRelease.new(store) }
     let(:client) { FakeClient.new(store) }
@@ -1704,116 +1679,94 @@ RSpec.describe ReleaseManager do
 
     before { allow(fake_manager).to receive(:sleep) }
 
-    # A package as the release carries it in the shard era: payload
-    # assets, their sidecars, and the shard serving the entry.
-    def stage_shard_era_package(stem, platform, sha, image_sha: nil, sidecars: true)
-      add_asset(stem)
-      entry = { "filename" => stem, "platform" => platform, "sha256" => sha, "size_bytes" => 10 }
-      entry["image"] = stage_image(stem, image_sha) if image_sha
-      stage_shard(stem, entry)
-      stage_sidecar(stem, sha) if sidecars
-      stage_sidecar("#{stem}.tfs", image_sha) if sidecars && image_sha
-      entry
+    it "returns the existing release without creating when the tag resolves" do
+      expect(fake_manager.get_or_create_release.url).to eq(release.url)
+      expect(store.creates).to be_empty
     end
 
-    def add_asset(name)
-      store.assets << FakeAsset.new(store.assets.size + 100, name, "https://download.test/#{name}")
-    end
-
-    def stage_image(stem, image_sha)
-      add_asset("#{stem}.tfs")
-      { "filename" => "#{stem}.tfs", "sha256" => image_sha, "size_bytes" => 20 }
-    end
-
-    def stage_shard(stem, entry)
-      add_asset("#{stem}.manifest.json")
-      store.set_content("https://download.test/#{stem}.manifest.json", "#{JSON.pretty_generate(entry)}\n")
-    end
-
-    def stage_sidecar(name, digest)
-      add_asset("#{name}.sha256")
-      store.set_content("https://download.test/#{name}.sha256", "#{digest}  #{name}\n")
-    end
-
-    it "derives the monoliths and the release notes from the shards" do
-      stage_shard_era_package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64", "macos-arm64",
-                              "a" * 64, image_sha: "b" * 64)
-      stage_shard_era_package("tebako-runtime-#{SPEC_VERSION}-3.1.6-linux-gnu-x86_64", "linux-gnu-x86_64",
-                              "c" * 64, image_sha: "d" * 64)
-
-      with_packages do
-        expect { fake_manager.finalize_release }.to output(/Finalize complete: 2 package entries/).to_stdout
-      end
-
-      manifest = JSON.parse(store.content_for("https://download.test/manifest.json"))
-      expect(manifest.map { |entry| entry["filename"] }).to eq(
-        ["tebako-runtime-#{SPEC_VERSION}-3.1.6-linux-gnu-x86_64",
-         "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64"]
-      )
-      expect(manifest.last["image"]["sha256"]).to eq("b" * 64)
-      sums = store.content_for("https://download.test/SHA256SUMS.txt")
-      expect(sums).to include("#{"a" * 64}  tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64",
-                              "#{"b" * 64}  tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64.tfs")
-      expect(store.updates.size).to eq(1)
-      expect(store.updates.first).to include("`<asset>.sha256` sidecar")
-    end
-
-    it "covers a shard-less package from the monolith, loudly (the migration window)" do
-      stage_shard_era_package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64", "macos-arm64", "a" * 64)
-      legacy = "tebako-runtime-#{SPEC_VERSION}-3.2.11-linux-musl-x86_64"
-      store.assets << FakeAsset.new(301, legacy, "https://download.test/#{legacy}")
-      sidecar = FakeAsset.new(302, "#{legacy}.sha256", "https://download.test/#{legacy}.sha256")
-      store.assets << sidecar
-      store.set_content(sidecar.browser_download_url, "#{"e" * 64}  #{legacy}\n")
-      store.manifest_json = JSON.generate([{ "filename" => legacy, "platform" => "linux-musl-x86_64",
-                                             "sha256" => "e" * 64, "size_bytes" => 1 }])
-      store.assets << FakeAsset.new(90, "manifest.json", "https://download.test/manifest.json")
-
-      with_packages do
-        expect { fake_manager.finalize_release }
-          .to output(/carry no \.manifest\.json shard yet.*#{Regexp.escape(legacy)}/).to_stdout
-      end
-
-      manifest = JSON.parse(store.content_for("https://download.test/manifest.json"))
-      expect(manifest.map { |entry| entry["filename"] }).to include(legacy)
-    end
-
-    it "fails closed when a shard-less package is covered by neither shard nor monolith" do
-      stage_shard_era_package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64", "macos-arm64", "a" * 64)
-      store.assets << FakeAsset.new(301, "tebako-runtime-#{SPEC_VERSION}-3.2.11-linux-musl-x86_64",
-                                    "https://download.test/orphan")
-
-      with_packages do
-        expect { fake_manager.finalize_release }
-          .to raise_error(/no shard and no manifest\.json entry.*3\.2\.11-linux-musl/)
-      end
-    end
-
-    it "fails the coverage gate when a landed payload asset's sidecar never landed" do
-      stage_shard_era_package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64", "macos-arm64",
-                              "a" * 64, sidecars: false)
-
-      with_packages do
-        expect { fake_manager.finalize_release }
-          .to raise_error(/without their metadata/)
-          .and output(/::error::Missing metadata asset: tebako-runtime-#{SPEC_VERSION}-3\.3\.7-macos-arm64\.sha256/)
-          .to_stdout
-      end
-    end
-
-    it "process_release dispatches to the finalize pass under FINALIZE_ONLY" do
-      ENV["FINALIZE_ONLY"] = "true"
-      stage_shard_era_package("tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64", "macos-arm64", "a" * 64)
-
-      with_packages do
-        expect { fake_manager.process_release }.to output(/FINALIZE mode/).to_stdout
-      end
-    end
-
-    it "refuses to finalize a tag with no release" do
+    it "creates the release with the static notes when the tag is missing" do
       allow(client).to receive(:release_for_tag).and_raise(Octokit::NotFound)
 
-      expect { fake_manager.finalize_release }.to raise_error(/FINALIZE: no release found/)
+      expect(fake_manager.get_or_create_release.url).to eq(release.url)
+
+      expect(store.creates.size).to eq(1)
+      body = store.creates.first.fetch(:body)
+      # Static notes (spec 13 §2a): they point at the shards + sidecars,
+      # the consumer-side index derivation, and the registry — never an
+      # asset enumeration (a read-modify-write in disguise).
+      expect(body).to include("manifest.json` shard", "tebako-pkg release-index", "tpkg-registry.yaml")
+      expect(body).not_to include("### macOS", "### Windows")
+    end
+
+    it "rides the winner's release when the create loses the race (422)" do
+      # The find misses, the create 422s (a concurrent leg won), and the
+      # winner's release becomes visible on the first poll.
+      responses = %i[raise_not_found return_release]
+      allow(client).to receive(:release_for_tag) do
+        responses.shift == :raise_not_found ? (raise Octokit::NotFound) : release
+      end
+      store.fail_next(:create, Octokit::UnprocessableEntity.new)
+
+      expect(fake_manager.get_or_create_release).to eq(release)
+      expect(store.attempts[:create]).to eq(1)
+    end
+
+    it "fails named when the loser release never becomes visible" do
+      allow(client).to receive(:release_for_tag).and_raise(Octokit::NotFound)
+      store.fail_next(:create, Octokit::UnprocessableEntity.new)
+      stub_const("ReleaseManager::RELEASE_CREATE_POLL_DELAYS", [0, 0])
+
+      expect { fake_manager.get_or_create_release }
+        .to raise_error(/rejected the create.*never became visible/)
+    end
+  end
+
+  # Spec 13 §2a / spec 09 §5: on signing-enabled lines every shard entry
+  # declares its own `signature` block — {keyid, asc}, the signer's
+  # 16-lowercase-hex primary keyid and the exact .asc asset name — at the
+  # entry and facet levels. Declared by the factory, flowed verbatim by
+  # consumers, fulfilled by the leg's sign pass.
+  describe "shard signature declarations" do
+    let(:store) { FakeAssetStore.new }
+    let(:release) { FakeRelease.new(store) }
+    let(:fake_manager) { described_class.new(client: FakeClient.new(store)) }
+
+    it "declares signature blocks at entry, image, and dll level when armed" do
+      ENV["TEBAKO_RELEASE_SIGNING_ENABLED"] = "true"
+      ENV["TEBAKO_RELEASE_SIGNING_KEYID"] = "efc3c250f7862a48"
+      stem = "tebako-runtime-#{SPEC_VERSION}-3.3.7-windows-ucrt64"
+      exe = package("#{stem}.exe")
+      img = package("#{stem}.tfs")
+      dll = package("#{stem}.dll")
+
+      entry = fake_manager.build_manifest_entries([exe, img, dll]).first
+
+      expect(entry[:signature]).to eq(keyid: "efc3c250f7862a48", asc: "#{stem}.exe.asc")
+      expect(entry[:image][:signature]).to eq(keyid: "efc3c250f7862a48", asc: "#{stem}.tfs.asc")
+      expect(entry[:dll][:signature]).to eq(keyid: "efc3c250f7862a48", asc: "#{stem}.dll.asc")
+    end
+
+    it "declares nothing when the line is not signing-enabled (unsigned stays first-class)" do
+      stem = "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64"
+      entry = fake_manager.build_manifest_entries([package(stem), package("#{stem}.tfs")]).first
+
+      expect(entry).not_to have_key(:signature)
+      expect(entry[:image]).not_to have_key(:signature)
+    end
+
+    it "fails fast and named when armed with a malformed keyid" do
+      ENV["TEBAKO_RELEASE_SIGNING_ENABLED"] = "true"
+      ENV["TEBAKO_RELEASE_SIGNING_KEYID"] = "NOT-HEX"
+
+      expect { described_class.new }
+        .to raise_error(/TEBAKO_RELEASE_SIGNING_KEYID must be the signer's 16-lowercase-hex/)
+    end
+
+    it "skips the keyid check in audit mode (the audit signs nothing)" do
+      ENV["TEBAKO_RELEASE_SIGNING_ENABLED"] = "true"
+      ENV["AUDIT_ONLY"] = "true"
+
+      expect { described_class.new }.not_to raise_error
     end
   end
 
@@ -1821,7 +1774,8 @@ RSpec.describe ReleaseManager do
   # the missing sidecars (from the listing's server-computed digests —
   # the served bytes' truth) and the missing shards (from the monolithic
   # manifest.json, sha fields re-anchored to the digests) onto a pre-shard
-  # release, then finalizes.
+  # release. It never touches a monolith or the notes (spec 13 §2a: the
+  # monoliths are consumer-side derivations now, written by no one).
   describe "the backfill pass (issue 139 migration)" do
     let(:store) { FakeAssetStore.new }
     let(:release) { FakeRelease.new(store) }
@@ -1830,7 +1784,7 @@ RSpec.describe ReleaseManager do
 
     before { allow(fake_manager).to receive(:sleep) }
 
-    it "writes sidecars from the listing digests and shards from the monolith, then finalizes" do
+    it "writes sidecars from the listing digests and shards from the monolith" do
       stem = "tebako-runtime-#{SPEC_VERSION}-3.3.7-macos-arm64"
       store.assets << FakeAsset.new(7, stem, "https://download.test/#{stem}",
                                     "sha256:#{"a" * 64}")
@@ -1846,7 +1800,7 @@ RSpec.describe ReleaseManager do
 
       with_packages do
         expect { fake_manager.backfill_release }
-          .to output(/disagree with the manifest\.json record.*Finalize complete: 1 package entries/m).to_stdout
+          .to output(/disagree with the manifest\.json record/).to_stdout
       end
 
       expect(store.content_for("https://download.test/#{stem}.sha256")).to eq("#{"a" * 64}  #{stem}\n")
@@ -1854,7 +1808,9 @@ RSpec.describe ReleaseManager do
       shard = JSON.parse(store.content_for("https://download.test/#{stem}.manifest.json"))
       expect(shard["sha256"]).to eq("a" * 64)
       expect(shard["image"]["sha256"]).to eq("b" * 64)
-      expect(store.content_for("https://download.test/manifest.json")).to include(stem, "a" * 64)
+      # The monolith is a read-only source here — never rewritten.
+      expect(store.updates).to be_empty
+      expect(store.uploads).not_to include("manifest.json", "SHA256SUMS.txt")
     end
 
     it "fails closed when the release carries no monolith to synthesize from" do

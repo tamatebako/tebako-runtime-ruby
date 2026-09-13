@@ -11,9 +11,16 @@ How a runtime release ships under the multi-staged hierarchy. Written after the
 - `build-<platform>.yml` × 4 — the thin triggers (push/PR/dispatch).
 - `_build-platform.yml` — the one per-platform unit: compute → build → publish.
 - `publish.yml` — the coordinator (era baselines, audits, slice dispatches).
-- `scripts/upload_release.rb` — the publish: manifest merge, content skip,
-  convergence loop, completeness gate. Spec-locked in
-  `spec/release_manager_spec.rb`.
+- `scripts/upload_release.rb` — the in-leg publish + the coordinator's
+  audit: write-once per-leg asset upload, content skip, convergence loop,
+  completeness gate. Spec-locked in `spec/release_manager_spec.rb`.
+- `scripts/sign_release.rb` — the in-leg signer (spec 09 §5): every served
+  name carries its own `.asc`, digest-verified against the release listing.
+  Spec-locked in `spec/sign_release_spec.rb`.
+- `tools/registry_update.rb` — the registry renderer (spec 04 §2): the
+  coordinator's release job renders `tpkg-registry.yaml` from the release's
+  shards and lands it on main by bot PR. Spec-locked in
+  `spec/registry_update_spec.rb`.
 - tebako-ci-containers — the toolchain images, tagged per factory VERSION.
 
 ## Normal operations
@@ -31,8 +38,10 @@ How a runtime release ships under the multi-staged hierarchy. Written after the
 
    Wait for `build-containers` to go green (both images × both arches).
 2. PR the VERSION bump; merge when the tree-computed legs are green.
-3. The merge push fires the four triggers with publish=true. Their publishes
-   land the tidy set and merge the manifest.
+3. The merge push fires the four triggers with publish=true. Their legs
+   publish the tidy set in-leg (write-once names each leg owns) and sign
+   them; the coordinator's release job audits the whole matrix and lands
+   the registry PR.
 4. Fire the era baseline when you want the full catalog:
 
    ```sh
@@ -69,14 +78,23 @@ release'` route exists for back-compat only.
    the convergence loop (46-min budget) and content-skip, but during a
    declared-bad window prefer: builds-only dispatches (`publish=false`) → one
    single-pass publish when the backend recovers.
-2. **Never hand-edit the manifest.** The per-platform publishes merge it; the
-   era baseline regenerates every entry from fresh builds. If the manifest is
-   corrupt but assets are intact, the repair is a republish, not an edit.
-3. **The release is the store.** Assets persist; the manifest mirrors them.
-   Consumers read the manifest; the `.sha256` sidecars are the trust anchor.
-4. **Publishes serialize globally** (`publish-runtime-packages`, never
-   cancel). The merge is read-modify-write; the serialization is what makes
-   per-platform independence safe.
+2. **There is no monolithic manifest on the release to hand-edit (spec 13
+   §2a).** `manifest.json` / `SHA256SUMS.txt` are consumer-side derivations
+   (`tebako-pkg release-index`) computed from the shards + the asset
+   listing; the shards themselves are write-once per leg. If a shard or
+   sidecar is wrong but its assets are intact, the repair is re-running
+   that leg's publish (or `BACKFILL_METADATA=true` for a pre-shard
+   release), never an edit.
+3. **The release is the store.** Assets persist; the shards mirror them.
+   Consumers read the shards (or the registry); the `.sha256` sidecars are
+   the trust anchor, and on signing-enabled lines every served name's
+   `.asc` rides next to it (spec 09 §5).
+4. **Legs publish concurrently — there is nothing to serialize (roadmap
+   85).** Every leg writes only names it owns, so the old global publish
+   group is gone from the publish path; the `publish-runtime-packages`
+   group remains on the coordinator's audit+registry job as politeness
+   (two coordinators need not interleave), and the registry PR is
+   arbitrated by git itself.
 5. **A failed publish is always re-runnable** — content-skips make reruns
    cumulative-safe. Prefer rerunning over improvising.
 6. **Check for stray dispatches before assuming a queue stall.** A lost
