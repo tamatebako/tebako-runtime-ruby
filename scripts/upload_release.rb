@@ -49,7 +49,7 @@ require "tebako_runtime_builder"
 
 RUNTIME_REPO = "tamatebako/tebako-runtime-ruby"
 
-# The bootstrap <-> runtime contract version (roadmap 45) emitted into every
+# The bootstrap <-> runtime contract version emitted into every
 # manifest entry. contract.yml at the repo root is the release pipeline's
 # single source of truth; the compiled-in TEBAKO_CONTRACT_VERSION in the
 # runtime driver is CI-locked to agree with it (scripts/check_contract_version.rb).
@@ -77,7 +77,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   CONTRACT_ERA = 2
 
   # Per-asset metadata, write-once, no shared name (issue 139, the
-  # de-rendezvous — spec 13 §2a, roadmap 85): the release's asset listing
+  # de-rendezvous — spec 13 §2a): the release's asset listing
   # IS the package index. Every payload asset ships with a
   # `<asset>.sha256` sidecar in the store's trust-anchor shape (spec 00
   # §8: "<sha256>  <filename>\n"), and every package with a
@@ -86,7 +86,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   # block — spec 09 §5). The leg that built a package uploads its own
   # assets and metadata and nothing else — the monolithic
   # manifest.json / SHA256SUMS.txt are NEVER release assets (they are
-  # consumer-side derivations, `tebako-pkg release-index`), the release
+  # consumer-side derivations from the shards + the asset listing), the release
   # notes are written once at creation, and no invocation ever
   # read-modify-writes a name another leg owns (the 2026-08-29
   # partial-merge + 422-wedge incident; the 2026-09-12 finalize wedge —
@@ -125,7 +125,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
     version = data.is_a?(Hash) ? data["contract_version"] : nil
     return version if version.is_a?(Integer) && version.positive?
 
-    raise "#{CONTRACT_YML} does not define a positive integer contract_version (roadmap 45)"
+    raise "#{CONTRACT_YML} does not define a positive integer contract_version"
   end
 
   # One manifest entry per runtime PACKAGE (the executable). A sibling
@@ -134,7 +134,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   # one-per-package so existing consumers (which match on ruby_version /
   # platform / filename) are unaffected, and a .tfs file never becomes
   # a top-level entry of its own. The additive `contract_version` key
-  # (roadmap 45) follows the same compat rule, and so does the windows
+  # follows the same compat rule, and so does the windows
   # ruby DLL (<package>.dll, issue 40) folded as `dll` with the PE name
   # the store entry materializes (`install_as`).
   def build_manifest_entries(packages) # rubocop:disable Metrics/AbcSize
@@ -285,7 +285,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   # runs out — a metadata rewrite never dies on the first bad cycle.
   # The convergence cycle sleeps, ~46 min of patience. Tonight's backend
   # (2026-08-03) blocked a deleted name's re-upload for 4.5+ HOURS.
-  # Since the de-rendezvous (spec 13 §2a, roadmap 85) a leg rewrites only
+  # Since the de-rendezvous (spec 13 §2a) a leg rewrites only
   # its OWN packages' shards/sidecars — every name it touches is one it
   # owns, so a convergence grind can never rendezvous with another leg;
   # an incident night is an incident night, and the legs run concurrently.
@@ -394,8 +394,8 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
       own detached `.asc` (spec 09 §5).
 
       There is no monolithic `manifest.json` / `SHA256SUMS.txt` release asset: both are
-      derivable conveniences, computed consumer-side from the shards + the asset listing
-      (`tebako-pkg release-index`). The machine-readable resolution index is this repo's
+      derivable conveniences, computed consumer-side from the shards + the asset listing.
+      The machine-readable resolution index is this repo's
       `tpkg-registry.yaml` (spec 04 §2).
     BODY
   end

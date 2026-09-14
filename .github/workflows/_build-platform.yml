@@ -47,11 +47,12 @@
 # Stage 4 (publish + sign): the leg that built a package publishes it
 #   (scripts/upload_release.rb) and signs its served names
 #   (scripts/sign_release.rb) in the same invocation — spec 13 §2a's
-#   de-rendezvous (roadmap 85): write-once names this leg owns alone
+#   de-rendezvous: write-once names this leg owns alone
 #   (payload + .sha256 sidecars + .manifest.json shard + every .asc),
 #   so N legs publish concurrently with zero rendezvous and no shared
 #   mutable file exists (the monolithic manifest.json / SHA256SUMS.txt
-#   are gone — `tebako-pkg release-index` derives them consumer-side).
+#   are gone — each shard IS its release-index entry, the resolver's
+#   primary form; the monoliths are derivable consumer-side).
 #   The coordinator (publish.yml) keeps ONE release job: the audit of
 #   the whole matrix + the registry render/PR.
 
@@ -319,7 +320,7 @@ jobs:
           echo "Link-unit release pin: '${pin}' (empty = build from source)"
           echo "release=$pin" >> "$GITHUB_OUTPUT"
 
-      # Roadmap 45: fail before the matrix builds anything if contract.yml
+      # Fail before the matrix builds anything if contract.yml
       # (the release pipeline's source of truth) and the compiled-in
       # TEBAKO_CONTRACT_VERSION in the runtime driver disagree -- a contract
       # bump edits both in the same commit. Contract 2's driver is
@@ -876,8 +877,8 @@ jobs:
             # no rust toolchain at all (the 0.16.19 linux legs configured
             # YJIT out). Provision the ecosystem-pinned toolchain in-leg
             # and lead PATH with it for the configure/make below. The
-            # tpkg-builder images carry the pin baked in (TODO.v2-1/13
-            # moves these legs onto them); the script skips when the pin
+            # tpkg-builder images carry the pin baked in (a future move puts
+            # these legs onto them); the script skips when the pin
             # is already present.
             /mnt/w/ci/prepare-rust-toolchain.sh && \
             PATH="/opt/cargo/bin:$PATH" /mnt/w/tools/build_runtime --ruby "${{ matrix.ruby.version }}" --output "/mnt/w/runtime-packages/$runtime" \
@@ -1411,7 +1412,7 @@ jobs:
           fi
           bash ci/check_symbol_provenance.sh "${args[@]}"
 
-      # Roadmap item 19: boot-smoke the freshly built runtime BEFORE the
+      # Boot-smoke the freshly built runtime BEFORE the
       # artifacts leave the leg. spec/boot_smoke_spec.rb (tag :boot_smoke)
       # boots the executable in the spec-17 smoke form (TEBAKO_RUNTIME_IMAGE
       # = the leg's own .tfs, no --tebako-entry -- the driver mounts and
@@ -1463,7 +1464,7 @@ jobs:
       # environment is a real musl userland of the same generation, so
       # the musl legs smoke inside an alpine container. (The musl symbol
       # floor for DISTRIBUTION — musl >= 1.2.3 / alpine >= 3.17 — is a
-      # separate, documented decision; TODO.v2-1/11.)
+      # separate, documented decision.)
       - name: Boot-smoke the fresh runtime (musl legs, in alpine)
         if: matrix.env.os == 'linux-musl'
         env:
@@ -1549,7 +1550,7 @@ jobs:
           path: devkit/
           retention-days: 1
 
-      # Spec 13 §2a (the de-rendezvous, roadmap 85): the leg that built a
+      # Spec 13 §2a (the de-rendezvous): the leg that built a
       # package publishes it — payload assets + .sha256 sidecars + the
       # .manifest.json shard, write-once names this leg owns alone — and
       # then signs every served name in the same invocation (spec 09 §5's

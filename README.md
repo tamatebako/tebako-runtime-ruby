@@ -114,7 +114,7 @@ entry's shape) and loads racc's `cparse.so` from the image — a real
 `LoadLibrary` bind of an in-image PE extension against the DLL
 (`spec/boot_smoke_spec.rb`, the `native_ext` scenario).
 
-## Bootstrap ↔ runtime contract version (roadmap 45)
+## Bootstrap ↔ runtime contract version
 
 The bootstrap (released from tamatebako/tebako) and the runtime images
 published here version independently, so the protocol between them — the
@@ -143,7 +143,7 @@ build otherwise. The bootstrap side (negotiation, `min_contract..max_contract`
 range, `ContractMismatch` named error) lives in the tebako-rs workspace; the
 version → semantics changelog table is spec 06's.
 
-## Release metadata: per-asset sidecars, per-package shards (issue 139, roadmap 85)
+## Release metadata: per-asset sidecars, per-package shards
 
 The release's asset listing IS the package index. A build leg publishes and
 signs IN-LEG (spec 13 §2a's de-rendezvous): the leg that built a package
@@ -177,7 +177,7 @@ creation and never rewritten.
 
 The monolithic **`manifest.json`** and **`SHA256SUMS.txt`** are GONE as
 release assets: both are derivable conveniences, computed consumer-side
-from the shards + the asset listing (`tebako-pkg release-index`). The
+from the shards + the asset listing. The
 machine-readable resolution index is this repo's **`tpkg-registry.yaml`**
 (spec 04 §2), rendered from the release's shards by the publish
 coordinator's audit+registry job (`tools/registry_update.rb`) and landed
@@ -197,10 +197,10 @@ the digests). It never touches a monolith or the notes.
 - `VERSION` — the package version: package names and the release tag follow
   it (`v$(cat VERSION)`), and the gem's RuntimeManager resolves packages by
   exactly this version. Bump it in lockstep with the tebako gem version the
-  produced runtimes serve. (Not the roadmap-45 contract version — that one
+  produced runtimes serve. (Not the bootstrap contract version — that one
   lives in `contract.yml`.)
 - `contract.yml` + `schema/` — the bootstrap ↔ runtime contract version
-  (roadmap 45) and its JSON schema; `scripts/check_contract_version.rb`
+  and its JSON schema; `scripts/check_contract_version.rb`
   locks it against the compiled-in constant (see the contract section above).
 - `build/` — the self-contained CMake build project (vendored from the
   tebako gem's runtime press driver, adapted to the pre-patched source):
@@ -231,7 +231,7 @@ bundle install
 bundle exec rspec
 ```
 
-### Runtime boot smoke (roadmap item 19)
+### Runtime boot smoke
 
 `spec/boot_smoke_spec.rb` (tag `:boot_smoke`) boots a built runtime
 executable and exercises the memfs syscall surface from inside the

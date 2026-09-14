@@ -31,7 +31,7 @@ require "json_schemer"
 require "pathname"
 require "yaml"
 
-# Contract version agreement check (roadmap 45). The bootstrap <-> runtime
+# Contract version agreement check. The bootstrap <-> runtime
 # contract version lives in TWO representations on purpose:
 #   - contract.yml at the repo root -- the release pipeline's source of
 #     truth (scripts/upload_release.rb emits it into every manifest.json
@@ -65,11 +65,11 @@ class ContractVersionCheck
     violations = schema_errors
     if violations.empty? && driver_version.nil?
       violations << "#{@driver_src} carries no TEBAKO_CONTRACT_VERSION constant -- " \
-                    "the runtime must compile its contract version in (roadmap 45)"
+                    "the runtime must compile its contract version in"
     elsif violations.empty? && driver_version != yaml_version
       violations << "contract.yml contract_version is #{yaml_version} but the compiled-in " \
                     "TEBAKO_CONTRACT_VERSION in #{@driver_src} is #{driver_version} -- " \
-                    "a contract bump edits both in the same commit (roadmap 45)"
+                    "a contract bump edits both in the same commit"
     end
     violations
   end
