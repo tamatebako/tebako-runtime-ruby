@@ -1699,3 +1699,59 @@ jobs:
             # when no policy event fired; if-no-files-found tolerates.
             .dogfood-scratch/tebako-home/journal.log
           retention-days: 7
+
+  # The terminal aggregate — and the branch-protection gate. The build
+  # legs are a dynamic matrix whose check names shift with the ruby
+  # catalog (a version bump renames every leg), so protection pins this
+  # job's stable per-platform check name ("<platform> / all legs green")
+  # instead of any leg's. Green means: the chain-gated source roll and
+  # the dependency-tree matrix computation succeeded and every emitted
+  # leg succeeded — the container preflight and the whole build matrix,
+  # the link-unit staging by the build legs' own success-or-skipped
+  # tolerance, and the windows dogfood when the computed matrix carries
+  # 4.0.6 (the dogfood job's own condition, mirrored). A platform whose
+  # filters emit no legs gates on roll-source + compute alone. Audit
+  # runs (publish.yml's audit mode) build nothing and skip this job.
+  verify:
+    name: all legs green
+    needs: [roll-source, compute, preflight-containers, link-unit, build, dogfood]
+    if: ${{ always() && !cancelled() && !inputs.audit }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Gate on the legs
+        run: |
+          set -euo pipefail
+          echo "roll-source:          ${{ needs.roll-source.result }}"
+          echo "compute:              ${{ needs.compute.result }} (run=${{ needs.compute.outputs.run }})"
+          echo "preflight-containers: ${{ needs.preflight-containers.result }}"
+          echo "link-unit:            ${{ needs.link-unit.result }}"
+          echo "build:                ${{ needs.build.result }}"
+          echo "dogfood:              ${{ needs.dogfood.result }}"
+          dogfood_required="${{ inputs.platform == 'windows' && contains(needs.compute.outputs.ruby-matrix, '4.0.6') }}"
+          if [ "${{ needs.roll-source.result }}" != "success" ]; then
+            echo "::error::the chain-gated source roll failed: ${{ needs.roll-source.result }}"
+            exit 1
+          fi
+          if [ "${{ needs.compute.result }}" != "success" ]; then
+            echo "::error::the matrix computation failed: ${{ needs.compute.result }}"
+            exit 1
+          fi
+          if [ "${{ needs.compute.outputs.run }}" = "true" ]; then
+            if [ "${{ needs.preflight-containers.result }}" != "success" ]; then
+              echo "::error::the container preflight failed: ${{ needs.preflight-containers.result }}"
+              exit 1
+            fi
+            case "${{ needs.link-unit.result }}" in
+              success|skipped) : ;;
+              *) echo "::error::the link-unit staging failed: ${{ needs.link-unit.result }}"
+                 exit 1 ;;
+            esac
+            if [ "${{ needs.build.result }}" != "success" ]; then
+              echo "::error::not every ${{ inputs.platform }} leg succeeded: ${{ needs.build.result }}"
+              exit 1
+            fi
+          fi
+          if [ "$dogfood_required" = "true" ] && [ "${{ needs.dogfood.result }}" != "success" ]; then
+            echo "::error::the windows dogfood leg failed: ${{ needs.dogfood.result }}"
+            exit 1
+          fi
