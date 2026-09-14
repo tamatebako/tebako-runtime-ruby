@@ -1592,7 +1592,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.TEBAKO_CI_PAT_TOKEN || secrets.GITHUB_TOKEN }}
           GH_TOKEN: ${{ secrets.TEBAKO_CI_PAT_TOKEN || secrets.GITHUB_TOKEN }}
           TEBAKO_VERSION: ${{ needs.compute.outputs.tebako-version }}
-          TEBAKO_PKG_HOST_ID: ${{ matrix.env.host_id }}
+          TEBAKO_PKG_HOST_ID: ${{ matrix.env.sign_tool_host_id }}
           TEBAKO_RELEASE_SIGNING_ENABLED: ${{ vars.TEBAKO_RELEASE_SIGNING_ENABLED }}
           TEBAKO_RELEASE_SIGNING_KEY: ${{ secrets.TEBAKO_RELEASE_SIGNING_KEY }}
           SIGN_ONLY_STEMS: tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}

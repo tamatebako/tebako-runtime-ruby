@@ -446,7 +446,16 @@ class MatrixComputer # rubocop:disable Metrics/ClassLength
 
   def slice_legs(rubies, env, why)
     rubies = available(rubies)
-    env = env.map { |entry| entry.merge("host_id" => TebakoRuntimeBuilder::Platform.host_id_for(entry["os"], entry["arch"])) }
+    env = env.map do |entry|
+      host_id = TebakoRuntimeBuilder::Platform.host_id_for(entry["os"], entry["arch"])
+      # The in-leg sign step's tebako-pkg must EXECUTE on the leg's
+      # runner, and musl legs build inside the alpine container on a
+      # glibc ubuntu host: a musl-linked tool cannot exec there (its ELF
+      # interpreter is absent — execve answers ENOENT). The tool's
+      # platform is the runner's, never the artifact's.
+      sign_tool_host_id = entry["os"] == "linux-musl" ? "linux-gnu-#{entry["arch"]}" : host_id
+      entry.merge("host_id" => host_id, "sign_tool_host_id" => sign_tool_host_id)
+    end
     { run: rubies.any? && env.any?, rubies: rubies, env: env, why: why }
   end
 
