@@ -36,12 +36,12 @@
 #     rebuilds 4.0.x), on every platform, and publishes.
 #
 # Every leg fans out to _build-platform.yml to BUILD, and — spec 13 §2a's
-# de-rendezvous (roadmap 85) — to PUBLISH and SIGN in-leg: the leg that
+# de-rendezvous — to PUBLISH and SIGN in-leg: the leg that
 # built a package uploads its write-once names (payload + .sha256 sidecars
 # + .manifest.json shard) and signs every served name, all inside the leg
 # that holds the fresh bytes. No shared mutable file exists anymore (the
-# monolithic manifest.json / SHA256SUMS.txt are gone — `tebako-pkg
-# release-index` derives them consumer-side), so N legs publish
+# monolithic manifest.json / SHA256SUMS.txt are gone — each shard IS its
+# release-index entry, and the monoliths derive consumer-side), so N legs publish
 # concurrently with zero rendezvous. What remains here is the ONE release
 # job per coordinator run: it AUDITS the whole matrix against the release
 # (read-only) and renders + publishes the tpkg-registry.yaml mirror by bot

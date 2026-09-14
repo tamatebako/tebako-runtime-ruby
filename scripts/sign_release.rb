@@ -52,11 +52,11 @@ TEBAKO_REPO = "tamatebako/tebako"
 # metadata (the per-asset .sha256 sidecars, the per-package .manifest.json
 # shards, the .contract.yaml cards). Nothing folds into a signed monolith:
 # spec 13 §2a's de-rendezvous retired the monolithic manifest.json and
-# SHA256SUMS.txt as release assets (the consumer-side
-# `tebako-pkg release-index` replaces them), so no monolith .asc exists
+# SHA256SUMS.txt as release assets (each shard IS its release-index entry;
+# consumers derive the monoliths from the shards), so no monolith .asc exists
 # either. Each build leg signs its own fresh bytes in-leg, in the same
 # invocation that published them — the write-once names that leg owns
-# alone (roadmap 85).
+# alone.
 #
 # The signing tool is the LATEST tamatebako/tebako release's tebako-pkg
 # for THIS runner's platform (TEBAKO_PKG_HOST_ID overrides the detection),
