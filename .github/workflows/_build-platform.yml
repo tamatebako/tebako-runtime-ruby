@@ -1051,6 +1051,20 @@ jobs:
             (cd "$d" && ./miniruby.exe -I./lib -I. -I.ext/common ./tool/generic_erb.rb -o /tmp/bb-diag.inc ./template/builtin_binary.inc.tmpl 2>&1 | head -5; echo "(recipe exit: ${PIPESTATUS[0]})") || true
             echo "== $d: make re-runs the rule:"
             (cd "$d" && make builtin_binary.inc 2>&1 | tail -6) || true
+            # The silent-127 battery: unpiped streams + the REAL exit code
+            # (no head masking), ruby-code execution, PE subsystem/entry,
+            # delay-load table, ldd resolution, and a native cmd spawn.
+            (cd "$d" && {
+              ./miniruby.exe --version >/tmp/mr-out.txt 2>/tmp/mr-err.txt; echo "direct --version exit: $?"
+              echo "  stdout: $(cat /tmp/mr-out.txt)"; echo "  stderr: $(cat /tmp/mr-err.txt)"
+              ./miniruby.exe -e 'puts 42' >/tmp/mr-out2.txt 2>/tmp/mr-err2.txt; echo "-e puts exit: $?"
+              echo "  stdout: $(cat /tmp/mr-out2.txt)"; echo "  stderr: $(cat /tmp/mr-err2.txt)"
+              echo "  PE header:"; objdump -x ./miniruby.exe 2>/dev/null | grep -iE "subsystem|entry point|image base|characteristics" | head -6
+              echo "  delay-load DLLs:"; objdump -p ./miniruby.exe 2>/dev/null | sed -n '/Delay Import/,/^$/p' | grep -i "dll" | head -10 || echo "  (none)"
+              echo "  ldd:"; ldd ./miniruby.exe 2>&1 | grep -ivE "System32|SysWOW64" | head -12
+              echo "  cmd-native spawn:"; cmd //c "miniruby.exe --version" >/tmp/mr-cmd.txt 2>&1; echo "  cmd exit: $?"; head -3 /tmp/mr-cmd.txt
+              cp ./miniruby.exe /tmp/mr-copy.exe && /tmp/mr-copy.exe --version >/tmp/mr-cp.txt 2>&1; echo "  /tmp copy exit: $?"; head -2 /tmp/mr-cp.txt
+            }) || true
           done
           # the ExternalProject-swallowed inner build log (the make error's
           # real stderr never reaches the CI output otherwise)
