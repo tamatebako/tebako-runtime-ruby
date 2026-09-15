@@ -1043,6 +1043,15 @@ jobs:
             echo "== $1: PE import DLLs:"; objdump -x "$1" 2>/dev/null | grep -i "DLL Name" | sort -u
             echo "== $1: bare run:"; "$1" --version 2>&1 | head -3; echo "(exit: $?)"
           ' _ {} \; || true
+          # ... and the exact failing recipe in place: a bare run passing
+          # while the recipe 127s splits loader-fault from ruby-level exit
+          for d in .build/deps/src/_ruby_*; do
+            [ -x "$d/miniruby.exe" ] || continue
+            echo "== $d: the exact uncommon.mk recipe:"
+            (cd "$d" && ./miniruby.exe -I./lib -I. -I.ext/common ./tool/generic_erb.rb -o /tmp/bb-diag.inc ./template/builtin_binary.inc.tmpl 2>&1 | head -5; echo "(recipe exit: ${PIPESTATUS[0]})") || true
+            echo "== $d: make re-runs the rule:"
+            (cd "$d" && make builtin_binary.inc 2>&1 | tail -6) || true
+          done
           # the ExternalProject-swallowed inner build log (the make error's
           # real stderr never reaches the CI output otherwise)
           find .build -name "*-build-*.log" -o -name "*-err.log" 2>/dev/null | while read -r f; do
