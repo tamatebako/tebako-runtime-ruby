@@ -1036,6 +1036,13 @@ jobs:
             echo "== $1: init calls: $(grep -c "init(Init_" "$1" || true)"
           ' _ {} \; || true
           echo "== ext archives on disk:"; find .build/deps/src -path "*/ext/*" -name "*.a" -exec ls -la {} \; 2>/dev/null | head -10 || true
+          # the Error 127 class (a freshly linked miniruby that cannot
+          # start): name the DLLs its import table demands and run it bare —
+          # a bogus/missing import names itself here
+          find .build/deps/src -maxdepth 2 -name "miniruby.exe" -exec sh -c '
+            echo "== $1: PE import DLLs:"; objdump -x "$1" 2>/dev/null | grep -i "DLL Name" | sort -u
+            echo "== $1: bare run:"; "$1" --version 2>&1 | head -3; echo "(exit: $?)"
+          ' _ {} \; || true
           # the ExternalProject-swallowed inner build log (the make error's
           # real stderr never reaches the CI output otherwise)
           find .build -name "*-build-*.log" -o -name "*-err.log" 2>/dev/null | while read -r f; do
