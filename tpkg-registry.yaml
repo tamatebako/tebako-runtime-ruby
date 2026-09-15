@@ -140,3 +140,4 @@ payloads:
     release:
       ref: tfs:github:tamatebako/tebako-runtime-ruby:v0.16.23
   default: 4.0.6-0.16.23
+  implementation: mri

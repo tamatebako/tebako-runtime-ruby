@@ -49,7 +49,8 @@ RUNTIME_REPO = "tamatebako/tebako-runtime-ruby" unless defined?(RUNTIME_REPO)
 # machine-readable unit; the registry is a spec 04 §2 MIRROR of
 # resolution fields, derived — never hand-authored).
 #
-# One payload entry (`ruby`, kind: runtime, engine: ruby); one version
+# One payload entry (`ruby`, kind: runtime, engine: ruby,
+# implementation: mri); one version
 # line per ruby built by the release, keyed by the composite
 # `<ruby_version>-<tebako_version>`; per-triplet platform rows mirroring
 # the shard's package artifact + sha256; the version's release ref points
@@ -65,6 +66,8 @@ class RegistryUpdate # rubocop:disable Metrics/ClassLength
   class RegistryUpdateError < StandardError; end
 
   PAYLOAD_NAME = "ruby"
+  ENGINE = "ruby"
+  IMPLEMENTATION = "mri"
   SHARD_SUFFIX = ".manifest.json"
   REGISTRY_BASENAME = "tpkg-registry.yaml"
 
@@ -196,9 +199,17 @@ class RegistryUpdate # rubocop:disable Metrics/ClassLength
     payloads = registry["payloads"] ||= []
     payload = payloads.find { |p| p["name"] == PAYLOAD_NAME }
     unless payload
-      payload = { "name" => PAYLOAD_NAME, "kind" => "runtime", "engine" => "ruby", "versions" => [] }
+      payload = { "name" => PAYLOAD_NAME, "kind" => "runtime", "versions" => [] }
       payloads << payload
     end
+    # The edge-discovery keys (spec 04 §2 MINOR 1 + spec 28 §8's flavor
+    # axis): a runtime entry without engine: is invisible to
+    # `kind: runtime` edges, and an implementation-named edge sees only
+    # entries carrying the same key. The renderer owns both — upserted
+    # on an EXISTING entry too (a registry rendered before a key existed
+    # gains it on the next render, never by hand-edit).
+    payload["engine"] = ENGINE
+    payload["implementation"] = IMPLEMENTATION
     versions = payload["versions"] ||= []
     rendered.each { |row| merge_version(versions, row) }
     payload["versions"] = versions.sort_by { |v| version_sort_key(v.fetch("version")) }
