@@ -1064,6 +1064,15 @@ jobs:
               echo "  ldd:"; ldd ./miniruby.exe 2>&1 | grep -ivE "System32|SysWOW64" | head -12
               echo "  cmd-native spawn:"; cmd //c "miniruby.exe --version" >/tmp/mr-cmd.txt 2>&1; echo "  cmd exit: $?"; head -3 /tmp/mr-cmd.txt
               cp ./miniruby.exe /tmp/mr-copy.exe && /tmp/mr-copy.exe --version >/tmp/mr-cp.txt 2>&1; echo "  /tmp copy exit: $?"; head -2 /tmp/mr-cp.txt
+              # The RELINK with full output: the first (-j4) build's output
+              # is discarded by the serial retry, so the miniruby link's
+              # warnings (entry/CRT/auto-import) never surface otherwise.
+              echo "  == relink miniruby V=1:"
+              rm -f miniruby.exe && make miniruby.exe V=1 2>&1 | tail -50
+              echo "  relink exit: ${PIPESTATUS[0]}"
+              echo "  start address + subsystem:"; objdump -x ./miniruby.exe 2>/dev/null | grep -iE "start address|subsystem" | head -3
+              ./miniruby.exe --version; echo "  post-relink --version exit: $?"
+              echo "  gdb backtrace (if gdb exists):"; command -v gdb >/dev/null && gdb -batch -ex run -ex bt --args ./miniruby.exe --version 2>&1 | tail -25 || echo "  (no gdb)"
             }) || true
           done
           # the ExternalProject-swallowed inner build log (the make error's
@@ -1071,6 +1080,20 @@ jobs:
           find .build -name "*-build-*.log" -o -name "*-err.log" 2>/dev/null | while read -r f; do
             echo "=== $f (tail) ==="; tail -60 "$f" || true
           done
+
+      # The failing miniruby.exe + its Makefile, for offline dissection
+      # (entry point, IAT wiring, the TEBAKO_MINILIBS expansion) — the
+      # runner is discarded, and the exe is the whole question.
+      - name: Upload miniruby for offline dissection (windows failure)
+        if: failure() && matrix.env.container == null && matrix.env.os == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: miniruby-diag-${{ matrix.ruby.version }}
+          path: |
+            .build/deps/src/_ruby_*/miniruby.exe
+            .build/deps/src/_ruby_*/Makefile
+          if-no-files-found: ignore
+          retention-days: 5
 
       # Issue 40 boot diagnostics (windows): the shared build's boot hangs
       # are silent (the boot-smoke probe exits the process when it runs, so
