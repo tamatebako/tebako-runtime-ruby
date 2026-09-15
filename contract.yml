@@ -117,7 +117,7 @@ container_version: "0.16.2"
 # wording is tebako#536. Also rides the shim-routing arc (#533/#535 —
 # driver-side untouched; the shim/resolve crates carry it). Contract
 # unchanged (2). Full-catalog re-cut: the runtime exe embeds the unit.
-# v2.8.3 (tebako#600): the unit's tfs engine synthesizes mount-boundary
+# v2.8.4 (tebako#600): the unit's tfs engine synthesizes mount-boundary
 # directories — a slice mounted below a declared point
 # (/flavors.d/<name> under a runtime that never declared /flavors.d)
 # used to answer ENOENT for the intermediate components, so the payload
@@ -125,4 +125,4 @@ container_version: "0.16.2"
 # (Gem.paths= died with Errno::ENOENT @ realpath_rec). The ancestors now
 # materialize as directories at mount time. Contract unchanged (2).
 # Full-catalog re-cut: the runtime exe embeds the unit.
-link_unit_release: "v2.8.3"
+link_unit_release: "v2.8.4"
