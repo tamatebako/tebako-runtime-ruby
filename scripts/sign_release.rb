@@ -325,14 +325,26 @@ class ReleaseSigner # rubocop:disable Metrics/ClassLength
   # The default command seam: argv in, stdout out, named failure on a
   # non-zero exit. Specs inject a recording stand-in.
   class ShellExecutor
-    def run(*argv, chdir: ".")
-      out, err, status = Open3.capture3(*argv, chdir: chdir)
-      unless status.success?
-        raise SigningGateError,
-              "NAMED FAILURE: `#{argv.join(" ")}` exited #{status.exitstatus}: #{err.strip}"
-      end
+    # gh's release-asset edges are transient-prone under release-storm
+    # load: the 5xx class and the intermediary 403 clear on a re-ask (the
+    # 0.16.24 publish lost a signing leg to an HTTP 500 on a manifest
+    # download — after every asset had already converged). Deterministic
+    # failures (404s, auth, usage) raise at once. Bounded, with backoff.
+    TRANSIENT = /HTTP 5\d\d|intermediary/i
+    ATTEMPTS = 4
 
-      out
+    def run(*argv, chdir: ".")
+      attempts = 0
+      loop do
+        out, err, status = Open3.capture3(*argv, chdir: chdir)
+        break out if status.success?
+
+        unless err =~ TRANSIENT && (attempts += 1) < ATTEMPTS
+          raise SigningGateError,
+                "NAMED FAILURE: `#{argv.join(" ")}` exited #{status.exitstatus}: #{err.strip}"
+        end
+        sleep(2**attempts)
+      end
     end
   end
 end
