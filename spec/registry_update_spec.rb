@@ -89,6 +89,9 @@ RSpec.describe RegistryUpdate do
     payload = doc["payloads"].find { |p| p["name"] == "ruby" }
     expect(payload["kind"]).to eq("runtime")
     expect(payload["engine"]).to eq("ruby")
+    # spec 28 §8's flavor axis: an implementation-named edge sees only
+    # entries carrying the same key — entry-level, never per version row.
+    expect(payload["implementation"]).to eq("mri")
     # Numeric sort, never lexical: 3.3.12 < 3.4.10 < 3.10.1.
     expect(payload["versions"].map { |v| v["version"] })
       .to eq(["3.3.12-9.9.9", "3.4.10-9.9.9", "3.10.1-9.9.9"])
@@ -161,6 +164,29 @@ RSpec.describe RegistryUpdate do
     first = render(shards)
     second = render(shards, registry: -> { first })
     expect(second).to eq(first)
+  end
+
+  it "upserts implementation onto an existing implementation-less ruby entry (the spec 28 §8 backfill, never a hand-edit)" do
+    existing = <<~YAML
+      schema_version: 1
+      payloads:
+        - name: ruby
+          kind: runtime
+          engine: ruby
+          versions:
+            - version: '3.4.10-9.9.8'
+              platforms:
+                aarch64-macos:
+                  artifact: tebako-runtime-9.9.8-3.4.10-macos-arm64
+                  sha256: 'aaaa'
+              release: {ref: tfs:github:tamatebako/tebako-runtime-ruby:v9.9.8}
+          default: '3.4.10-9.9.8'
+    YAML
+    shards = shards_of({ ruby: "3.4.10", platform: "macos-arm64" })
+    doc = YAML.safe_load(render(shards, registry: existing))
+
+    payload = doc["payloads"].find { |p| p["name"] == "ruby" }
+    expect(payload["implementation"]).to eq("mri")
   end
 
   it "carries the ownership header (never hand-edit except status: withdrawn)" do
