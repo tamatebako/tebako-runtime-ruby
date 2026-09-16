@@ -131,4 +131,4 @@ container_version: "0.16.2"
 # loader-faulted (STATUS_ENTRYPOINT_NOT_FOUND 0xC0000139, the windows
 # silent-127). Contract unchanged (2).
 # Full-catalog re-cut: the runtime exe embeds the unit.
-link_unit_release: "v2.8.6"
+link_unit_release: "v2.8.7"
