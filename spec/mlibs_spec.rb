@@ -269,5 +269,27 @@ RSpec.describe TebakoRuntimeBuilder::Mlibs do
                  "-lc++ -lc++abi"
       expect(mlibs.compute(ruby_ver)).to eq(expected)
     end
+
+    context "with a staged rust link unit (the v2 link)" do
+      before do
+        FileUtils.touch(File.join(root, "libtebako_driver.a"))
+        FileUtils.touch(File.join(root, "libtfs.a"))
+        FileUtils.mkdir_p(File.join(root, "closure"))
+        FileUtils.touch(File.join(root, "closure", "libfmt.a"))
+        @prev_libdir = ENV.fetch("TEBAKO_RUST_LIBDIR", nil)
+        ENV["TEBAKO_RUST_LIBDIR"] = root
+      end
+
+      after do
+        @prev_libdir.nil? ? ENV.delete("TEBAKO_RUST_LIBDIR") : ENV["TEBAKO_RUST_LIBDIR"] = @prev_libdir
+      end
+
+      it "links the system Security framework (the unit's trust-bridge objects reference it)" do
+        result = mlibs.compute(ruby_ver)
+        expect(result).to include("-framework Security")
+        expect(result).to end_with("-lc++ -lc++abi")
+        expect(result).to include("#{root}/libtebako_driver.a")
+      end
+    end
   end
 end

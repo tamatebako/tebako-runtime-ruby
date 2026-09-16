@@ -1036,11 +1036,64 @@ jobs:
             echo "== $1: init calls: $(grep -c "init(Init_" "$1" || true)"
           ' _ {} \; || true
           echo "== ext archives on disk:"; find .build/deps/src -path "*/ext/*" -name "*.a" -exec ls -la {} \; 2>/dev/null | head -10 || true
+          # the Error 127 class (a freshly linked miniruby that cannot
+          # start): name the DLLs its import table demands and run it bare —
+          # a bogus/missing import names itself here
+          find .build/deps/src -maxdepth 2 -name "miniruby.exe" -exec sh -c '
+            echo "== $1: PE import DLLs:"; objdump -x "$1" 2>/dev/null | grep -i "DLL Name" | sort -u
+            echo "== $1: bare run:"; "$1" --version 2>&1 | head -3; echo "(exit: $?)"
+          ' _ {} \; || true
+          # ... and the exact failing recipe in place: a bare run passing
+          # while the recipe 127s splits loader-fault from ruby-level exit
+          for d in .build/deps/src/_ruby_*; do
+            [ -x "$d/miniruby.exe" ] || continue
+            echo "== $d: the exact uncommon.mk recipe:"
+            (cd "$d" && ./miniruby.exe -I./lib -I. -I.ext/common ./tool/generic_erb.rb -o /tmp/bb-diag.inc ./template/builtin_binary.inc.tmpl 2>&1 | head -5; echo "(recipe exit: ${PIPESTATUS[0]})") || true
+            echo "== $d: make re-runs the rule:"
+            (cd "$d" && make builtin_binary.inc 2>&1 | tail -6) || true
+            # The silent-127 battery: unpiped streams + the REAL exit code
+            # (no head masking), ruby-code execution, PE subsystem/entry,
+            # delay-load table, ldd resolution, and a native cmd spawn.
+            (cd "$d" && {
+              ./miniruby.exe --version >/tmp/mr-out.txt 2>/tmp/mr-err.txt; echo "direct --version exit: $?"
+              echo "  stdout: $(cat /tmp/mr-out.txt)"; echo "  stderr: $(cat /tmp/mr-err.txt)"
+              ./miniruby.exe -e 'puts 42' >/tmp/mr-out2.txt 2>/tmp/mr-err2.txt; echo "-e puts exit: $?"
+              echo "  stdout: $(cat /tmp/mr-out2.txt)"; echo "  stderr: $(cat /tmp/mr-err2.txt)"
+              echo "  PE header:"; objdump -x ./miniruby.exe 2>/dev/null | grep -iE "subsystem|entry point|image base|characteristics" | head -6
+              echo "  delay-load DLLs:"; objdump -p ./miniruby.exe 2>/dev/null | sed -n '/Delay Import/,/^$/p' | grep -i "dll" | head -10 || echo "  (none)"
+              echo "  ldd:"; ldd ./miniruby.exe 2>&1 | grep -ivE "System32|SysWOW64" | head -12
+              echo "  cmd-native spawn:"; cmd //c "miniruby.exe --version" >/tmp/mr-cmd.txt 2>&1; echo "  cmd exit: $?"; head -3 /tmp/mr-cmd.txt
+              cp ./miniruby.exe /tmp/mr-copy.exe && /tmp/mr-copy.exe --version >/tmp/mr-cp.txt 2>&1; echo "  /tmp copy exit: $?"; head -2 /tmp/mr-cp.txt
+              # The RELINK with full output: the first (-j4) build's output
+              # is discarded by the serial retry, so the miniruby link's
+              # warnings (entry/CRT/auto-import) never surface otherwise.
+              echo "  == relink miniruby V=1:"
+              rm -f miniruby.exe && make miniruby.exe V=1 2>&1 | tail -50
+              echo "  relink exit: ${PIPESTATUS[0]}"
+              echo "  start address + subsystem:"; objdump -x ./miniruby.exe 2>/dev/null | grep -iE "start address|subsystem" | head -3
+              ./miniruby.exe --version; echo "  post-relink --version exit: $?"
+              echo "  gdb backtrace (if gdb exists):"; command -v gdb >/dev/null && gdb -batch -ex run -ex bt --args ./miniruby.exe --version 2>&1 | tail -25 || echo "  (no gdb)"
+            }) || true
+          done
           # the ExternalProject-swallowed inner build log (the make error's
           # real stderr never reaches the CI output otherwise)
           find .build -name "*-build-*.log" -o -name "*-err.log" 2>/dev/null | while read -r f; do
             echo "=== $f (tail) ==="; tail -60 "$f" || true
           done
+
+      # The failing miniruby.exe + its Makefile, for offline dissection
+      # (entry point, IAT wiring, the TEBAKO_MINILIBS expansion) — the
+      # runner is discarded, and the exe is the whole question.
+      - name: Upload miniruby for offline dissection (windows failure)
+        if: failure() && matrix.env.container == null && matrix.env.os == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: miniruby-diag-${{ matrix.ruby.version }}
+          path: |
+            .build/deps/src/_ruby_*/miniruby.exe
+            .build/deps/src/_ruby_*/Makefile
+          if-no-files-found: ignore
+          retention-days: 5
 
       # Issue 40 boot diagnostics (windows): the shared build's boot hangs
       # are silent (the boot-smoke probe exits the process when it runs, so
