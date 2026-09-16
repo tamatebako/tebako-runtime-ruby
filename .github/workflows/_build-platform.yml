@@ -1717,8 +1717,13 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p tools
-          gh release download v0.1.9 --repo tamatebako/tebako \
-            --pattern 'tfs-0.1.9-windows-ucrt64.exe' --output tools/tfs.exe --clobber
+          # release-asset GETs are transient-prone under publish load —
+          # bounded retry, same contract as scripts/sign_release.rb.
+          for attempt in 1 2 3 4; do
+            gh release download v0.1.9 --repo tamatebako/tebako \
+              --pattern 'tfs-0.1.9-windows-ucrt64.exe' --output tools/tfs.exe --clobber && break
+            [ "$attempt" -lt 4 ] && sleep $((2 ** attempt)) || exit 1
+          done
       - name: Run the spec22-gems acceptance (msys)
         shell: msys2 {0}
         env:

@@ -327,3 +327,42 @@ RSpec.describe ReleaseSigner do
       .to raise_error(ReleaseSigner::SigningGateError, /did not converge/)
   end
 end
+
+# The real executor's transient class: 5xx and the intermediary 403 earn
+# a bounded re-ask (0.16.24's publish lost a signing leg to an HTTP 500
+# after every asset had converged); deterministic failures raise at once.
+RSpec.describe ReleaseSigner::ShellExecutor do
+  subject(:executor) { described_class.new }
+
+  def capture3_queue(*results)
+    calls = []
+    allow(Open3).to receive(:capture3) do |*argv, **|
+      calls << argv
+      out, err, code = results[[calls.length - 1, results.length - 1].min]
+      [out, err, instance_double(Process::Status, success?: code.zero?, exitstatus: code)]
+    end
+    calls
+  end
+
+  it "retries a 5xx and returns the first success" do
+    calls = capture3_queue(["", "HTTP 500", 1], ["ok-bytes", "", 0])
+    allow(executor).to receive(:sleep)
+    expect(executor.run("gh", "release", "download", "vX")).to eq("ok-bytes")
+    expect(calls.length).to eq(2)
+  end
+
+  it "raises immediately on a deterministic failure (no retry budget spent)" do
+    calls = capture3_queue(["", "HTTP 404 Not Found", 1])
+    expect { executor.run("gh", "release", "download", "vX") }
+      .to raise_error(ReleaseSigner::SigningGateError, /NAMED FAILURE.*404/)
+    expect(calls.length).to eq(1)
+  end
+
+  it "spends the whole budget on a persistent transient, then names it" do
+    calls = capture3_queue(["", "Error from intermediary with HTTP status code 403", 1])
+    allow(executor).to receive(:sleep)
+    expect { executor.run("gh", "release", "download", "vX") }
+      .to raise_error(ReleaseSigner::SigningGateError, /NAMED FAILURE.*intermediary/)
+    expect(calls.length).to eq(ReleaseSigner::ShellExecutor::ATTEMPTS)
+  end
+end
