@@ -293,6 +293,11 @@ jobs:
         run: |
           set -euo pipefail
           cp tpkg-registry.yaml "$RUNNER_TEMP/registry.yaml"
+          # main can move the registry mid-publish (a mirror PR landing
+          # while the matrix builds): the in-tree render would abort the
+          # branch checkout below. The temp copy is the payload — discard
+          # the dirty tree before branching, restore after.
+          git checkout -- tpkg-registry.yaml
           git config user.name "tebako-ci"
           git config user.email "tebako@ribose.com"
           git fetch origin main
