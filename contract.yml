@@ -117,4 +117,18 @@ container_version: "0.16.2"
 # wording is tebako#536. Also rides the shim-routing arc (#533/#535 —
 # driver-side untouched; the shim/resolve crates carry it). Contract
 # unchanged (2). Full-catalog re-cut: the runtime exe embeds the unit.
-link_unit_release: "v2.3.0"
+# v2.8.4 (tebako#600): the unit's tfs engine synthesizes mount-boundary
+# directories — a slice mounted below a declared point
+# (/flavors.d/<name> under a runtime that never declared /flavors.d)
+# used to answer ENOENT for the intermediate components, so the payload
+# interpreter's realpath/glob walk across the boundary failed
+# (Gem.paths= died with Errno::ENOENT @ realpath_rec). The ancestors now
+# materialize as directories at mount time. Contract unchanged (2).
+# v2.8.6 (tebako#610): arscope keeps two import sets for one DLL — the
+# v2.8.4 unit's scoped staticlib sorted dlltool's numeric member
+# prefixes ahead of the canonical names, so a DLL's import descriptor
+# swallowed the next DLL's functions and every freshly linked miniruby
+# loader-faulted (STATUS_ENTRYPOINT_NOT_FOUND 0xC0000139, the windows
+# silent-127). Contract unchanged (2).
+# Full-catalog re-cut: the runtime exe embeds the unit.
+link_unit_release: "v2.8.6"

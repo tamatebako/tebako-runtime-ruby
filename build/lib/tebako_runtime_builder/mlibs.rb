@@ -417,6 +417,12 @@ module TebakoRuntimeBuilder
       # SEGV at builtin init), and the dylib fails the test_101
       # no-shared-libs assertion. System malloc until a properly built
       # static jemalloc ships with libtfs-deps.
+      # Security.framework: the v2.8.4+ unit's driver embeds the trust
+      # bridge's OS-store enumeration (rustls-native-certs →
+      # security-framework objects; spec 17 §2.3) — its kSec*/_Sec*/
+      # _CMS*/_Authorization* references resolve only against the system
+      # Security framework (miniruby's link died on the undefined set).
+      sec_fw = rust_libdir ? "-framework Security " : ""
       # ld_classic: the cargo-bundled natives land in each staticlib
       # more than once (the same vcpkg objects ride several sys crates),
       # and Xcode 15+'s ld_prime asserts on the same-name atoms
@@ -428,7 +434,7 @@ module TebakoRuntimeBuilder
       # (pristine link-unit-macos-x86_64 + probe: ld_prime asserts,
       # ld_classic links). Keep until the staticlibs dedupe at the
       # source (arscope/cargo bundling).
-      "-Wl,-ld_classic -ltebako-fs #{libs}-lc++ -lc++abi"
+      "-Wl,-ld_classic -ltebako-fs #{libs}#{sec_fw}-lc++ -lc++abi"
     end
 
     # The v2 link unit (image era): the two Rust staticlibs SCOPED to
