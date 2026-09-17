@@ -139,4 +139,12 @@ container_version: "0.16.2"
 # events on the probe). opendir grew the no-owner synthesis arm stat
 # had since #600. Contract unchanged (2).
 # Full-catalog re-cut: the runtime exe embeds the unit.
-link_unit_release: "v2.8.8"
+# v2.8.9 (tebako#619, tebako#620): the windows materialize boot tier
+# (payload-manifest schema_minor 11 — windows_boot: materialize on a
+# runtime's provides) and the variant-suffixed constraint grammar
+# (schema_minor 12 — a constraint component may carry a -label, so an
+# exact pin names a LINE: = 1.16.9-ruby4.0). The flavor slices'
+# augments edges ride the suffixed pin, so the embedded driver must
+# speak minor 12 to mount them. Contract unchanged (2).
+# Full-catalog re-cut: the runtime exe embeds the unit.
+link_unit_release: "v2.8.9"
