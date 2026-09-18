@@ -147,4 +147,4 @@ container_version: "0.16.2"
 # augments edges ride the suffixed pin, so the embedded driver must
 # speak minor 12 to mount them. Contract unchanged (2).
 # Full-catalog re-cut: the runtime exe embeds the unit.
-link_unit_release: "v2.8.9"
+link_unit_release: "v2.8.11"
