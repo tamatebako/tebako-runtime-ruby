@@ -47,9 +47,50 @@ RSpec.describe TebakoRuntimeBuilder::Platform do
     expect(described_class.new("aarch64-linux-gnu", "aarch64").host_id).to eq("linux-gnu-arm64")
   end
 
+  it "names the reserved windows-ucrt-arm64 host id for the arm64 windows host" do
+    arm64 = described_class.new("aarch64-mingw-ucrt", "aarch64")
+    expect(arm64.msys?).to be(true)
+    expect(arm64.host_id).to eq("windows-ucrt-arm64")
+    expect(arm64.tpkg_triplet).to eq("aarch64-windows-ucrt")
+    expect(arm64.fs_mount_point).to eq("A:/t")
+    expect(arm64.exe_suffix).to eq(".exe")
+  end
+
+  it "names the msys2 environment per arch: ucrt64 on x86_64, clangarm64 on arm64" do
+    expect(described_class.new("x64-mingw-ucrt", "x86_64").msys_env).to eq("ucrt64")
+    expect(described_class.new("aarch64-mingw-ucrt", "aarch64").msys_env).to eq("clangarm64")
+  end
+
+  it "fails named (112) asking the msys environment of a POSIX host" do
+    expect { described_class.new("x86_64-pc-linux-gnu", "x86_64").msys_env }
+      .to raise_error(TebakoRuntimeBuilder::Error) { |e| expect(e.error_code).to eq(112) }
+  end
+
+  it "maps every platform to the product's link-unit platform ids" do
+    expectations = {
+      %w[linux-gnu x86_64] => "linux-gnu-x86_64",
+      %w[linux-gnu arm64] => "linux-gnu-arm64",
+      %w[linux-musl x86_64] => "linux-musl-x86_64",
+      %w[linux-musl arm64] => "linux-musl-arm64",
+      %w[macos x86_64] => "macos-x86_64",
+      %w[macos arm64] => "macos-arm64",
+      %w[windows x86_64] => "x86_64-windows-gnu",
+      %w[windows arm64] => "aarch64-windows-gnu"
+    }
+    expectations.each do |(os, arch), pid|
+      expect(described_class.link_unit_pid_for(os, arch)).to eq(pid)
+    end
+  end
+
+  it "fails named (112) outside the link-unit pid vocabulary" do
+    expect { described_class.link_unit_pid_for("sunos", "sparc") }
+      .to raise_error(TebakoRuntimeBuilder::Error) { |e| expect(e.error_code).to eq(112) }
+  end
+
   it "names the spec 03 §3 vcpkg triplet for every host_id" do
     {
       %w[x64-mingw-ucrt x86_64] => "x86_64-windows-ucrt",
+      %w[aarch64-mingw-ucrt aarch64] => "aarch64-windows-ucrt",
       %w[arm64-darwin23 arm64] => "aarch64-macos",
       %w[x86_64-darwin23 x86_64] => "x86_64-macos",
       %w[x86_64-linux-gnu x86_64] => "x86_64-linux-gnu",

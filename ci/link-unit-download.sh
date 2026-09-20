@@ -34,6 +34,7 @@ case "$os/$arch" in
   macos/x86_64)      pid=macos-x86_64 ;;
   macos/arm64)       pid=macos-arm64 ;;
   windows/x86_64)    pid=x86_64-windows-gnu ;;
+  windows/arm64)     pid=aarch64-windows-gnu ;;
   *) echo "::error::no link-unit platform id for $os/$arch"; exit 64 ;;
 esac
 

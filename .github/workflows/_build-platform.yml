@@ -380,6 +380,16 @@ jobs:
           MATRIX_ARCH_FILTER: ${{ inputs.arch_filter }}
           # CHAIN GATE: src_sha256 from the roll, not the published pin.
           TEBAKO_SRC_MIRROR: file://${{ github.workspace }}/.build/spec22-src-roll
+          # The publish run flag + the owner's windows/arm64 serving
+          # gate — compute_matrix's publish gate reads both (build CI
+          # runs the arm64 leg ungated once its link-unit asset exists;
+          # a publish run serves it only with the variable armed).
+          PUBLISH: ${{ inputs.publish }}
+          TEBAKO_SERVE_WINDOWS_ARM64: ${{ vars.TEBAKO_SERVE_WINDOWS_ARM64 }}
+          # compute_matrix reads the tamatebako/tebako release API (the
+          # windows legs' asset gate): authenticated calls keep the
+          # shared runner NAT's 60/h budget out of the plan.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ./scripts/compute_matrix.rb --platform ${{ inputs.platform }}
 
@@ -593,14 +603,14 @@ jobs:
       # here, never per ruby version again. The checkouts/caches above
       # are shared with POSIX; these are the ucrt64-only provisions.
       - name: Setup MSys
-        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'windows'
+        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'windows' && matrix.env.arch == 'x86_64'
         uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
         with:
           msystem: ucrt64
           path-type: minimal
           update: true
       - name: Install pacman packages
-        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'windows'
+        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'windows' && matrix.env.arch == 'x86_64'
         shell: msys2 {0}
         run: |
           pacman -Syu --needed --noconfirm git tar bison flex pactoys
@@ -609,11 +619,11 @@ jobs:
             gtest:p autotools:p ncurses:p ruby:p toolchain:p openssl:p  \
             make:p libyaml:p libxslt:p
       - uses: dtolnay/rust-toolchain@e43eeffd51aefeea929f4ea14e09fd077153e788 # 1.94.1
-        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'windows'
+        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'windows' && matrix.env.arch == 'x86_64'
         with:
           targets: x86_64-pc-windows-gnu
       - name: Set up vcpkg for the link unit
-        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'windows'
+        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'windows' && matrix.env.arch == 'x86_64'
         uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.6
         with:
           vcpkgGitCommitId: f14401ca0f2754347c3864da7488a9b955b4e47a
@@ -623,7 +633,7 @@ jobs:
       # The override is the org's GitHub Packages NuGet feed (details in
       # ci/vcpkg-nuget-cache.sh).
       - name: Configure the vcpkg binary cache (GitHub Packages NuGet)
-        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'windows'
+        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'windows' && matrix.env.arch == 'x86_64'
         shell: bash
         env:
           # First-push of a new package id CANNOT be done by GITHUB_TOKEN
@@ -633,7 +643,7 @@ jobs:
           GH_TOKEN: ${{ secrets.TEBAKO_PACKAGES_PAT || secrets.GITHUB_TOKEN }}
         run: bash ci/vcpkg-nuget-cache.sh
       - name: Restore the vcpkg baseline (dwarfs-t is the single writer)
-        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'windows'
+        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'windows' && matrix.env.arch == 'x86_64'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -645,7 +655,7 @@ jobs:
             dwarfs-rs/dwarfs-t x64-mingw-static \
             || echo "baseline miss — ports build normally"
       - name: Build + stage the windows-gnu link unit
-        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'windows'
+        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'windows' && matrix.env.arch == 'x86_64'
         # Git-bash, and NO msys2 bin dir on PATH: vcpkg's downloaded
         # msys2 (make/perl) ABI-clashes with the setup-msys2 install when
         # both are on PATH (openssl's make install died in a perl eval
@@ -668,6 +678,20 @@ jobs:
         # Everything lives in ci/link-unit.sh (reviewed, shellcheck-able) —
         # never inline run-blocks; they get string-edited and break silently.
         run: bash ci/link-unit.sh
+      # The arm64 windows staging is not wired (the ucrt64 recipe above is
+      # x86_64 by construction): the planner's artifact gate drops the
+      # arm64 leg unless the pinned release publishes the unit, so a miss
+      # here is a mid-run release change — fail BY NAME, never a ucrt64
+      # staging on a clangarm64 runner (and never an empty artifact handoff).
+      - name: Fail the arm64 windows staging (source build not wired)
+        if: steps.published.outputs.hit != 'true' && matrix.env.os == 'windows' && matrix.env.arch == 'arm64'
+        shell: bash
+        run: |
+          echo "::error::windows/arm64 has no wired link-unit source staging and the pinned release " \
+               "missed — the planner's artifact gate only admits this leg when the pin " \
+               "(${{ needs.compute.outputs.link-unit-release }}) publishes " \
+               "link-unit-<version>-aarch64-windows-gnu.tar.gz; the release changed mid-run or raced the gate"
+          exit 1
       - name: Dump vcpkg build logs on failure
         if: failure() && matrix.env.os == 'windows'
         shell: bash
@@ -905,14 +929,26 @@ jobs:
         with:
           xcode-version: ${{ matrix.env.xcode }}
 
+      # x86_64 legs build in the ucrt64 environment (the proven gcc shape,
+      # byte-identical to the pre-arm64 pipeline); the arm64 legs run the
+      # windows-11-arm hosted runner's native clangarm64 environment
+      # (triple aarch64-w64-mingw32 — MSYS2's own windows-on-arm recipe,
+      # the environment its aarch64 ruby package builds in). The leg is
+      # additionally gated in the planner (compute_matrix's artifact +
+      # publish gates) — this branch only picks the environment.
       - name: Setup MSys
         if: matrix.env.os == 'windows'
         uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
         with:
-          msystem: ucrt64
+          msystem: ${{ matrix.env.arch == 'arm64' && 'clangarm64' || 'ucrt64' }}
           path-type: minimal
           update: true
 
+      # The environment's packages ride pactoys' pacboy: a `:p` name
+      # resolves against the ACTIVE msys2 environment, so the package
+      # namespace follows the msystem branch above (ucrt-x86_64 on the
+      # x64 legs, clang-aarch64 on the arm64 legs) — no per-package
+      # case needed.
       - name: Install pacman packages
         if: matrix.env.os == 'windows'
         shell: msys2 {0}

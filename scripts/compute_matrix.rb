@@ -67,14 +67,50 @@ require "tebako_runtime_builder"
 #     shapes: one version everywhere, one platform all versions, one
 #     version on one platform), never the diff.
 #
+# The windows/arm64 leg carries two gates, both LOUD (a skipped leg names
+# its unmet condition, never silently disappears):
+#   1. the artifact gate (every run): the pinned link-unit release must
+#      ship the arm64 windows unit (link-unit-<ver>-aarch64-windows-
+#     gnu.tar.gz). Today's product releases ship x86_64-windows-gnu only;
+#      this factory never builds the driver stack from source on arm64
+#      (the windows source staging is the ucrt64 recipe), so the leg
+#      stays disabled until the product publishes the unit — then build
+#      CI (push/PR/dispatch) runs it automatically.
+#   2. the publish gate (PUBLISH runs only): a leg can build green and
+#      still not serve — the publish runs exclude windows/arm64 until
+#      the owner sets the TEBAKO_SERVE_WINDOWS_ARM64 repository
+#      variable. The env/link-unit matrices and every downstream
+#      expectation (the coordinator's audit reads the same outputs)
+#      derive from this one walk, so a gated leg cannot half-serve: no
+#      expectation of its packages ever reaches the audit.
+#
 # Usage: compute_matrix.rb --platform <windows|linux-gnu|linux-musl|macos>
 # Env:  GITHUB_EVENT_NAME / GITHUB_EVENT_PATH (the payload for diff SHAs),
 #       MATRIX_RUBY_FILTER (dispatch: full|tidy|catalog|a,comma,slice),
 #       MATRIX_ARCH_FILTER (optional arch within the platform),
+#       PUBLISH (the publish-run flag — arms gate 2),
+#       TEBAKO_SERVE_WINDOWS_ARM64 (the owner's serving gate, gate 2),
+#       GITHUB_TOKEN (authenticated release-API reads for gate 1),
 #       GITHUB_OUTPUT (the emitted legs/env-matrix/ruby-matrix).
 class MatrixComputer # rubocop:disable Metrics/ClassLength
   GRAPH = File.expand_path("../.github/build-graph.yaml", __dir__).freeze
   MATRIX_JSON = File.expand_path("../.github/matrix.json", __dir__).freeze
+  # The release pipeline's source of truth: the link-unit pin the
+  # windows/arm64 artifact gate reads (the same pin the workflow's
+  # get-link-unit-pin step echoes and ci/link-unit-download.sh consumes).
+  CONTRACT_YML = File.expand_path("../contract.yml", __dir__).freeze
+  # The product repo the link unit is consumed from (ci/link-unit.sh's
+  # staging source; the artifact gate reads the same repo's release).
+  TEBAKO_RELEASE_REPO = "tamatebako/tebako"
+
+  # The windows/arm64 gates' note texts (the header's two gates; the
+  # missing-asset note is composed per pin in #arm64_missing_asset_note).
+  ARM64_EMPTY_PIN_NOTE = "contract.yml pins no link_unit_release (the arm64 windows leg needs a " \
+                         "pinned #{TEBAKO_RELEASE_REPO} release carrying " \
+                         "link-unit-<version>-aarch64-windows-gnu.tar.gz — the factory never " \
+                         "builds the driver stack from source on arm64)".freeze
+  ARM64_PUBLISH_GATE_NOTE = "the publish gate is OFF (arm the TEBAKO_SERVE_WINDOWS_ARM64 " \
+                            "repository variable to serve windows/arm64 releases)"
   # The source pin file: a diff that moves DEFAULT_RELEASE rebuilds exactly
   # the versions whose tarballs moved in the scenarios each platform
   # consumes (the pin lands by merge — no external sender required).
@@ -94,10 +130,13 @@ class MatrixComputer # rubocop:disable Metrics/ClassLength
   # contract (unsuffixed = the linux-gnu scenario).
   ASSET_SCENARIO = /\Atfs-ruby-(\d+\.\d+\.\d+)-src(?:-(linux-musl|msys))?(?:-pass[12])?\.tar\.gz\z/
 
-  def initialize(argv, fetcher_factory: nil, differ: nil)
+  def initialize(argv, fetcher_factory: nil, differ: nil, link_unit_assets: nil)
     @platform = parse_platform(argv)
     @fetcher_factory = fetcher_factory || method(:default_fetcher)
     @differ = differ || GitDiffer.new
+    # The release-API seam: (repo, release) → asset names. Defaults to the
+    # in-process BuildHelpers read (authenticated when GITHUB_TOKEN is set).
+    @link_unit_assets = link_unit_assets
     @logger = Logger.new($stdout)
     @logger.formatter = proc { |severity, _, _, msg| "#{severity}: #{msg}\n" }
   end
@@ -446,6 +485,7 @@ class MatrixComputer # rubocop:disable Metrics/ClassLength
 
   def slice_legs(rubies, env, why)
     rubies = available(rubies)
+    env = serve_gated_env(env)
     env = env.map do |entry|
       host_id = TebakoRuntimeBuilder::Platform.host_id_for(entry["os"], entry["arch"])
       # The in-leg sign step's tebako-pkg must EXECUTE on the leg's
@@ -457,6 +497,98 @@ class MatrixComputer # rubocop:disable Metrics/ClassLength
       entry.merge("host_id" => host_id, "sign_tool_host_id" => sign_tool_host_id)
     end
     { run: rubies.any? && env.any?, rubies: rubies, env: env, why: why }
+  end
+
+  # The universal chokepoint's windows/arm64 gate: EVERY trigger path
+  # (dispatch filters, the pin-bump diff walk, the tidy validation set,
+  # the release-dispatch walk) funnels its arch-filtered env rows through
+  # here, so a gated leg can never enter a matrix by any door. Lazy: the
+  # release-API read happens only when a windows/arm64 row is actually in
+  # play, memoized per computation.
+  def serve_gated_env(env)
+    arm64 = env.select { |entry| entry["os"] == "windows" && entry["arch"] == "arm64" }
+    return env if arm64.empty?
+
+    reason = arm64_block_reason
+    return drop_arm64(arm64, env, reason) if reason
+
+    env
+  end
+
+  # The unmet condition keeping windows/arm64 out of the matrix — the
+  # header's two gates, in order, each naming its condition — or nil when
+  # the leg is admitted.
+  def arm64_block_reason
+    return ARM64_EMPTY_PIN_NOTE if link_unit_release.empty?
+
+    return arm64_missing_asset_note unless tebako_release_assets.include?(arm64_unit_asset)
+
+    return ARM64_PUBLISH_GATE_NOTE if publish_run? && serve_windows_arm64_off?
+
+    nil
+  end
+
+  def drop_arm64(arm64, env, reason)
+    arm64.each { warn_note("windows/arm64 skipped — #{reason}") }
+    env.reject { |entry| entry["os"] == "windows" && entry["arch"] == "arm64" }
+  end
+
+  def warn_note(message)
+    @logger.warn("note: #{message}")
+  end
+
+  # The pinned link-unit release (contract.yml link_unit_release; empty =
+  # the source-build era's shape, which the arm64 leg cannot serve).
+  def link_unit_release
+    @link_unit_release ||= YAML.load_file(contract_yml_path).fetch("link_unit_release", "")
+  end
+
+  def contract_yml_path
+    ENV.fetch("CONTRACT_YML_PATH", CONTRACT_YML)
+  end
+
+  def arm64_unit_asset
+    pid = TebakoRuntimeBuilder::Platform.link_unit_pid_for("windows", "arm64")
+    "link-unit-#{link_unit_release.sub(/\Av/, "")}-#{pid}.tar.gz"
+  end
+
+  def arm64_missing_asset_note
+    "#{TEBAKO_RELEASE_REPO} #{link_unit_release} ships no #{arm64_unit_asset} " \
+      "(the arm64 windows link unit; the leg stays disabled until the product publishes it)"
+  end
+
+  # A PUBLISH run (publish.yml's build+publish mode) serves windows/arm64
+  # only when the owner has armed the variable; build CI never consults it.
+  def publish_run?
+    ENV.fetch("PUBLISH", "") == "true"
+  end
+
+  def serve_windows_arm64_off?
+    ENV.fetch("TEBAKO_SERVE_WINDOWS_ARM64", "") != "true"
+  end
+
+  # The pinned release's published asset names — memoized per computation,
+  # read only when the gate needs them. An unreadable release is a
+  # config-class failure (the same discipline as an unreadable SHA256SUMS),
+  # never an empty list.
+  def tebako_release_assets
+    return @tebako_release_assets if @tebako_release_assets
+
+    assets = (@link_unit_assets || method(:default_link_unit_assets)).call(TEBAKO_RELEASE_REPO, link_unit_release)
+    @tebako_release_assets = assets || raise(no_asset_list_error)
+  rescue StandardError => e
+    raise TebakoRuntimeBuilder::Error.new("cannot read the pinned link-unit release's assets: #{e.message}", 122)
+  end
+
+  def no_asset_list_error
+    TebakoRuntimeBuilder::Error.new(
+      "cannot read the pinned link-unit release's assets: #{TEBAKO_RELEASE_REPO} #{link_unit_release} " \
+      "answered no asset list", 122
+    )
+  end
+
+  def default_link_unit_assets(repo, release)
+    TebakoRuntimeBuilder::BuildHelpers.release_asset_names(repo, release, token: ENV.fetch("GITHUB_TOKEN", nil))
   end
 
   # Per-platform availability (matrix.json `defer`): a version is deferred
