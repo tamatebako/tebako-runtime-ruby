@@ -231,6 +231,39 @@ RSpec.describe TebakoRuntimeBuilder::Mlibs do
         expect(solibs).to include("-l:libssl.a")
       end
     end
+
+    context "with the limnifs-only arm64 link unit (an empty closure BY DESIGN)" do
+      subject(:mlibs) do
+        described_class.new(TebakoRuntimeBuilder::Platform.new("aarch64-w64-mingw32", "aarch64"), "/deps/lib")
+      end
+
+      let(:root) { Dir.mktmpdir }
+
+      before do
+        FileUtils.touch(File.join(root, "libtebako_driver.a"))
+        FileUtils.touch(File.join(root, "libtfs.a"))
+        FileUtils.mkdir_p(File.join(root, "closure"))
+        @prev_libdir = ENV.fetch("TEBAKO_RUST_LIBDIR", nil)
+        ENV["TEBAKO_RUST_LIBDIR"] = root
+      end
+
+      after do
+        @prev_libdir.nil? ? ENV.delete("TEBAKO_RUST_LIBDIR") : ENV["TEBAKO_RUST_LIBDIR"] = @prev_libdir
+        FileUtils.remove_entry(root)
+      end
+
+      it "admits the empty closure on windows/arm64 (the scoped archives need none)" do
+        minilibs = mlibs.compute_minilibs(ruby_ver)
+        expect(minilibs).to include("#{root}/libtebako_driver.a")
+        expect(minilibs).to include("#{root}/libtfs.a")
+      end
+
+      it "keeps the empty-closure named error (112) on every other platform" do
+        x64 = described_class.new(TebakoRuntimeBuilder::Platform.new("x64-mingw-ucrt", "x86_64"), "/deps/lib")
+        expect { x64.compute_minilibs(ruby_ver) }
+          .to raise_error(TebakoRuntimeBuilder::Error) { |e| expect(e.error_code).to eq(112) }
+      end
+    end
   end
 
   context "on darwin" do
