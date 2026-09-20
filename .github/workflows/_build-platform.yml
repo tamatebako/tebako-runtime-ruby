@@ -825,8 +825,13 @@ jobs:
           for f in libtebako_driver.a libtfs.a include/tebako/fs/c_api.h; do
             test -s "$unit/$f" || { echo "::error::missing link-unit input $unit/$f — the link-unit job's artifact is incomplete"; exit 1; }
           done
-          compgen -G "$unit/closure/*.a" > /dev/null || { echo "::error::$unit carries no closure/*.a — the link-unit job's artifact is incomplete"; exit 1; }
-          echo "staged link unit OK: $(find "$unit/closure" -name '*.a' | wc -l) closure archives"
+          # windows/arm64 ships limnifs-only: closure/ is empty BY DESIGN
+          # (ci/link-unit-download.sh carries the same exemption) — every
+          # other platform keeps the non-empty closure contract.
+          if [ "${{ matrix.env.os }}/${{ matrix.env.arch }}" != "windows/arm64" ]; then
+            compgen -G "$unit/closure/*.a" > /dev/null || { echo "::error::$unit carries no closure/*.a — the link-unit job's artifact is incomplete"; exit 1; }
+          fi
+          echo "staged link unit OK: $(find "$unit/closure" -name '*.a' 2>/dev/null | wc -l) closure archives"
 
       # CHAIN GATE: the draft chain's source roll (the roll-source job
       # above). build_runtime takes the roll via --src-mirror.
@@ -937,6 +942,7 @@ jobs:
       # additionally gated in the planner (compute_matrix's artifact +
       # publish gates) — this branch only picks the environment.
       - name: Setup MSys
+        id: setup-msys
         if: matrix.env.os == 'windows'
         uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
         with:
@@ -1011,8 +1017,14 @@ jobs:
       # ext/openssl mkmf log (which lib/header did extconf pick, and why did
       # the X509 accessor probes fail) and the generated ruby.exe link rule
       # (does it carry the --start-group wrapper) — cheap, only fires red
+      # Gated on the msys2 setup having run: the msys2 shell resolves only
+      # after Setup MSys (the windows-11-arm image ships no preinstalled
+      # msys2 — a pre-setup failure, e.g. the link-unit assert, otherwise
+      # dies here on 'msys2: command not found' and masks the real error).
+      # Pre-setup failures are self-describing; post-build failures keep
+      # the full toolchain-equipped battery below.
       - name: Dump diagnostics on failure (Windows)
-        if: failure() && matrix.env.container == null && matrix.env.os == 'windows'
+        if: failure() && matrix.env.container == null && matrix.env.os == 'windows' && steps.setup-msys.outcome == 'success'
         shell: msys2 {0}
         run: |
           find .build/deps/src -path "*/ext/openssl/mkmf.log" -exec sh -c 'echo "== $1"; cat "$1"' _ {} \; || true
