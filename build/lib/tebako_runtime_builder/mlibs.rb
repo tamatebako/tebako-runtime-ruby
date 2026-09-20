@@ -460,7 +460,11 @@ module TebakoRuntimeBuilder
         path
       end
       closure = Dir.glob(File.join(rust_libdir, "closure", "*.a"))
-      if closure.empty?
+      # windows/arm64 ships limnifs-only: the product's arm64 unit carries
+      # an empty closure/ BY DESIGN (the dwarfs arm64 closure is upstream
+      # dwarfs-t's milestone) — the scoped archives reference no closure
+      # symbols on that target. Every other platform keeps the contract.
+      if closure.empty? && !(@platform.msys? && @platform.host_arch_id == "arm64")
         raise TebakoRuntimeBuilder::Error.new(
           "TEBAKO_RUST_LIBDIR (#{rust_libdir}) carries no closure/*.a — stage the scoped link unit first",
           112
