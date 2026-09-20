@@ -286,9 +286,19 @@ if(NOT DWARFS_PRELOAD OR NOT LIBTFS_DEPS_AVAILABLE)
 endif()
 
 if(IS_MSYS)
-  set(LIBTFS_VCPKG_TRIPLET "x64-mingw-static")
-  set(__LIBTFS_VCPKG_TRIPLET_ARGS "--triplet" "x64-mingw-static")
-  set(LIBTFS_VCPKG_EP_TRIPLET_ARG "-DVCPKG_TARGET_TRIPLET=x64-mingw-static")
+  # The vcpkg triplet follows the host arch: x64-mingw-static on ucrt64
+  # legs, arm64-mingw-static on clangarm64 (windows/arm64) legs. The
+  # limnifs-only arm64 link unit stages no vcpkg tree today, so the
+  # triplet only shapes the (inert) -I/-L there — until the dwarfs arm64
+  # closure lands.
+  string(TOLOWER "${CMAKE_HOST_SYSTEM_PROCESSOR}" __LIBTFS_TRIPLET_ARCH)
+  if(__LIBTFS_TRIPLET_ARCH MATCHES "^(aarch64|arm64)$")
+    set(LIBTFS_VCPKG_TRIPLET "arm64-mingw-static")
+  else()
+    set(LIBTFS_VCPKG_TRIPLET "x64-mingw-static")
+  endif()
+  set(__LIBTFS_VCPKG_TRIPLET_ARGS "--triplet" "${LIBTFS_VCPKG_TRIPLET}")
+  set(LIBTFS_VCPKG_EP_TRIPLET_ARG "-DVCPKG_TARGET_TRIPLET=${LIBTFS_VCPKG_TRIPLET}")
 else()
   # vcpkg default-host-triplet detection (matches the libtfs release builds)
   set(LIBTFS_VCPKG_TRIPLET "")

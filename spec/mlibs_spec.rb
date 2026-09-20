@@ -119,6 +119,15 @@ RSpec.describe TebakoRuntimeBuilder::Mlibs do
       expect(result).not_to include("-l:libbz2.a")
     end
 
+    it "keeps the gcc C++ runtime set on ucrt64 (libstdc++ + libiberty)" do
+      [mlibs.compute(ruby_ver), mlibs.compute_minilibs(ruby_ver), mlibs.compute_solibs(ruby_ver)].each do |libs|
+        expect(libs).to include("-l:libstdc++.a")
+        expect(libs).to include("-static-libstdc++")
+        expect(libs).not_to include("-l:libc++.a")
+      end
+      expect(mlibs.compute(ruby_ver)).to include("-l:libiberty.a")
+    end
+
     it "computes miniruby's FULL static set (driver + closure + system libs, issue 40)" do
       result = mlibs.compute_minilibs(ruby_ver)
       expect(result).to start_with("-Wl,--start-group -Wl,--push-state,--whole-archive -l:libtebako-fs.a")
@@ -256,6 +265,22 @@ RSpec.describe TebakoRuntimeBuilder::Mlibs do
         minilibs = mlibs.compute_minilibs(ruby_ver)
         expect(minilibs).to include("#{root}/libtebako_driver.a")
         expect(minilibs).to include("#{root}/libtfs.a")
+      end
+
+      it "links the llvm C++ runtime set (clangarm64) instead of the gcc one" do
+        # clangarm64 has no libstdc++.a/-static-libstdc++ (the llvm
+        # toolchain) and no binutils libiberty.a — the hardcoded gcc set
+        # failed configure's compiler sanity test on the 3.4.10/4.0.6
+        # windows-arm64 legs (run 35530045916).
+        [mlibs.compute(ruby_ver), mlibs.compute_minilibs(ruby_ver), mlibs.compute_solibs(ruby_ver)].each do |libs|
+          expect(libs).to include("-l:libc++.a")
+          expect(libs).to include("-l:libc++abi.a")
+          expect(libs).to include("-l:libunwind.a")
+          expect(libs).to include("-static-libgcc")
+          expect(libs).not_to include("-l:libstdc++.a")
+          expect(libs).not_to include("-static-libstdc++")
+          expect(libs).not_to include("-l:libiberty.a")
+        end
       end
 
       it "keeps the empty-closure named error (112) on every other platform" do

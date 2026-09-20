@@ -610,7 +610,19 @@ else(IS_DARWIN)
 
   if(RB_W32)
     string(CONCAT RUBY_C_FLAGS ${RUBY_C_FLAGS} " -DRB_W32=1")
-    string(CONCAT RUBY_L_FLAGS ${RUBY_L_FLAGS} " -l:libstdc++.a -L${TLIBD}")
+    # The msys C++ runtime archive, keyed on the host arch: ucrt64 (x64)
+    # is a gcc toolchain (libstdc++.a); clangarm64 (arm64) is the llvm
+    # toolchain and has no libstdc++.a at all — a hardcoded -l:libstdc++.a
+    # here lands in configure's LDFLAGS and fails its compiler sanity test
+    # with the misleading "C compiler cannot create executables" (the
+    # 3.4.10/4.0.6 windows-arm64 legs, run 35530045916).
+    string(TOLOWER "${CMAKE_HOST_SYSTEM_PROCESSOR}" __TEBAKO_HOST_ARCH)
+    if(__TEBAKO_HOST_ARCH MATCHES "^(aarch64|arm64)$")
+      set(__TEBAKO_CXXRT_FLAG "-l:libc++.a")
+    else()
+      set(__TEBAKO_CXXRT_FLAG "-l:libstdc++.a")
+    endif()
+    string(CONCAT RUBY_L_FLAGS ${RUBY_L_FLAGS} " ${__TEBAKO_CXXRT_FLAG} -L${TLIBD}")
     # vcpkg's static libcrypto.a (the CAPI engine, e_capi.obj) references
     # the CryptoAPI certificate store (CertFreeCertificateContext & co.),
     # but ruby's default mingw $LIBS lack -lcrypt32, so every ext/openssl

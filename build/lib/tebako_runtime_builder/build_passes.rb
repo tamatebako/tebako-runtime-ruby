@@ -229,7 +229,7 @@ module TebakoRuntimeBuilder
         # 3.4+ parser, io.c for the CRLF fd-is-text probe). The shared
         # build (issue #40) adds its own set: the DLL export fragment, the
         # mkexports rule appending it, and miniruby's static library set.
-        hotfix_msys!(ruby_source_dir, deps_lib_dir, rv) if platform.msys?
+        hotfix_msys!(platform, ruby_source_dir, deps_lib_dir, rv) if platform.msys?
         pin_autotools_timestamps!(ruby_source_dir)
         build_toolchain_stub(platform, deps_lib_dir, mount_point, cc, rv)
         # gnu only: alpine's libffi.a is non-PIC (R_X86_64_PC32 against
@@ -472,7 +472,7 @@ module TebakoRuntimeBuilder
       # the tebako@main link unit (tebako#414). A ruby-source fix lands in
       # tamatebako/ruby and flows via a source release (iterate unmerged
       # via harness_ref) -- the remaining two guards retire the same way.
-      def hotfix_msys!(ruby_source_dir, deps_lib_dir, ruby_ver) # rubocop:disable Metrics/AbcSize
+      def hotfix_msys!(platform, ruby_source_dir, deps_lib_dir, ruby_ver) # rubocop:disable Metrics/AbcSize
         hotfix_msys_glob_opendir!(File.join(ruby_source_dir, "dir.c"))
         hotfix_msys_fd_is_text!(File.join(ruby_source_dir, "io.c"))
         write_dll_exports_fragment!(ruby_source_dir, deps_lib_dir)
@@ -482,7 +482,10 @@ module TebakoRuntimeBuilder
         hotfix_msys_exe_link_order!(File.join(ruby_source_dir, "template", "Makefile.in"))
         hotfix_msys_exe_link_order!(File.join(ruby_source_dir, "cygwin", "GNUmakefile.in"))
         hotfix_msys_mkexports_popen!(File.join(ruby_source_dir, "win32", "mkexports.rb"))
-        minilibs = TebakoRuntimeBuilder::Mlibs.new(TebakoRuntimeBuilder::Platform.new, deps_lib_dir)
+        # The minilibs describe the build TARGET (the ostype prepare was
+        # invoked for), never the ambient host — msys_env keys the C++
+        # runtime set (ucrt64 gcc vs clangarm64 llvm) off the target.
+        minilibs = TebakoRuntimeBuilder::Mlibs.new(platform, deps_lib_dir)
                                               .compute_minilibs(ruby_ver)
         hotfix_msys_miniruby_libs!(File.join(ruby_source_dir, "template", "Makefile.in"), minilibs)
       end

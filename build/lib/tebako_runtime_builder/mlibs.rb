@@ -105,11 +105,17 @@ module TebakoRuntimeBuilder
       "-l:liblzma.a",         "-ldl", "-lpthread"
     ].freeze
 
+    # The CXXRT_ARCHIVE / CXXRT_STATIC / GNU_IBERTY tokens resolve at
+    # compute() time against the msys2 environment (cxxrt_archive_flags &
+    # co.): ucrt64 is a gcc toolchain (libstdc++.a + -static-libstdc++ +
+    # binutils' libiberty.a); clangarm64 (windows/arm64) is the llvm
+    # toolchain — libc++.a + libc++abi.a + libunwind.a, no libstdc++.a and
+    # no binutils (hence no libiberty.a) at all.
     MSYS_LIBRARIES = [
       "-l:liblz4.a",             "-l:libz.a",               "-l:libzstd.a",            "-l:liblzma.a",
-      "-l:libncurses.a",         "-l:liblzma.a",            "-l:libiberty.a",          "LIBYAML",
-      "-l:libffi.a",             "-l:libstdc++.a",          "-l:libdl.a",
-      "-static-libgcc",          "-static-libstdc++",       "-l:libssl.a",             "-l:libcrypto.a",
+      "-l:libncurses.a",         "-l:liblzma.a",            "GNU_IBERTY",              "LIBYAML",
+      "-l:libffi.a",             "CXXRT_ARCHIVE",           "-l:libdl.a",
+      "-static-libgcc",          "CXXRT_STATIC",            "-l:libssl.a",             "-l:libcrypto.a",
       "-l:libz.a",               "-l:libwinpthread.a",      "-lcrypt32",               "-lshlwapi",
       "-lwsock32",               "-liphlpapi",              "-limagehlp",              "-lbcrypt",
       "-lwsock32",               "-liphlpapi",              "-limagehlp",              "-lbcrypt",
@@ -132,7 +138,7 @@ module TebakoRuntimeBuilder
     # the C++ runtime, statically — several mingw installs on a runner make
     # DLL resolution nondeterministic otherwise.
     MSYS_DLL_LIBRARIES = [
-      "-l:libstdc++.a",          "-static-libgcc",            "-static-libstdc++",       "-l:libwinpthread.a",
+      "CXXRT_ARCHIVE",           "-static-libgcc",            "CXXRT_STATIC",            "-l:libwinpthread.a",
       "-lshell32",               "-lws2_32",                  "-lwsock32",               "-liphlpapi",
       "-limagehlp",              "-lshlwapi",                 "-lbcrypt",                "-lcrypt32",
       "-ladvapi32",              "-luser32",                  "-lole32",                 "-loleaut32",
@@ -282,8 +288,14 @@ module TebakoRuntimeBuilder
     end
 
     def linux_libraries(libraries, ruby_ver, _with_compression)
-      libraries.map! do |lib|
-        lib == "LIBYAML" ? yaml_reference(ruby_ver) : lib
+      libraries = libraries.flat_map do |lib|
+        case lib
+        when "LIBYAML" then [yaml_reference(ruby_ver)]
+        when "CXXRT_ARCHIVE" then cxxrt_archive_flags
+        when "CXXRT_STATIC" then cxxrt_static_flags
+        when "GNU_IBERTY" then gnu_iberty_flags
+        else [lib]
+        end
       end
       libraries.join(" ")
     end
@@ -497,6 +509,39 @@ module TebakoRuntimeBuilder
 
     def yaml_reference(ruby_ver)
       ruby_ver.ruby32? ? "-l:libyaml.a" : ""
+    end
+
+    # The toolchain's C++ runtime, keyed on the msys2 environment
+    # (Platform#msys_env): ucrt64 is a gcc toolchain (libstdc++.a, the
+    # -static-libstdc++ driver flag, and binutils' libiberty.a);
+    # clangarm64 (windows/arm64) is the llvm toolchain — libc++.a +
+    # libc++abi.a + libunwind.a, and no libstdc++.a at all (a hardcoded
+    # -l:libstdc++.a there dies at link time with lld's "unable to find
+    # library" — the python factory's arm64 leg, run 35530044014 — or,
+    # in configure's LDFLAGS, with the misleading "C compiler cannot
+    # create executables" — the 3.4.10/4.0.6 arm64 legs, run
+    # 35530045916). -static-libgcc stays on both: clang maps it to the
+    # compiler-rt builtins.
+    def cxxrt_archive_flags
+      return ["-l:libstdc++.a"] if gcc_msys_env?
+
+      ["-l:libc++.a", "-l:libc++abi.a", "-l:libunwind.a"]
+    end
+
+    # -static-libstdc++ is a gcc-driver spelling; clang's driver warns it
+    # unused (its static C++ runtime is the explicit libc++ set above).
+    def cxxrt_static_flags
+      gcc_msys_env? ? ["-static-libstdc++"] : []
+    end
+
+    # libiberty.a rides the gcc/binutils install; the clangarm64
+    # toolchain has no binutils and no libiberty.a at all.
+    def gnu_iberty_flags
+      gcc_msys_env? ? ["-l:libiberty.a"] : []
+    end
+
+    def gcc_msys_env?
+      @platform.msys_env == "ucrt64"
     end
   end
 end
