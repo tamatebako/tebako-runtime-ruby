@@ -147,4 +147,8 @@ container_version: "0.16.2"
 # augments edges ride the suffixed pin, so the embedded driver must
 # speak minor 12 to mount them. Contract unchanged (2).
 # Full-catalog re-cut: the runtime exe embeds the unit.
-link_unit_release: "v2.8.11"
+# v2.8.13 (tebako#639): the aarch64-windows-gnu link unit joins the
+# product release — the arm64 leg's input (arscope carries the gnullvm
+# import sets: undefined section symbols + short-form members).
+# Contract unchanged (2).
+link_unit_release: "v2.8.13"
