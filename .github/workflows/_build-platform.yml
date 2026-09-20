@@ -1701,6 +1701,7 @@ jobs:
     needs: [compute, build]
     if: >-
       inputs.platform == 'windows' && inputs.audit == false
+      && needs.compute.outputs.run == 'true'
       && contains(needs.compute.outputs.ruby-matrix, '4.0.6')
     runs-on: windows-latest
     steps:
@@ -1822,7 +1823,10 @@ jobs:
           echo "link-unit:            ${{ needs.link-unit.result }}"
           echo "build:                ${{ needs.build.result }}"
           echo "dogfood:              ${{ needs.dogfood.result }}"
-          dogfood_required="${{ inputs.platform == 'windows' && contains(needs.compute.outputs.ruby-matrix, '4.0.6') }}"
+          # run==true: a run that computed no legs (an arch slice, an
+          # unaffected diff) built nothing for the dogfood to consume —
+          # its skipped result is the correct outcome, never a failure.
+          dogfood_required="${{ inputs.platform == 'windows' && needs.compute.outputs.run == 'true' && contains(needs.compute.outputs.ruby-matrix, '4.0.6') }}"
           if [ "${{ needs.roll-source.result }}" != "success" ]; then
             echo "::error::the chain-gated source roll failed: ${{ needs.roll-source.result }}"
             exit 1
