@@ -70,6 +70,23 @@ module TebakoRuntimeBuilder
       "#{cpu_tag}-ucrt-ruby#{lib_version}.dll"
     end
 
+    # The windows/arm64 (clangarm64) build boundary. ruby 3.4.1–3.4.7's
+    # win32/mkexports.rb invokes NM as one shell-less string, and
+    # clangarm64's configure spells NM "llvm-nm --no-llvm-bc" — ruby
+    # direct-execs the whole string as the program name: ENOENT at the
+    # aarch64 .def generation (the full-matrix arm64 legs, 2026-09-21).
+    # Upstream's fix (ruby/ruby@41865bb6, "Use IO.popen instead of
+    # IO.foreach with pipe") landed in 3.4.8. The 4.0 line's configure
+    # never emits the flagged spelling — every shipped 4.0.x arm64 leg
+    # builds green without it — and 4.0.0 > 3.4.8 numerically, so the
+    # flat floor is exact. The matrix planner flows this as the ruby
+    # axis's win_arm64 key; the build job's `if` turns it into a loud
+    # skip (skipped is green by construction — an incapable leg must
+    # never turn the required full-matrix gate red).
+    def msys_arm64_capable?
+      @msys_arm64_capable ||= Gem::Version.new(@ruby_version) >= Gem::Version.new("3.4.8")
+    end
+
     # Version gates compare numerically so 4.x lines fall out naturally
     # (string indexing broke the moment the major version hit 4)
     def ruby3x?

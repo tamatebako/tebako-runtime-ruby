@@ -440,7 +440,10 @@ class MatrixComputer # rubocop:disable Metrics/ClassLength
   end
 
   def with_shas(versions)
-    versions.map { |v| { "version" => v, "src_sha256" => platform_tarball_sha256(v) } }
+    versions.map do |v|
+      { "version" => v, "src_sha256" => platform_tarball_sha256(v),
+        "win_arm64" => TebakoRuntimeBuilder::RubyVersion.new(v).msys_arm64_capable? }
+    end
   end
 
   # The cache-key sha is the sha of the tarball THIS platform consumes
@@ -486,6 +489,7 @@ class MatrixComputer # rubocop:disable Metrics/ClassLength
   def slice_legs(rubies, env, why)
     rubies = available(rubies)
     env = serve_gated_env(env)
+    note_arm64_incapable(rubies, env)
     env = env.map do |entry|
       host_id = TebakoRuntimeBuilder::Platform.host_id_for(entry["os"], entry["arch"])
       # The in-leg sign step's tebako-pkg must EXECUTE on the leg's
@@ -535,6 +539,22 @@ class MatrixComputer # rubocop:disable Metrics/ClassLength
 
   def warn_note(message)
     @logger.warn("note: #{message}")
+  end
+
+  # The (version × arch) capability gate rides the same loud-skip idiom
+  # as the serve gate: the build job's `if` skips windows/arm64 legs
+  # whose ruby predates upstream's llvm-nm mkexports fix
+  # (RubyVersion#msys_arm64_capable? — the win_arm64 axis key), and this
+  # note names them so a skipped leg is never silent.
+  def note_arm64_incapable(rubies, env)
+    return unless env.any? { |entry| entry["os"] == "windows" && entry["arch"] == "arm64" }
+
+    incapable = rubies.map { |row| row["version"] }
+                      .reject { |v| TebakoRuntimeBuilder::RubyVersion.new(v).msys_arm64_capable? }
+    return if incapable.empty?
+
+    warn_note("windows/arm64 skips ruby #{incapable.join(", ")} — pre-3.4.8 mkexports cannot drive " \
+              "clangarm64's llvm-nm (ruby/ruby@41865bb6 landed in 3.4.8); their x86_64 legs are unaffected")
   end
 
   # The pinned link-unit release (contract.yml link_unit_release; empty =

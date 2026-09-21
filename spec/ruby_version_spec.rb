@@ -58,6 +58,15 @@ RSpec.describe TebakoRuntimeBuilder::RubyVersion do
       .to raise_error(TebakoRuntimeBuilder::Error, /no msys DLL cpu tag for host_id 'linux-gnu-arm64'/)
   end
 
+  it "gates the windows/arm64 build on the mkexports llvm-nm boundary" do
+    %w[3.4.1 3.4.2 3.4.3 3.4.4 3.4.5 3.4.6 3.4.7].each do |v|
+      expect(described_class.new(v).msys_arm64_capable?).to be(false), "#{v} must be gated"
+    end
+    %w[3.4.8 3.4.9 3.4.10 4.0.0 4.0.6].each do |v|
+      expect(described_class.new(v).msys_arm64_capable?).to be(true), "#{v} must build"
+    end
+  end
+
   it "rejects malformed versions" do
     expect { described_class.new("3.3") }.to raise_error(TebakoRuntimeBuilder::Error, /Invalid Ruby version format/)
   end
