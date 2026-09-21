@@ -22,9 +22,9 @@ set -euo pipefail
 
 os=${1:?usage: tfs-download.sh <os> <arch> <release>}
 arch=${2:?}
-release=${3:?usage: tfs-download.sh <os> <arch> <release> — pass contract.yml's link_unit_release pin}
+release=${3:?usage: tfs-download.sh <os> <arch> <release> — pass the contract.yml link_unit_release pin}
 
-# The product release's binary platform ids (NOT the link-unit pids —
+# The product release binary platform ids (NOT the link-unit pids —
 # the CLI assets spell windows with the ucrt segment).
 case "$os/$arch" in
   windows/x86_64)  pid=windows-ucrt64;    exe=.exe ;;
