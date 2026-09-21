@@ -115,7 +115,13 @@ env:
   # a cache captured before it holds a pre-ext-build tree and the finalize
   # relink dies on undefined Init_* (the 3.2.4 catalog leg vs its green
   # cache-miss validation leg).
-  CACHE_VER: 4
+  # 5: clangarm64 toolchain drift (windows-arm64) — winpthreads 14.0.0
+  # exports clock_gettime/clock_getres from pthread_time.h on aarch64; a
+  # stamp-restored configure cache still says HAVE_CLOCK_GETTIME=no and
+  # win32.c's fallback definitions collide with the header (redefinition
+  # errors, run 35543916160). The toolchain rides no cache key dimension;
+  # rolling pacman under an unchanged tarball is the same class as above.
+  CACHE_VER: 5
   VERBOSE: no
   RUNTIME_REPO: tamatebako/tebako-runtime-ruby
 
