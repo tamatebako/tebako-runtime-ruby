@@ -74,7 +74,7 @@ module TebakoRuntimeBuilder
     # Compression codecs register explicitly (compression_registry ctor),
     # so no --whole-archive compression lib is needed anymore.
     COMMON_LINUX_LIBRARIES = [
-      "-Wl,--push-state,--whole-archive -l:libtebako-fs.a -Wl,--pop-state",
+      "-Wl,--whole-archive -l:libtebako-fs.a -Wl,--no-whole-archive",
       "-l:libtfs.a",
       "-l:libdwarfs_reader.a", "-l:libdwarfs_common.a", "-l:libdwarfs_metadata_legacy.a",
       "-l:libdwarfs_decompressor.a", "-l:libflatbuffers.a", "-l:libzip.a",
@@ -270,7 +270,7 @@ module TebakoRuntimeBuilder
       covered = linux_covered(platform_libraries)
       libs = rust_link_libraries.reject { |path| covered.include?(File.basename(path)) }
       ["-Wl,--start-group",
-       "-Wl,--push-state,--whole-archive -l:libtebako-fs.a -Wl,--pop-state"] +
+       "-Wl,--whole-archive -l:libtebako-fs.a -Wl,--no-whole-archive"] +
         libs +
         ["-Wl,--end-group"] + platform_libraries + ["-l:libz.a"]
     end
@@ -361,7 +361,7 @@ module TebakoRuntimeBuilder
     # is what keeps the stub's pull collision-free against the driver
     # archive.
     def msys_miniruby_stub
-      ["-Wl,--push-state,--whole-archive -l:libtebako-fs.a -Wl,--pop-state"]
+      ["-Wl,--whole-archive -l:libtebako-fs.a -Wl,--no-whole-archive"]
     end
 
     # The closure archives that ride the DLL: the v2 scoped libtfs.a +
