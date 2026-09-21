@@ -102,6 +102,34 @@ RSpec.describe TebakoRuntimeBuilder::ImagePackager do
     expect(args_log).to eq(["-i", layout_dir, "-o", image_path, "--no-progress", "--force"])
   end
 
+  it "packs limnifs via tfs on windows/arm64 (the limnifs-only link unit)" do
+    arm64 = TebakoRuntimeBuilder::Platform.new("aarch64-mingw-ucrt", "aarch64")
+    tfs = fake_tool(@dir, "tfs")
+    packager = described_class.new(arm64, deps_bin_dir, tfs: tfs)
+
+    with_env("FAKE_ARGS_LOG" => File.join(@dir, "args.log")) do
+      packager.package(layout_dir, image_path)
+    end
+
+    expect(args_log).to eq(["mkimage", "--format", "limnifs", layout_dir, "-o", image_path])
+  end
+
+  it "refuses the mkdwarfs fallback by name on windows/arm64 (x64 dwarfs-t: wrong arch, wrong format)" do
+    arm64 = TebakoRuntimeBuilder::Platform.new("aarch64-mingw-ucrt", "aarch64")
+    fake_tool(deps_bin_dir, "mkdwarfs")
+    empty = File.join(@dir, "empty-path")
+    FileUtils.mkdir_p(empty)
+    packager = described_class.new(arm64, deps_bin_dir)
+
+    with_env("PATH" => empty, "TEBAKO_TFS" => nil) do
+      expect { packager.package(layout_dir, image_path) }
+        .to raise_error(TebakoRuntimeBuilder::Error) do |error|
+          expect(error.error_code).to eq(131)
+          expect(error.message).to include("limnifs", "TEBAKO_TFS")
+        end
+    end
+  end
+
   it "replaces a stale image from a previous run" do
     fake_tool(@dir, "tfs")
     fake_tool(deps_bin_dir, "mkdwarfs")

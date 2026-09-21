@@ -94,6 +94,20 @@ module TebakoRuntimeBuilder
       @msys
     end
 
+    # The msys2 environment this mingw host builds in: the pacman package
+    # namespace (pactoys' pacboy resolves `:p` against it —
+    # mingw-w64-<ucrt-x86_64|clang-aarch64>-*) and the msys2 toolchain root
+    # the openssl/zlib dev packages install under. x86_64 pairs ucrt64 (the
+    # proven gcc shape); arm64 pairs clangarm64 (the llvm toolchain — the
+    # only aarch64-w64-mingw32 environment, and the one MSYS2 itself builds
+    # its aarch64 ruby in). Non-msys hosts raise: there is no environment
+    # to name.
+    def msys_env
+      raise TebakoRuntimeBuilder::Error.new("#{@ostype} is not a mingw host — no msys2 environment", 112) unless @msys
+
+      host_arch_id == "arm64" ? "clangarm64" : "ucrt64"
+    end
+
     # Exactly x86_64 (never aarch64/arm64): the 3.1 line's YJIT arms on
     # this arch only — the boot smoke's derivation keys on it.
     def x86_64?
@@ -119,9 +133,14 @@ module TebakoRuntimeBuilder
 
     # (os id, arch id) → release platform id. Owned by tpkg::Platform
     # (tebako-rs, docs/spec/03 §3); NOT derivable by formula
-    # ("windows-ucrt64" carries no arch segment).
+    # ("windows-ucrt64" carries no arch segment). windows/arm64 follows
+    # the product's RESERVED release-asset name ("windows-ucrt-arm64" —
+    # the aarch64-windows-ucrt triplet, which tpkg parses but rejects in
+    # payload manifests until the platform ships); this factory's leg is
+    # publish-gated OFF until the product un-reserves it.
     HOST_IDS = {
       %w[windows x86_64] => "windows-ucrt64",
+      %w[windows arm64] => "windows-ucrt-arm64",
       %w[macos arm64] => "macos-arm64",
       %w[macos x86_64] => "macos-x86_64",
       %w[linux-gnu x86_64] => "linux-gnu-x86_64",
@@ -136,15 +155,48 @@ module TebakoRuntimeBuilder
       HOST_IDS.fetch([os_id, arch_id]) { raise TebakoRuntimeBuilder::Error.new("#{os_id}/#{arch_id}", 112) }
     end
 
+    # (os id, arch id) → the tamatebako/tebako release's link-unit platform
+    # id (the product release.yml's matrix.platform; differs from HOST_IDS
+    # on windows). The single owner of the mapping for BOTH the CI leg
+    # planner's artifact gate (scripts/compute_matrix.rb) and
+    # ci/link-unit-download.sh's pin-hit fetch. windows/arm64 pairs the
+    # msys2 clangarm64 environment (triple aarch64-w64-mingw32) with the
+    # aarch64-pc-windows-gnullvm Rust target, so its pid follows the
+    # x86_64-windows-gnu convention — but NO product release publishes an
+    # arm64 windows unit yet (v2.8.11 verified: x86_64-windows-gnu is the
+    # only windows unit). The planner skips the leg loudly naming the exact
+    # missing asset; if the eventual asset spells its pid differently, this
+    # table is the one-line fix.
+    LINK_UNIT_PIDS = {
+      %w[linux-gnu x86_64] => "linux-gnu-x86_64",
+      %w[linux-gnu arm64] => "linux-gnu-arm64",
+      %w[linux-musl x86_64] => "linux-musl-x86_64",
+      %w[linux-musl arm64] => "linux-musl-arm64",
+      %w[macos x86_64] => "macos-x86_64",
+      %w[macos arm64] => "macos-arm64",
+      %w[windows x86_64] => "x86_64-windows-gnu",
+      %w[windows arm64] => "aarch64-windows-gnu"
+    }.freeze
+
+    # The lookup for callers with no detected host (the planner's artifact
+    # gate); same named failure as host_id_for.
+    def self.link_unit_pid_for(os_id, arch_id)
+      LINK_UNIT_PIDS.fetch([os_id, arch_id]) { raise TebakoRuntimeBuilder::Error.new("#{os_id}/#{arch_id}", 112) }
+    end
+
     # host_id → the spec 03 §3 vcpkg-form triplet (the in-image payload
     # manifest's provides.provides[].platform grammar). The mapping is
     # owned by tpkg::Platform (tamatebako/tebako — the single
     # triplet ↔ release-asset-name owner); this mirrors it for the
     # factory's manifest emission, and a drift fails loudly at the boot
     # smoke (the driver refuses an unknown triplet at manifest parse,
-    # exit 65).
+    # exit 65). windows-ucrt-arm64's triplet is the product's RESERVED
+    # axis entry: tpkg parses it but payload-manifest validate rejects
+    # its use until the platform ships — the leg's publish gate keeps a
+    # served manifest from reaching consumers before that.
     TPKG_TRIPLETS = {
       "windows-ucrt64" => "x86_64-windows-ucrt",
+      "windows-ucrt-arm64" => "aarch64-windows-ucrt",
       "macos-arm64" => "aarch64-macos",
       "macos-x86_64" => "x86_64-macos",
       "linux-gnu-x86_64" => "x86_64-linux-gnu",

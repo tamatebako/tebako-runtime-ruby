@@ -99,6 +99,8 @@ on:
         value: ${{ jobs.compute.outputs.env-matrix }}
       ruby-matrix:
         value: ${{ jobs.compute.outputs.ruby-matrix }}
+      exclude-matrix:
+        value: ${{ jobs.compute.outputs.exclude-matrix }}
       tebako-version:
         value: ${{ jobs.compute.outputs.tebako-version }}
 
@@ -115,7 +117,16 @@ env:
   # a cache captured before it holds a pre-ext-build tree and the finalize
   # relink dies on undefined Init_* (the 3.2.4 catalog leg vs its green
   # cache-miss validation leg).
-  CACHE_VER: 4
+  # 5: clangarm64 toolchain drift (windows-arm64) — winpthreads 14.0.0
+  # exports clock_gettime/clock_getres from pthread_time.h on aarch64; a
+  # stamp-restored configure cache still says HAVE_CLOCK_GETTIME=no and
+  # win32.c's fallback definitions collide with the header (redefinition
+  # errors, run 35543916160). The toolchain rides no cache key dimension;
+  # rolling pacman under an unchanged tarball is the same class as above.
+  # 6: the arm64 ac_cv clock-probe pin (build/CMakeLists.txt) — v5's
+  # save-always captured a fresh-but-unpinned configure whose config.cache
+  # still says HAVE_CLOCK_GETTIME=no; evict it so the env pin is unshadowed.
+  CACHE_VER: 6
   VERBOSE: no
   RUNTIME_REPO: tamatebako/tebako-runtime-ruby
 
@@ -257,6 +268,10 @@ jobs:
       why: ${{ steps.matrix.outputs.why }}
       env-matrix: ${{ steps.matrix.outputs.env-matrix }}
       ruby-matrix: ${{ steps.matrix.outputs.ruby-matrix }}
+      # The (version × arch) capability excludes (windows/arm64 legs
+      # whose ruby predates the mkexports llvm-nm fix) — the build job's
+      # matrix.exclude consumes it verbatim.
+      exclude-matrix: ${{ steps.matrix.outputs.exclude-matrix }}
       # The env matrix deduped by (os, arch) — one link-unit leg per
       # platform-arch, never per ruby (the native closure is ruby-free).
       link-unit-matrix: ${{ steps.matrix.outputs.link-unit-matrix }}
@@ -380,6 +395,16 @@ jobs:
           MATRIX_ARCH_FILTER: ${{ inputs.arch_filter }}
           # CHAIN GATE: src_sha256 from the roll, not the published pin.
           TEBAKO_SRC_MIRROR: file://${{ github.workspace }}/.build/spec22-src-roll
+          # The publish run flag + the owner's windows/arm64 serving
+          # gate — compute_matrix's publish gate reads both (build CI
+          # runs the arm64 leg ungated once its link-unit asset exists;
+          # a publish run serves it only with the variable armed).
+          PUBLISH: ${{ inputs.publish }}
+          TEBAKO_SERVE_WINDOWS_ARM64: ${{ vars.TEBAKO_SERVE_WINDOWS_ARM64 }}
+          # compute_matrix reads the tamatebako/tebako release API (the
+          # windows legs' asset gate): authenticated calls keep the
+          # shared runner NAT's 60/h budget out of the plan.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ./scripts/compute_matrix.rb --platform ${{ inputs.platform }}
 
@@ -593,14 +618,14 @@ jobs:
       # here, never per ruby version again. The checkouts/caches above
       # are shared with POSIX; these are the ucrt64-only provisions.
       - name: Setup MSys
-        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'windows'
+        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'windows' && matrix.env.arch == 'x86_64'
         uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
         with:
           msystem: ucrt64
           path-type: minimal
           update: true
       - name: Install pacman packages
-        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'windows'
+        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'windows' && matrix.env.arch == 'x86_64'
         shell: msys2 {0}
         run: |
           pacman -Syu --needed --noconfirm git tar bison flex pactoys
@@ -609,11 +634,11 @@ jobs:
             gtest:p autotools:p ncurses:p ruby:p toolchain:p openssl:p  \
             make:p libyaml:p libxslt:p
       - uses: dtolnay/rust-toolchain@e43eeffd51aefeea929f4ea14e09fd077153e788 # 1.94.1
-        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'windows'
+        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'windows' && matrix.env.arch == 'x86_64'
         with:
           targets: x86_64-pc-windows-gnu
       - name: Set up vcpkg for the link unit
-        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'windows'
+        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'windows' && matrix.env.arch == 'x86_64'
         uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.6
         with:
           vcpkgGitCommitId: f14401ca0f2754347c3864da7488a9b955b4e47a
@@ -623,7 +648,7 @@ jobs:
       # The override is the org's GitHub Packages NuGet feed (details in
       # ci/vcpkg-nuget-cache.sh).
       - name: Configure the vcpkg binary cache (GitHub Packages NuGet)
-        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'windows'
+        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'windows' && matrix.env.arch == 'x86_64'
         shell: bash
         env:
           # First-push of a new package id CANNOT be done by GITHUB_TOKEN
@@ -633,7 +658,7 @@ jobs:
           GH_TOKEN: ${{ secrets.TEBAKO_PACKAGES_PAT || secrets.GITHUB_TOKEN }}
         run: bash ci/vcpkg-nuget-cache.sh
       - name: Restore the vcpkg baseline (dwarfs-t is the single writer)
-        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'windows'
+        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'windows' && matrix.env.arch == 'x86_64'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -645,7 +670,7 @@ jobs:
             dwarfs-rs/dwarfs-t x64-mingw-static \
             || echo "baseline miss — ports build normally"
       - name: Build + stage the windows-gnu link unit
-        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'windows'
+        if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'windows' && matrix.env.arch == 'x86_64'
         # Git-bash, and NO msys2 bin dir on PATH: vcpkg's downloaded
         # msys2 (make/perl) ABI-clashes with the setup-msys2 install when
         # both are on PATH (openssl's make install died in a perl eval
@@ -668,6 +693,20 @@ jobs:
         # Everything lives in ci/link-unit.sh (reviewed, shellcheck-able) —
         # never inline run-blocks; they get string-edited and break silently.
         run: bash ci/link-unit.sh
+      # The arm64 windows staging is not wired (the ucrt64 recipe above is
+      # x86_64 by construction): the planner's artifact gate drops the
+      # arm64 leg unless the pinned release publishes the unit, so a miss
+      # here is a mid-run release change — fail BY NAME, never a ucrt64
+      # staging on a clangarm64 runner (and never an empty artifact handoff).
+      - name: Fail the arm64 windows staging (source build not wired)
+        if: steps.published.outputs.hit != 'true' && matrix.env.os == 'windows' && matrix.env.arch == 'arm64'
+        shell: bash
+        run: |
+          echo "::error::windows/arm64 has no wired link-unit source staging and the pinned release " \
+               "missed — the planner's artifact gate only admits this leg when the pin " \
+               "(${{ needs.compute.outputs.link-unit-release }}) publishes " \
+               "link-unit-<version>-aarch64-windows-gnu.tar.gz; the release changed mid-run or raced the gate"
+          exit 1
       - name: Dump vcpkg build logs on failure
         if: failure() && matrix.env.os == 'windows'
         shell: bash
@@ -697,6 +736,11 @@ jobs:
     # audit path) must not take the legs down with it, and a link-unit
     # failure skips the legs here by name instead of 40 minutes into the
     # ruby link.
+    # The (version × arch) capability gate lives in compute's
+    # exclude-matrix output (matrix context is unavailable in a
+    # job-level `if` — it is evaluated before expansion): legs whose
+    # ruby predates upstream's llvm-nm mkexports fix never enter the
+    # windows/arm64 matrix, and compute's note names them.
     if: ${{ always() && !cancelled() && needs.compute.outputs.run == 'true' && !inputs.audit && (needs.link-unit.result == 'success' || needs.link-unit.result == 'skipped') }}
     runs-on: ${{ matrix.env.host }}
     # The longest green leg on record runs ~75 min cold; a hung leg fails
@@ -727,6 +771,10 @@ jobs:
       matrix:
         env: ${{fromJson(needs.compute.outputs.env-matrix)}}
         ruby: ${{fromJson(needs.compute.outputs.ruby-matrix)}}
+        # The (windows/arm64 × incapable-ruby) pairs, emitted by compute
+        # as deep-equal rows of the same axes (empty when none — every
+        # catalog ruby at or past the 3.4.8 mkexports boundary builds).
+        exclude: ${{fromJson(needs.compute.outputs.exclude-matrix)}}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -801,8 +849,13 @@ jobs:
           for f in libtebako_driver.a libtfs.a include/tebako/fs/c_api.h; do
             test -s "$unit/$f" || { echo "::error::missing link-unit input $unit/$f — the link-unit job's artifact is incomplete"; exit 1; }
           done
-          compgen -G "$unit/closure/*.a" > /dev/null || { echo "::error::$unit carries no closure/*.a — the link-unit job's artifact is incomplete"; exit 1; }
-          echo "staged link unit OK: $(find "$unit/closure" -name '*.a' | wc -l) closure archives"
+          # windows/arm64 ships limnifs-only: closure/ is empty BY DESIGN
+          # (ci/link-unit-download.sh carries the same exemption) — every
+          # other platform keeps the non-empty closure contract.
+          if [ "${{ matrix.env.os }}/${{ matrix.env.arch }}" != "windows/arm64" ]; then
+            compgen -G "$unit/closure/*.a" > /dev/null || { echo "::error::$unit carries no closure/*.a — the link-unit job's artifact is incomplete"; exit 1; }
+          fi
+          echo "staged link unit OK: $(find "$unit/closure" -name '*.a' 2>/dev/null | wc -l) closure archives"
 
       # CHAIN GATE: the draft chain's source roll (the roll-source job
       # above). build_runtime takes the roll via --src-mirror.
@@ -905,14 +958,27 @@ jobs:
         with:
           xcode-version: ${{ matrix.env.xcode }}
 
+      # x86_64 legs build in the ucrt64 environment (the proven gcc shape,
+      # byte-identical to the pre-arm64 pipeline); the arm64 legs run the
+      # windows-11-arm hosted runner's native clangarm64 environment
+      # (triple aarch64-w64-mingw32 — MSYS2's own windows-on-arm recipe,
+      # the environment its aarch64 ruby package builds in). The leg is
+      # additionally gated in the planner (compute_matrix's artifact +
+      # publish gates) — this branch only picks the environment.
       - name: Setup MSys
+        id: setup-msys
         if: matrix.env.os == 'windows'
         uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
         with:
-          msystem: ucrt64
+          msystem: ${{ matrix.env.arch == 'arm64' && 'clangarm64' || 'ucrt64' }}
           path-type: minimal
           update: true
 
+      # The environment's packages ride pactoys' pacboy: a `:p` name
+      # resolves against the ACTIVE msys2 environment, so the package
+      # namespace follows the msystem branch above (ucrt-x86_64 on the
+      # x64 legs, clang-aarch64 on the arm64 legs) — no per-package
+      # case needed.
       - name: Install pacman packages
         if: matrix.env.os == 'windows'
         shell: msys2 {0}
@@ -956,6 +1022,21 @@ jobs:
           tools/build_runtime --ruby "${{ matrix.ruby.version }}" --output "runtime-packages/$runtime" --prefix .build \
             --src-mirror "file://${{ github.workspace }}/.build/spec22-src-roll" --src-release spec22-chain
 
+      # windows/arm64 packs the env image as limnifs via the NATIVE arm64
+      # tfs CLI (the link unit is limnifs-only; deps mkdwarfs is x64
+      # dwarfs-t — wrong arch under Prism, wrong format for the driver).
+      # Staged from the pinned product release, digest-verified; the
+      # packer refuses the mkdwarfs fallback by name, so a miss here is
+      # the leg's named error, never a silent x64 handoff.
+      - name: Stage the native tfs CLI (windows/arm64 limnifs packer)
+        if: matrix.env.os == 'windows' && matrix.env.arch == 'arm64'
+        shell: msys2 {0}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tfs=$(bash ci/tfs-download.sh windows arm64 "${{ needs.compute.outputs.link-unit-release }}")
+          echo "TEBAKO_TFS=$tfs" >> "$GITHUB_ENV"
+
       - name: Build runtime on Windows
         if: matrix.env.container == null && matrix.env.os == 'windows'
         shell: msys2 {0}
@@ -975,8 +1056,14 @@ jobs:
       # ext/openssl mkmf log (which lib/header did extconf pick, and why did
       # the X509 accessor probes fail) and the generated ruby.exe link rule
       # (does it carry the --start-group wrapper) — cheap, only fires red
+      # Gated on the msys2 setup having run: the msys2 shell resolves only
+      # after Setup MSys (the windows-11-arm image ships no preinstalled
+      # msys2 — a pre-setup failure, e.g. the link-unit assert, otherwise
+      # dies here on 'msys2: command not found' and masks the real error).
+      # Pre-setup failures are self-describing; post-build failures keep
+      # the full toolchain-equipped battery below.
       - name: Dump diagnostics on failure (Windows)
-        if: failure() && matrix.env.container == null && matrix.env.os == 'windows'
+        if: failure() && matrix.env.container == null && matrix.env.os == 'windows' && steps.setup-msys.outcome == 'success'
         shell: msys2 {0}
         run: |
           find .build/deps/src -path "*/ext/openssl/mkmf.log" -exec sh -c 'echo "== $1"; cat "$1"' _ {} \; || true
@@ -996,7 +1083,7 @@ jobs:
           find .build/deps/src -name "tebako-dll-exports.def" -exec sh -c '
             echo "== $1: driver/fs export lines:"; grep -nE "tebako_driver|tebako_fs_|tebako_mount|tebako_original" "$1" | head -20; echo "(count: $(wc -l < "$1"))"
           ' _ {} \; || true
-          find .build/deps/src -name "libx64-ucrt-ruby*.dll.a" -exec sh -c '
+          find .build/deps/src -name "lib*-ucrt-ruby*.dll.a" -exec sh -c '
             echo "== $1: import-lib driver exports:"; nm -g "$1" 2>/dev/null | grep -E "tebako_driver_boot|tebako_driver_contract_version" || echo "(tebako_driver_* NOT exported)"
           ' _ {} \; || true
           find .build/deps/src -maxdepth 2 -name Makefile -exec sh -c '
@@ -1021,13 +1108,13 @@ jobs:
           for d in .build/deps/src/_ruby_*; do
             [ -d "$d" ] || continue
             echo "== $d symbol/mtime state:"
-            a=$(ls "$d"/libx64-ucrt-ruby*-static.a "$d"/libruby*-static.a 2>/dev/null | head -1 || true)
+            a=$(ls "$d"/lib*-ucrt-ruby*-static.a "$d"/libruby*-static.a 2>/dev/null | head -1 || true)
             [ -n "$a" ] && echo "   static archive Init_bigdecimal: $(nm "$a" 2>/dev/null | grep -c "T Init_bigdecimal" || true)"
-            def=$(ls "$d"/x64-ucrt-ruby*.def 2>/dev/null | head -1 || true)
+            def=$(ls "$d"/*-ucrt-ruby*.def 2>/dev/null | head -1 || true)
             [ -n "$def" ] && echo "   def Init_ exports: $(grep -c "Init_" "$def" || true)"
-            imp=$(ls "$d"/libx64-ucrt-ruby*.dll.a 2>/dev/null | head -1 || true)
+            imp=$(ls "$d"/lib*-ucrt-ruby*.dll.a 2>/dev/null | head -1 || true)
             [ -n "$imp" ] && echo "   import-lib Init_bigdecimal: $(nm -g "$imp" 2>/dev/null | grep -c "Init_bigdecimal" || true)"
-            (cd "$d" && ls -la --time-style=full-iso ruby.exe exts.mk ext/extinit.o ext/extinit.c rbconfig.rb x64-mingw-ucrt-fake.rb .revision.time revision.h x64-ucrt-ruby*.def libx64-ucrt-ruby*.dll.a x64-ucrt-ruby*.dll 2>/dev/null | awk "{print \$6, \$7, \$NF}") || true
+            (cd "$d" && ls -la --time-style=full-iso ruby.exe exts.mk ext/extinit.o ext/extinit.c rbconfig.rb *-mingw-ucrt-fake.rb .revision.time revision.h *-ucrt-ruby*.def lib*-ucrt-ruby*.dll.a *-ucrt-ruby*.dll 2>/dev/null | awk "{print \$6, \$7, \$NF}") || true
             echo "   make --debug=basic ruby -n (decision trace, first 30):"
             (cd "$d" && make --debug=basic ruby -n 2>&1 | grep -E "Must remake|is newer than|Prerequisite|^\s*(gcc|\.|generating|linking|compiling)" | head -30) || true
             echo "   make -f exts.mk ruby -n (first 8):"; (cd "$d" && make -f exts.mk ruby -n 2>/dev/null | head -8) || true
@@ -1117,7 +1204,7 @@ jobs:
           probe="$PWD/build/lib/tebako_runtime_builder/boot_smoke/probe.rb"
           echo "== runtime-packages:"; ls -la runtime-packages/ || true
           echo "== exe imports:"; objdump -p "$exe" | grep -i "DLL Name" || true
-          pe=$(ls runtime-packages/x64-*-ruby*.dll 2>/dev/null | head -1 || true)
+          pe=$(ls runtime-packages/*-ucrt-ruby*.dll 2>/dev/null | head -1 || true)
           echo "== PE-named dll in place: ${pe:-NONE (boot smoke materializes it)}"
           pkgdll="${exe%.exe}.dll"
           [ -f "$pkgdll" ] && { echo "== package dll imports:"; objdump -p "$pkgdll" | grep -i "DLL Name" || true; }
@@ -1132,15 +1219,16 @@ jobs:
           # class): the exact smoke case, with the PE-named DLL materialized
           # next to the exe first (the boot smoke does it in-step; here it
           # is manual), plus the build tree's cparse.so import table — the
-          # DLL Name it binds must be the shipped x64-ucrt-ruby<ABI>.dll,
+          # DLL Name it binds must be the shipped <cpu>-ucrt-ruby<ABI>.dll
+          # (x64 on ucrt64, aarch64 on clangarm64),
           # and the extraction errno now names the failure class.
           echo "== cparse.so import tables (build tree):"
           find .build -name "cparse.so" -exec sh -c 'echo "-- $1"; objdump -p "$1" | grep -i "DLL Name"' _ {} \; 2>/dev/null || true
           echo "== racc ext link evidence (mkmf.log/Makefile):"
           find .build -path "*racc*" \( -name "Makefile" -o -name "mkmf.log" \) -exec sh -c '
-            echo "-- $1"; grep -hiE "LIBRUBYARG|-lx64-ucrt|^LIBS" "$1" | sort -u | head -6
+            echo "-- $1"; grep -hiE "LIBRUBYARG|-l[a-z0-9]+-ucrt|^LIBS" "$1" | sort -u | head -6
           ' _ {} \; 2>/dev/null || true
-          pedll=$(find .build/deps/src -maxdepth 2 -name "x64-*-ruby*.dll" 2>/dev/null | head -1 || true)
+          pedll=$(find .build/deps/src -maxdepth 2 -name "*-ucrt-ruby*.dll" 2>/dev/null | head -1 || true)
           [ -n "$pedll" ] && [ -f "$pkgdll" ] && cp "$pkgdll" "runtime-packages/$(basename "$pedll")"
           echo "== native_ext probe boot (smoke case), stdin closed, 60s:"
           TEBAKO_RUNTIME_IMAGE="$exe.tfs" RUBYOPT="-r$probe" TEBAKO_BOOT_PROBE=native_ext TEBAKO_BOOT_MOUNT_POINT=A:/t \
@@ -1208,8 +1296,15 @@ jobs:
           [ -s "$exe" ] || exe="$exe.exe"
           dll="runtime-packages/$runtime.dll"
           test -s "$dll" || { echo "::error::missing ruby DLL $dll (the --enable-shared msys build, issue 40)"; exit 1; }
-          objdump -p "$exe" | grep -F "DLL Name: x64-ucrt-ruby" \
-            || { echo "::error::$exe imports no x64-ucrt-ruby*.dll (issue 40)"; exit 1; }
+          # The PE name carries ruby's cpu tag: x64 on ucrt64, aarch64 on
+          # clangarm64 (RubyVersion::MSYS_DLL_CPU_TAGS owns the mapping
+          # ruby-side; this gate keys on the same host_id).
+          case "${{ matrix.env.host_id }}" in
+            *-arm64) cputag=aarch64 ;;
+            *)       cputag=x64 ;;
+          esac
+          objdump -p "$exe" | grep -F "DLL Name: ${cputag}-ucrt-ruby" \
+            || { echo "::error::$exe imports no ${cputag}-ucrt-ruby*.dll (issue 40)"; exit 1; }
           objdump -p "$dll" | grep -F "tebako_fs_mount" \
             || { echo "::error::$dll exports no tebako_fs_* surface (the export fragment did not land, issue 40)"; exit 1; }
           echo "ruby DLL wired: $(basename "$exe") imports it, it exports tebako_fs_*"
@@ -1226,7 +1321,7 @@ jobs:
           while IFS= read -r so; do
             found=$((found + 1))
             echo "  $so"
-            objdump -p "$so" | grep -F "DLL Name: x64-ucrt-ruby" >/dev/null \
+            objdump -p "$so" | grep -F "DLL Name: ${cputag}-ucrt-ruby" >/dev/null \
               || { echo "::error::$so does not import the ruby DLL (issue 40)"; exit 1; }
           done < <(find .build/o/s/lib/ruby -name "*.so" 2>/dev/null)
           # The census varies by ruby line (cparse is a dynamic ext on
@@ -1311,6 +1406,27 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # The action caches the TrustedSigning module at the CurrentUser
+      # path (Documents\PowerShell\Modules\TrustedSigning\0.5.8) while its
+      # own Install-Module lands AllUsers on the elevated runner — so a
+      # cache hit restores a 23 KiB stub and the action SKIPS the install,
+      # leaving Invoke-TrustedSigning unrecognized (2026-09-21: v18's x64
+      # legs; v17 was green only because its cache missed). Install to
+      # CurrentUser HERE, before the action's cache step: the post-job
+      # save then captures a real module, and even a poisoned restore can
+      # only overlay — never delete — these bytes.
+      - name: Preflight the TrustedSigning module (spec 34 §8.2)
+        if: steps.signgate.outputs.armed == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Get-Module -ListAvailable TrustedSigning)) {
+            Install-Module -Name TrustedSigning -RequiredVersion 0.5.8 -Repository PSGallery -Scope CurrentUser -Force -AllowClobber
+          }
+          Import-Module TrustedSigning -Force
+          Get-Command Invoke-TrustedSigning | Out-Null
+          Write-Host "TrustedSigning module ready: $((Get-Module TrustedSigning).Version)"
 
       # Signs the leg's PE artifacts in the staging dir (the staging step
       # above renamed the contract-suffixless exe for extension
@@ -1561,13 +1677,13 @@ jobs:
         with:
           name: runtime-packages-${{ matrix.env.os }}-${{ matrix.env.arch }}-${{ matrix.ruby.version }}
           # The boot smoke materializes the PE-named ruby DLL copy
-          # (x64-ucrt-ruby<ABI>.dll) next to the exe; it never leaves the
+          # (<cpu>-ucrt-ruby<ABI>.dll) next to the exe; it never leaves the
           # leg -- the release carries the DLL under the unique package
           # name (<runtime>.dll), so two same-ABI legs never collide in
           # the merged publish workspace (issue 40).
           path: |
             runtime-packages
-            !runtime-packages/x64-*-ruby*.dll
+            !runtime-packages/*-ucrt-ruby*.dll
           retention-days: 1
 
       # The msys devkit (spec 22 C3 — the windows dogfood leg): the two
@@ -1575,8 +1691,8 @@ jobs:
       # through the runtime's OWN mkmf on a fresh runner. The env image
       # ships no include/ (the POSIX harnesses bridge headers from the
       # factory stash), and an msys ext additionally links
-      # -lx64-ucrt-ruby<ABI> (the import library lives only in the ruby
-      # build tree). Staged into a deliberate layout — devkit/include/ +
+      # -l<cpu>-ucrt-ruby<ABI> (x64 on ucrt64, aarch64 on clangarm64; the
+      # import library lives only in the ruby build tree). Staged into a deliberate layout — devkit/include/ +
       # devkit/lib/ — so the consumer never reverse-engineers build-tree
       # paths. Same 1-day retention as the runtime package: consumed by
       # the dogfood leg, never by the release.
@@ -1587,7 +1703,7 @@ jobs:
           set -euo pipefail
           hdr=$(echo .build/deps/stash_*/include)
           [ -d "$hdr" ] || { echo "::error::stash include tree missing ($hdr)"; exit 1; }
-          imp=$(echo .build/deps/src/_ruby_*/libx64-ucrt-ruby*.dll.a)
+          imp=$(echo .build/deps/src/_ruby_*/lib*-ucrt-ruby*.dll.a)
           [ -f "$imp" ] || { echo "::error::ruby import library missing ($imp)"; exit 1; }
           mkdir -p devkit/lib
           cp -a "$hdr" devkit/include
@@ -1631,11 +1747,11 @@ jobs:
         run: |
           set -euo pipefail
           # The boot smoke / windows diagnostics materialize PE-named ruby
-          # DLL copies (x64-ucrt-ruby<ABI>.dll) next to the exe — never
+          # DLL copies (<cpu>-ucrt-ruby<ABI>.dll) next to the exe — never
           # release assets (the release ships the DLL as <runtime>.dll;
           # the artifact upload's exclusion pattern above is this rm's
           # twin).
-          rm -f runtime-packages/x64-*-ruby*.dll
+          rm -f runtime-packages/*-ucrt-ruby*.dll
           ./scripts/upload_release.rb
 
       - name: Sign the leg's release assets (spec 09 §5)
@@ -1665,6 +1781,7 @@ jobs:
     needs: [compute, build]
     if: >-
       inputs.platform == 'windows' && inputs.audit == false
+      && needs.compute.outputs.run == 'true'
       && contains(needs.compute.outputs.ruby-matrix, '4.0.6')
     runs-on: windows-latest
     steps:
@@ -1786,7 +1903,10 @@ jobs:
           echo "link-unit:            ${{ needs.link-unit.result }}"
           echo "build:                ${{ needs.build.result }}"
           echo "dogfood:              ${{ needs.dogfood.result }}"
-          dogfood_required="${{ inputs.platform == 'windows' && contains(needs.compute.outputs.ruby-matrix, '4.0.6') }}"
+          # run==true: a run that computed no legs (an arch slice, an
+          # unaffected diff) built nothing for the dogfood to consume —
+          # its skipped result is the correct outcome, never a failure.
+          dogfood_required="${{ inputs.platform == 'windows' && needs.compute.outputs.run == 'true' && contains(needs.compute.outputs.ruby-matrix, '4.0.6') }}"
           if [ "${{ needs.roll-source.result }}" != "success" ]; then
             echo "::error::the chain-gated source roll failed: ${{ needs.roll-source.result }}"
             exit 1

@@ -55,7 +55,8 @@ RSpec.describe MatrixComputer do
         { "host" => "ubuntu-22.04-arm", "container" => "alpine", "os" => "linux-musl", "arch" => "arm64" },
         { "host" => "macos-14", "container" => nil, "os" => "macos", "arch" => "arm64" },
         { "host" => "macos-15-intel", "container" => nil, "os" => "macos", "arch" => "x86_64" },
-        { "host" => "windows-2022", "container" => nil, "os" => "windows", "arch" => "x86_64" }
+        { "host" => "windows-2022", "container" => nil, "os" => "windows", "arch" => "x86_64" },
+        { "host" => "windows-11-arm", "container" => nil, "os" => "windows", "arch" => "arm64" }
       ]
     }
   end
@@ -80,20 +81,31 @@ RSpec.describe MatrixComputer do
     sums = sums_by_pin
     ->(release) { FakeFetcher.new(sums[release]) }
   end
+  # The pinned link-unit release's asset names (the windows/arm64
+  # artifact gate's read). Empty by default — today's product releases
+  # ship x86_64-windows-gnu only; a spec admits the arm64 leg by adding
+  # its asset.
+  let(:unit_assets) { [] }
+  let(:link_unit_assets) do
+    assets = unit_assets
+    ->(_repo, _release) { assets }
+  end
   let(:differ) { FakeDiffer.new }
 
   around do |example|
     Dir.mktmpdir do |dir|
       File.write(File.join(dir, "matrix.json"), JSON.generate(matrix_json))
       FileUtils.cp(File.expand_path("../.github/build-graph.yaml", __dir__), File.join(dir, "build-graph.yaml"))
+      File.write(File.join(dir, "contract.yml"), "contract_version: 2\nlink_unit_release: v9.9.9\n")
       ENV["GITHUB_OUTPUT"] = out_file.path
       ENV["MATRIX_JSON_PATH"] = File.join(dir, "matrix.json")
       ENV["BUILD_GRAPH_PATH"] = File.join(dir, "build-graph.yaml")
+      ENV["CONTRACT_YML_PATH"] = File.join(dir, "contract.yml")
       example.run
     end
   ensure
     %w[GITHUB_EVENT_NAME GITHUB_EVENT_PATH MATRIX_RUBY_FILTER MATRIX_ARCH_FILTER GITHUB_OUTPUT MATRIX_JSON_PATH
-       BUILD_GRAPH_PATH].each do |k|
+       BUILD_GRAPH_PATH CONTRACT_YML_PATH PUBLISH TEBAKO_SERVE_WINDOWS_ARM64 GITHUB_TOKEN].each do |k|
       ENV.delete(k)
     end
     out_file.unlink
@@ -105,7 +117,8 @@ RSpec.describe MatrixComputer do
     ENV["GITHUB_EVENT_NAME"] = event
     with_event_payload(payload) do
       differ.files = files
-      MatrixComputer.new(["--platform", platform], fetcher_factory: fetcher_factory, differ: differ).run
+      MatrixComputer.new(["--platform", platform], fetcher_factory: fetcher_factory, differ: differ,
+                                                   link_unit_assets: link_unit_assets).run
     end
     File.read(out_file.path)
   end
@@ -390,6 +403,111 @@ RSpec.describe MatrixComputer do
       expect(env.size).to eq(3)
       expect(link_unit.map { |e| [e["os"], e["arch"]] })
         .to eq([%w[linux-gnu x86_64], %w[linux-gnu arm64]])
+    end
+  end
+
+  # The windows/arm64 leg (windows-11-arm + msys2 clangarm64) is wired
+  # but double-gated: the artifact gate (every run — the pinned
+  # link-unit release must carry the arm64 windows unit) and the publish
+  # gate (publish runs — the owner's TEBAKO_SERVE_WINDOWS_ARM64
+  # variable). Locked here so a planner edit can never silently schedule
+  # the leg or half-serve a release with it.
+  context "with the windows/arm64 leg" do
+    let(:arm64_unit) { "link-unit-9.9.9-aarch64-windows-gnu.tar.gz" }
+
+    def windows_dispatch
+      run_computer("windows", event: "workflow_dispatch", payload: {})
+    end
+
+    it "drops the arm64 row loudly while the pinned release ships no arm64 unit" do
+      out = nil
+      note = %r{WARN: note: windows/arm64 skipped — tamatebako/tebako v9\.9\.9 ships no #{arm64_unit}\b}
+      expect { out = windows_dispatch }.to output(note).to_stdout
+      expect(legs(out)).to eq("true") # the x86_64 row is unaffected
+      env = JSON.parse(out[/^env-matrix=(.+)$/, 1])
+      expect(env.map { |e| e["arch"] }).to eq(["x86_64"])
+      link_unit = JSON.parse(out[/^link-unit-matrix=(.+)$/, 1])
+      expect(link_unit.map { |e| e["arch"] }).to eq(["x86_64"])
+    end
+
+    it "emits the arm64 row on a build run once the unit is published (no factory change needed)" do
+      unit_assets << arm64_unit
+      out = nil
+      expect { out = windows_dispatch }.not_to output(%r{windows/arm64 skipped}).to_stdout
+      expect(legs(out)).to eq("true")
+      env = JSON.parse(out[/^env-matrix=(.+)$/, 1])
+      expect(env.map { |e| [e["os"], e["arch"], e["host_id"]] })
+        .to contain_exactly(%w[windows x86_64 windows-ucrt64], %w[windows arm64 windows-ucrt-arm64])
+      link_unit = JSON.parse(out[/^link-unit-matrix=(.+)$/, 1])
+      expect(link_unit.map { |e| e["arch"] }).to contain_exactly("x86_64", "arm64")
+    end
+
+    it "keeps the gate off the POSIX and x86_64 rows entirely (no release-API read without an arm64 row)" do
+      assets = ->(_repo, _release) { raise "the artifact gate must not read a release without an arm64 row" }
+      computer = MatrixComputer.new(["--platform", "linux-gnu"], fetcher_factory: fetcher_factory,
+                                                                 differ: differ, link_unit_assets: assets)
+      out_file.truncate(0)
+      out_file.rewind
+      ENV["GITHUB_EVENT_NAME"] = "workflow_dispatch"
+      with_event_payload({}) { computer.run }
+      out = File.read(out_file.path)
+      expect(legs(out)).to eq("true")
+      expect(JSON.parse(out[/^link-unit-matrix=(.+)$/, 1]).size).to eq(2)
+    end
+
+    context "on a publish run (PUBLISH=true)" do
+      before { ENV["PUBLISH"] = "true" }
+
+      it "excludes the arm64 row while the serving variable is unarmed, even with the unit published" do
+        unit_assets << arm64_unit
+        out = nil
+        expect { out = windows_dispatch }
+          .to output(%r{WARN: note: windows/arm64 skipped — the publish gate is OFF}).to_stdout
+        env = JSON.parse(out[/^env-matrix=(.+)$/, 1])
+        expect(env.map { |e| e["arch"] }).to eq(["x86_64"])
+      end
+
+      it "serves the arm64 row only with TEBAKO_SERVE_WINDOWS_ARM64=true" do
+        unit_assets << arm64_unit
+        ENV["TEBAKO_SERVE_WINDOWS_ARM64"] = "true"
+        out = nil
+        expect { out = windows_dispatch }.not_to output(%r{windows/arm64 skipped}).to_stdout
+        env = JSON.parse(out[/^env-matrix=(.+)$/, 1])
+        expect(env.map { |e| e["arch"] }).to contain_exactly("x86_64", "arm64")
+      end
+    end
+
+    it "computes no legs for an arm64-only dispatch while gated" do
+      ENV["MATRIX_ARCH_FILTER"] = "arm64"
+      out = nil
+      expect { out = windows_dispatch }
+        .to output(%r{note: windows/arm64 skipped}).to_stdout
+      expect(legs(out)).to eq("false")
+      expect(JSON.parse(out[/^env-matrix=(.+)$/, 1])).to be_empty
+    end
+
+    it "fails named (112) asking the link-unit pid outside the vocabulary" do
+      expect { TebakoRuntimeBuilder::Platform.link_unit_pid_for("sunos", "sparc") }
+        .to raise_error(TebakoRuntimeBuilder::Error) { |e| expect(e.error_code).to eq(112) }
+    end
+
+    it "fails the computation by name when the pinned release answers no asset list" do
+      broken = ->(_repo, _release) { raise TebakoRuntimeBuilder::Error.new("503 Service Unavailable", 122) }
+      out_file.truncate(0)
+      out_file.rewind
+      ENV["GITHUB_EVENT_NAME"] = "workflow_dispatch"
+      result = nil
+      expect do
+        computer = MatrixComputer.new(["--platform", "windows"], fetcher_factory: fetcher_factory,
+                                                                 differ: differ, link_unit_assets: broken)
+        begin
+          with_event_payload({}) { computer.run }
+        rescue SystemExit => e
+          result = e
+        end
+      end.to output(/matrix computation failed: cannot read the pinned link-unit release's assets: 503/).to_stdout
+      expect(result).to be_a(SystemExit)
+      expect(result.status).to eq(1)
     end
   end
 end

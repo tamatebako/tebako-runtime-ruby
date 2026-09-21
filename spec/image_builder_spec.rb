@@ -186,6 +186,8 @@ RSpec.describe TebakoRuntimeBuilder::ImageBuilder do
         "interpreter_api_version" => "3.4.0"
       )
       expect(layout_for("4.0.6", platform: msys)).to include("runtime_dll" => "x64-ucrt-ruby400.dll")
+      arm64 = TebakoRuntimeBuilder::Platform.new("aarch64-mingw-ucrt", "aarch64")
+      expect(layout_for("4.0.6", platform: arm64)).to include("runtime_dll" => "aarch64-ucrt-ruby400.dll")
       expect(layout_for("3.4.8")).not_to have_key("runtime_dll")
       expect(layout_for("3.4.8", platform: TebakoRuntimeBuilder::Platform.new("x86_64-linux-musl", "x86_64")))
         .not_to have_key("runtime_dll")
@@ -246,19 +248,21 @@ RSpec.describe TebakoRuntimeBuilder::ImageBuilder do
 
     def builder_with_dlls(platform, prefixes)
       rv = TebakoRuntimeBuilder::RubyVersion.new("3.3.7")
+      stager = TebakoRuntimeBuilder::SupportDlls.new(host_id: platform.host_id, prefixes: prefixes)
       described_class.new(platform, rv, File.join(@dir, "stash"), data_src_dir, File.join(@dir, "pre"),
                           File.join(@dir, "out", "fs.bin"), File.join(@dir, "deps", "bin"),
                           mount_point: "A:/t", embed: false,
-                          support_dlls: TebakoRuntimeBuilder::SupportDlls.new(prefixes: prefixes))
+                          support_dlls: stager)
     end
 
     it "stages the full set into bin/ on msys" do
       msys = TebakoRuntimeBuilder::Platform.new("x64-mingw-ucrt", "x86_64")
-      prefix = fake_prefix(TebakoRuntimeBuilder::SupportDlls::NAMES)
+      names = TebakoRuntimeBuilder::SupportDlls.names_for("windows-ucrt64")
+      prefix = fake_prefix(names)
 
       builder_with_dlls(msys, [prefix]).deploy_support_dlls
 
-      TebakoRuntimeBuilder::SupportDlls::NAMES.each do |name|
+      names.each do |name|
         expect(File.file?(File.join(data_src_dir, "bin", name))).to be(true)
       end
     end

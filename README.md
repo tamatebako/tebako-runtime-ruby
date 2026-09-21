@@ -114,6 +114,41 @@ entry's shape) and loads racc's `cparse.so` from the image — a real
 `LoadLibrary` bind of an in-image PE extension against the DLL
 (`spec/boot_smoke_spec.rb`, the `native_ext` scenario).
 
+## The build matrix and the windows/arm64 leg
+
+The env vocabulary lives in `.github/matrix.json` (versions, runners,
+arches — workflow YAML branches on `matrix.env.arch` only, never on a
+duplicated list). Today: linux-gnu / linux-musl / macos (x86_64 + arm64),
+windows-ucrt64 on `windows-2022`, and a **windows/arm64** row
+(`windows-11-arm` hosted runner + msys2's native **clangarm64**
+environment, triple `aarch64-w64-mingw32`) that is wired but **disabled**
+until the product side catches up. Two gates keep that honest, both in
+the matrix planner (`scripts/compute_matrix.rb`, so every trigger path
+— dispatch, pin bumps, validation, release runs — gets them):
+
+1. **The artifact gate (every run).** A build consumes the driver stack
+   from the pinned `link_unit_release` (contract.yml) — and no
+   tamatebako/tebako release publishes an arm64 windows link unit yet
+   (`link-unit-<version>-aarch64-windows-gnu.tar.gz`; today's releases
+   ship `x86_64-windows-gnu` only). The planner skips the leg with a
+   loud note naming the exact missing asset — the factory never builds
+   the driver stack from source on arm64. When a product release
+   publishes the unit, the leg builds automatically in build CI
+   (push/PR/dispatch), natively on the arm64 runner, boot smoke
+   included (the one expected first-run follow-up: the windows
+   DLL-grammar checks below).
+2. **The publish gate (publish runs only).** A green build still does
+   not serve: publish runs exclude windows/arm64 until the repository
+   variable **`TEBAKO_SERVE_WINDOWS_ARM64`** is `true`. The env and
+   link-unit matrices and the coordinator's audit expectations all
+   derive from the same planner walk, so a gated leg cannot half-serve
+   a release.
+
+The leg's package name rides the product's reserved release-asset
+spelling (`windows-ucrt-arm64` — the `aarch64-windows-ucrt` triplet,
+which the product parses but rejects in served payload manifests until
+the platform ships).
+
 ## Bootstrap ↔ runtime contract version
 
 The bootstrap (released from tamatebako/tebako) and the runtime images

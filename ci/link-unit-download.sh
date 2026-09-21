@@ -34,6 +34,7 @@ case "$os/$arch" in
   macos/x86_64)      pid=macos-x86_64 ;;
   macos/arm64)       pid=macos-arm64 ;;
   windows/x86_64)    pid=x86_64-windows-gnu ;;
+  windows/arm64)     pid=aarch64-windows-gnu ;;
   *) echo "::error::no link-unit platform id for $os/$arch"; exit 64 ;;
 esac
 
@@ -70,6 +71,13 @@ rm -rf .build/dl
 for f in libtebako_driver.a libtfs.a include/tebako/fs/c_api.h; do
   test -s ".build/link-unit/$f" || { echo "::error::downloaded unit lacks $f"; exit 65; }
 done
-compgen -G ".build/link-unit/closure/*.a" > /dev/null || { echo "::error::downloaded unit carries no closure/*.a"; exit 65; }
+# windows/arm64 ships limnifs-only: the product's stage_link_unit
+# --limnifs-only branch leaves closure/ empty BY DESIGN (the dwarfs arm64
+# closure is upstream dwarfs-t's milestone, not ours) — the scoped
+# archives reference no closure symbols on that target. Every other
+# platform keeps the non-empty closure contract.
+if [ "$os/$arch" != "windows/arm64" ]; then
+  compgen -G ".build/link-unit/closure/*.a" > /dev/null || { echo "::error::downloaded unit carries no closure/*.a"; exit 65; }
+fi
 echo "published link unit $asset verified (sha256 $expected)"
 hit true

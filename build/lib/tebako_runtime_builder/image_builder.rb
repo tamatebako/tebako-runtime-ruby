@@ -81,7 +81,7 @@ module TebakoRuntimeBuilder
       # The msys support-DLL stager (spec 22 §2.1): injectable so the spec
       # stages from a fake prefix; production resolves the toolchain
       # prefixes (SupportDlls.toolchain_prefixes).
-      @support_dlls = support_dlls || TebakoRuntimeBuilder::SupportDlls.new
+      @support_dlls = support_dlls || TebakoRuntimeBuilder::SupportDlls.new(host_id: @platform.host_id)
       # The source tarball's override capability (the loadpath patch):
       # the layout's grant is emitted only when the source declares it —
       # truthful by construction (spec 17 §1, layout schema_minor 1).
@@ -144,7 +144,7 @@ module TebakoRuntimeBuilder
       # rule binds the already-loaded copy). Flowed from
       # RubyVersion#msys_dll_name — the name's single owner; never a
       # second formula. POSIX builds omit the key.
-      declaration["runtime_dll"] = @ruby_ver.msys_dll_name if @platform.msys?
+      declaration["runtime_dll"] = @ruby_ver.msys_dll_name(@platform.host_id) if @platform.msys?
       File.write(path, YAML.dump(declaration))
       puts "   ... env image layout declaration: #{path}"
     end

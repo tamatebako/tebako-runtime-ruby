@@ -97,7 +97,7 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
 
       makefile_in = File.read(File.join(ruby_src, "template", "Makefile.in"))
       expect(makefile_in).not_to include("@TEBAKO_MLIBS@")
-      expect(makefile_in).to include("MAINLIBS = -Wl,--start-group -Wl,--push-state,--whole-archive -l:libtebako-fs.a")
+      expect(makefile_in).to include("MAINLIBS = -Wl,--start-group -Wl,--whole-archive -l:libtebako-fs.a")
 
       stub = File.join(deps_lib_dir, "libtebako-fs.a")
       expect(File.file?(stub)).to be(true)

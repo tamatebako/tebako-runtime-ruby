@@ -51,23 +51,43 @@ module TebakoRuntimeBuilder
   # the process PATH, so the OS's own standard search order resolves a
   # declared name for any caller — interception-free, per-gem-code-free.
   #
-  # NAMES is the single owner (invariant 10): the deploy pass stages
+  # SETS is the single owner (invariant 10): the deploy pass stages
   # exactly these names into the image's bin/, ImageManifest declares
   # exactly these names, and the boot smoke's expectation flows from here.
   # Staging is fail-closed — a name no toolchain prefix holds is a named
   # build error, so the manifest can never declare an absent DLL.
   class SupportDlls
-    # The toolchain support set: libwinpthread (the proven payload-ext
-    # import), libgcc_s + libstdc++ (the C++ extension class).
-    NAMES = %w[libwinpthread-1.dll libgcc_s_seh-1.dll libstdc++-6.dll].freeze
+    # The toolchain support set per msys host vocabulary. ucrt64 (gcc):
+    # libwinpthread (the proven payload-ext import) plus libgcc_s +
+    # libstdc++ (the C++ extension class). clangarm64 (llvm,
+    # windows/arm64) has NO gcc runtime at all — libgcc_s_seh-1.dll /
+    # libstdc++-6.dll do not exist there (the v11 deploy wall, run
+    # 35594854716: staging libgcc_s_seh-1.dll died by name, exit 147);
+    # the C++ extension class imports libc++.dll instead, and MSYS2's
+    # libc++ package merges libc++abi/libunwind INTO that one DLL — the
+    # clangarm64 package contents list /clangarm64/bin/libc++.dll and no
+    # libc++abi.dll / libunwind.dll, so there is nothing else to stage.
+    SETS = {
+      "windows-ucrt64" => %w[libwinpthread-1.dll libgcc_s_seh-1.dll libstdc++-6.dll],
+      "windows-ucrt-arm64" => %w[libwinpthread-1.dll libc++.dll]
+    }.freeze
 
     # The in-image home (the layout tree's bin/ maps to the image's /bin).
     IN_IMAGE_BIN = "bin"
 
+    # The support set for an msys host_id — the same named-error
+    # discipline as Platform's host vocabulary (exit 112): a host with no
+    # mapped set is a build error, never a silently empty declaration.
+    def self.names_for(host_id)
+      SETS.fetch(host_id) do
+        raise TebakoRuntimeBuilder::Error.new("no support-DLL set for host_id '#{host_id}'", 112)
+      end
+    end
+
     # The L1 manifest's `library_aliases:` block (spec 03 §2.5): the bare
     # PE name and the in-image absolute path of the staged copy.
-    def self.alias_declarations
-      NAMES.map { |name| { "name" => name, "path" => "/#{IN_IMAGE_BIN}/#{name}" } }
+    def self.alias_declarations(host_id)
+      names_for(host_id).map { |name| { "name" => name, "path" => "/#{IN_IMAGE_BIN}/#{name}" } }
     end
 
     # The msys2 toolchain prefixes to source from, most authoritative
@@ -77,16 +97,17 @@ module TebakoRuntimeBuilder
       [ENV.fetch("MSYSTEM_PREFIX", nil), RbConfig::CONFIG["prefix"]].compact.uniq
     end
 
-    def initialize(prefixes: self.class.toolchain_prefixes)
+    def initialize(host_id:, prefixes: self.class.toolchain_prefixes)
+      @host_id = host_id
       @prefixes = prefixes
     end
 
-    # Stage the set into the layout tree's bin dir; answers the staged
-    # host paths. A name absent from every prefix is a named error —
-    # never a silently skipped declaration.
+    # Stage the host's set into the layout tree's bin dir; answers the
+    # staged host paths. A name absent from every prefix is a named
+    # error — never a silently skipped declaration.
     def stage(bin_dir)
       FileUtils.mkdir_p(bin_dir)
-      NAMES.map { |name| stage_one(bin_dir, name) }
+      self.class.names_for(@host_id).map { |name| stage_one(bin_dir, name) }
     end
 
     private

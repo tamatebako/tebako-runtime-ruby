@@ -42,21 +42,37 @@ RSpec.describe TebakoRuntimeBuilder::SupportDlls do
     root
   end
 
-  it "owns the alias declaration grammar (spec 03 §2.5) from the single NAMES constant" do
-    expect(described_class.alias_declarations).to eq(
-      described_class::NAMES.map { |name| { "name" => name, "path" => "/bin/#{name}" } }
-    )
-    expect(described_class::NAMES).to include("libwinpthread-1.dll")
+  it "owns the alias declaration grammar (spec 03 §2.5) from the single SETS constant" do
+    described_class::SETS.each do |host_id, names|
+      expect(described_class.alias_declarations(host_id)).to eq(
+        names.map { |name| { "name" => name, "path" => "/bin/#{name}" } }
+      )
+    end
+    expect(described_class.names_for("windows-ucrt64"))
+      .to include("libwinpthread-1.dll", "libgcc_s_seh-1.dll", "libstdc++-6.dll")
   end
 
-  it "stages every name into the layout tree's bin" do
-    prefix = fake_prefix(described_class::NAMES)
+  it "maps windows-ucrt-arm64 to the llvm runtime set — clangarm64 has no gcc runtime" do
+    names = described_class.names_for("windows-ucrt-arm64")
+
+    expect(names).to eq(%w[libwinpthread-1.dll libc++.dll])
+    expect(names).not_to include("libgcc_s_seh-1.dll", "libstdc++-6.dll")
+  end
+
+  it "fails by name for a host with no mapped set" do
+    expect { described_class.names_for("linux-gnu-arm64") }
+      .to raise_error(TebakoRuntimeBuilder::Error, /no support-DLL set for host_id 'linux-gnu-arm64'/)
+  end
+
+  it "stages every name of the host's set into the layout tree's bin" do
+    names = described_class.names_for("windows-ucrt64")
+    prefix = fake_prefix(names)
     bin = File.join(@dir, "tree", "bin")
 
-    staged = described_class.new(prefixes: [prefix]).stage(bin)
+    staged = described_class.new(host_id: "windows-ucrt64", prefixes: [prefix]).stage(bin)
 
-    expect(staged.map { |path| File.basename(path) }).to eq(described_class::NAMES)
-    described_class::NAMES.each do |name|
+    expect(staged.map { |path| File.basename(path) }).to eq(names)
+    names.each do |name|
       expect(File.file?(File.join(bin, name))).to be(true)
     end
   end
@@ -64,18 +80,27 @@ RSpec.describe TebakoRuntimeBuilder::SupportDlls do
   it "fails closed by name when a prefix holds none of the set" do
     prefix = fake_prefix(%w[libwinpthread-1.dll])
 
-    expect { described_class.new(prefixes: [prefix]).stage(File.join(@dir, "tree", "bin")) }
+    expect { described_class.new(host_id: "windows-ucrt64", prefixes: [prefix]).stage(File.join(@dir, "tree", "bin")) }
       .to raise_error(TebakoRuntimeBuilder::Error, /libgcc_s_seh-1\.dll.*searched: #{Regexp.escape(prefix)}/)
   end
 
+  it "fails closed on the arm64 set too — libc++.dll is required, not optional" do
+    prefix = fake_prefix(%w[libwinpthread-1.dll])
+    stager = described_class.new(host_id: "windows-ucrt-arm64", prefixes: [prefix])
+
+    expect { stager.stage(File.join(@dir, "tree", "bin")) }
+      .to raise_error(TebakoRuntimeBuilder::Error, /libc\+\+\.dll.*searched: #{Regexp.escape(prefix)}/)
+  end
+
   it "searches later prefixes for a name the first prefix lacks" do
+    names = described_class.names_for("windows-ucrt64")
     incomplete = fake_prefix(%w[libwinpthread-1.dll], prefix: "first")
-    complete = fake_prefix(described_class::NAMES, prefix: "second")
+    complete = fake_prefix(names, prefix: "second")
     bin = File.join(@dir, "tree", "bin")
 
-    described_class.new(prefixes: [incomplete, complete]).stage(bin)
+    described_class.new(host_id: "windows-ucrt64", prefixes: [incomplete, complete]).stage(bin)
 
-    described_class::NAMES.each do |name|
+    names.each do |name|
       expect(File.file?(File.join(bin, name))).to be(true)
     end
   end

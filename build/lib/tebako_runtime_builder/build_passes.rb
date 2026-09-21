@@ -229,7 +229,7 @@ module TebakoRuntimeBuilder
         # 3.4+ parser, io.c for the CRLF fd-is-text probe). The shared
         # build (issue #40) adds its own set: the DLL export fragment, the
         # mkexports rule appending it, and miniruby's static library set.
-        hotfix_msys!(ruby_source_dir, deps_lib_dir, rv) if platform.msys?
+        hotfix_msys!(platform, ruby_source_dir, deps_lib_dir, rv) if platform.msys?
         pin_autotools_timestamps!(ruby_source_dir)
         build_toolchain_stub(platform, deps_lib_dir, mount_point, cc, rv)
         # gnu only: alpine's libffi.a is non-PIC (R_X86_64_PC32 against
@@ -422,7 +422,7 @@ module TebakoRuntimeBuilder
         run_patchelf(src_name, patchelf)
         TebakoRuntimeBuilder::Stripper.strip_file(src_name, output)
         puts "Created tebako runtime package at \"#{output}\""
-        stage_ruby_dll(rv, ruby_source_dir, output) if platform.msys?
+        stage_ruby_dll(rv, ruby_source_dir, output, platform.host_id) if platform.msys?
       end
 
       private
@@ -472,7 +472,7 @@ module TebakoRuntimeBuilder
       # the tebako@main link unit (tebako#414). A ruby-source fix lands in
       # tamatebako/ruby and flows via a source release (iterate unmerged
       # via harness_ref) -- the remaining two guards retire the same way.
-      def hotfix_msys!(ruby_source_dir, deps_lib_dir, ruby_ver) # rubocop:disable Metrics/AbcSize
+      def hotfix_msys!(platform, ruby_source_dir, deps_lib_dir, ruby_ver) # rubocop:disable Metrics/AbcSize
         hotfix_msys_glob_opendir!(File.join(ruby_source_dir, "dir.c"))
         hotfix_msys_fd_is_text!(File.join(ruby_source_dir, "io.c"))
         write_dll_exports_fragment!(ruby_source_dir, deps_lib_dir)
@@ -482,7 +482,10 @@ module TebakoRuntimeBuilder
         hotfix_msys_exe_link_order!(File.join(ruby_source_dir, "template", "Makefile.in"))
         hotfix_msys_exe_link_order!(File.join(ruby_source_dir, "cygwin", "GNUmakefile.in"))
         hotfix_msys_mkexports_popen!(File.join(ruby_source_dir, "win32", "mkexports.rb"))
-        minilibs = TebakoRuntimeBuilder::Mlibs.new(TebakoRuntimeBuilder::Platform.new, deps_lib_dir)
+        # The minilibs describe the build TARGET (the ostype prepare was
+        # invoked for), never the ambient host — msys_env keys the C++
+        # runtime set (ucrt64 gcc vs clangarm64 llvm) off the target.
+        minilibs = TebakoRuntimeBuilder::Mlibs.new(platform, deps_lib_dir)
                                               .compute_minilibs(ruby_ver)
         hotfix_msys_miniruby_libs!(File.join(ruby_source_dir, "template", "Makefile.in"), minilibs)
       end
@@ -909,7 +912,7 @@ module TebakoRuntimeBuilder
       # msys only (issue #40): stage the ruby DLL the shared build just
       # linked next to the runtime executable, under the PACKAGE's name
       # (<runtime>.dll -- unique per leg: two same-ABI legs share the PE
-      # name x64-ucrt-ruby<ABI>.dll and would collide in the merged release
+      # name <cpu>-ucrt-ruby<ABI>.dll and would collide in the merged release
       # workspace). The PE-named file the exe's imports resolve is
       # materialized next to the exe by whoever runs it (the boot smoke
       # does it in-leg; the store entry does it at install time -- the
@@ -918,9 +921,9 @@ module TebakoRuntimeBuilder
       # regressed, several means a stale tree; a differently named one
       # means ruby configure's RUBY_SO_NAME moved (update
       # RubyVersion#msys_dll_name, its single owner in the factory).
-      def stage_ruby_dll(ruby_ver, ruby_source_dir, output) # rubocop:disable Metrics/MethodLength, Metrics/AbcSize
-        candidates = Dir.glob(File.join(ruby_source_dir, "x64-*-ruby*.dll"))
-        expected = ruby_ver.msys_dll_name
+      def stage_ruby_dll(ruby_ver, ruby_source_dir, output, host_id) # rubocop:disable Metrics/MethodLength, Metrics/AbcSize
+        candidates = Dir.glob(File.join(ruby_source_dir, "*-ucrt-ruby*.dll"))
+        expected = ruby_ver.msys_dll_name(host_id)
         unless candidates.length == 1 && File.basename(candidates.first) == expected
           raise TebakoRuntimeBuilder::Error.new(
             "expected the shared build's #{expected} under #{ruby_source_dir}, found " \

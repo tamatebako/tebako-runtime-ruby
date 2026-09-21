@@ -89,7 +89,7 @@ RSpec.describe TebakoRuntimeBuilder::ImageManifest do
   # omit the key (the channel is a windows contract).
   it "declares the support-DLL library_aliases on msys only (spec 22 §2.1)" do
     expect(manifest_for(msys)["library_aliases"]).to eq(
-      TebakoRuntimeBuilder::SupportDlls.alias_declarations
+      TebakoRuntimeBuilder::SupportDlls.alias_declarations(msys.host_id)
     )
     expect(manifest_for(msys)["library_aliases"].map { |a| a["name"] })
       .to include("libwinpthread-1.dll", "libgcc_s_seh-1.dll", "libstdc++-6.dll")

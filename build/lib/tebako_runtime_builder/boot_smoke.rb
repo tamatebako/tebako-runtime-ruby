@@ -191,7 +191,7 @@ module TebakoRuntimeBuilder
     private
 
     # The msys shared build (issue #40): the exe's PE imports resolve
-    # x64-ucrt-ruby<ABI>.dll in the exe's own directory, but the package
+    # <cpu>-ucrt-ruby<ABI>.dll in the exe's own directory, but the package
     # dir holds the DLL under the unique package name (<runtime>.dll --
     # two same-ABI legs would collide on the PE name). Materialize the
     # PE-named copy next to the exe before booting, mirroring the store
@@ -204,7 +204,7 @@ module TebakoRuntimeBuilder
       return unless File.file?(source)
 
       dest = File.join(File.dirname(executable),
-                       TebakoRuntimeBuilder::RubyVersion.new(artifact.ruby_version).msys_dll_name)
+                       TebakoRuntimeBuilder::RubyVersion.new(artifact.ruby_version).msys_dll_name(@platform.host_id))
       FileUtils.cp(source, dest) unless File.file?(dest)
     end
 
@@ -307,10 +307,10 @@ module TebakoRuntimeBuilder
       env["TEBAKO_RUNTIME_IMAGE"] = image if File.file?(image)
       env["TEBAKO_MOUNT_ROOT"] = mount_root_override if mount_root_override
       # The support-DLL alias expectation (spec 22 §2.1, msys only): flowed
-      # from the single owner (SupportDlls::NAMES), so the probe judges the
-      # booted runtime against exactly the set this checkout stages and
+      # from the single owner (SupportDlls.names_for), so the probe judges
+      # the booted runtime against exactly the set this checkout stages and
       # declares. POSIX legs set nothing — the probe reports unsupported.
-      names = TebakoRuntimeBuilder::SupportDlls::NAMES.join(",")
+      names = TebakoRuntimeBuilder::SupportDlls.names_for(@platform.host_id).join(",")
       env["TEBAKO_SMOKE_EXPECT_SUPPORT_DLLS"] = names if @platform.msys?
       arm_jit_scenario_env(env, scenario)
       env.merge("RUBYOPT" => "-r#{PROBE_PATH}",

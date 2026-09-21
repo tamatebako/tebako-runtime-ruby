@@ -158,6 +158,21 @@ RSpec.describe "build-platform reusable workflow" do
     end
   end
 
+  # The windows dogfood consumes THIS run's fresh artifacts (the 4.0.6
+  # leg's package + devkit): a run that computed no legs (an arch slice,
+  # an unaffected diff) must skip it — and verify must not require it —
+  # never fail on a missing artifact (the arch_filter=arm64 dispatch
+  # class).
+  it "gates the dogfood and verify's dogfood requirement on run == 'true'" do
+    dogfood = workflow.fetch("jobs").fetch("dogfood")
+    expect(dogfood.fetch("if").to_s).to include("needs.compute.outputs.run == 'true'")
+    expect(dogfood.fetch("if").to_s).to include("contains(needs.compute.outputs.ruby-matrix, '4.0.6')")
+    verify_run = workflow.fetch("jobs").fetch("verify").fetch("steps")
+                         .find { |step| step["name"] == "Gate on the legs" }
+    expect(verify_run.fetch("run"))
+      .to include("needs.compute.outputs.run == 'true' && contains(needs.compute.outputs.ruby-matrix, '4.0.6')")
+  end
+
   # Spec 13 §2a's de-rendezvous (roadmap 85): the leg that built a package
   # publishes it and signs its served names IN-LEG — write-once names the
   # leg owns alone, so N legs publish concurrently with zero rendezvous.

@@ -12,7 +12,7 @@ RSpec.describe TebakoRuntimeBuilder::Mlibs do
 
     it "computes the group-wrapped static library list" do
       expected = "-Wl,--start-group " \
-                 "-Wl,--push-state,--whole-archive -l:libtebako-fs.a -Wl,--pop-state " \
+                 "-Wl,--whole-archive -l:libtebako-fs.a -Wl,--no-whole-archive " \
                  "-l:libtfs.a " \
                  "-l:libdwarfs_reader.a -l:libdwarfs_common.a -l:libdwarfs_metadata_legacy.a " \
                  "-l:libdwarfs_decompressor.a -l:libflatbuffers.a -l:libzip.a " \
@@ -42,7 +42,7 @@ RSpec.describe TebakoRuntimeBuilder::Mlibs do
 
     it "uses the musl tail (no -lm, no libutil/libtinfo/libanl)" do
       result = mlibs.compute(ruby_ver)
-      expect(result).to start_with("-Wl,--start-group -Wl,--push-state,--whole-archive")
+      expect(result).to start_with("-Wl,--start-group -Wl,--whole-archive")
       expect(result).to include("-l:libjemalloc.a -l:libcrypt.a -l:libyaml.a -l:librt.a")
       expect(result).to end_with("-l:liblzma.a -ldl -lpthread")
       expect(result).not_to include("-l:libutil.a")
@@ -74,7 +74,7 @@ RSpec.describe TebakoRuntimeBuilder::Mlibs do
       result = mlibs.compute(ruby_ver)
       expect(result).to start_with(
         "-Wl,--start-group " \
-        "-Wl,--push-state,--whole-archive -l:libtebako-fs.a -Wl,--pop-state #{root}/libtebako_driver.a"
+        "-Wl,--whole-archive -l:libtebako-fs.a -Wl,--no-whole-archive #{root}/libtebako_driver.a"
       )
       expect(result).to include("#{root}/closure/libfmt.a -Wl,--end-group -l:libacl.a")
     end
@@ -119,9 +119,18 @@ RSpec.describe TebakoRuntimeBuilder::Mlibs do
       expect(result).not_to include("-l:libbz2.a")
     end
 
+    it "keeps the gcc C++ runtime set on ucrt64 (libstdc++ + libiberty)" do
+      [mlibs.compute(ruby_ver), mlibs.compute_minilibs(ruby_ver), mlibs.compute_solibs(ruby_ver)].each do |libs|
+        expect(libs).to include("-l:libstdc++.a")
+        expect(libs).to include("-static-libstdc++")
+        expect(libs).not_to include("-l:libc++.a")
+      end
+      expect(mlibs.compute(ruby_ver)).to include("-l:libiberty.a")
+    end
+
     it "computes miniruby's FULL static set (driver + closure + system libs, issue 40)" do
       result = mlibs.compute_minilibs(ruby_ver)
-      expect(result).to start_with("-Wl,--start-group -Wl,--push-state,--whole-archive -l:libtebako-fs.a")
+      expect(result).to start_with("-Wl,--start-group -Wl,--whole-archive -l:libtebako-fs.a")
       expect(result).to include("-l:libtfs.a")
       expect(result).to include("-l:libbz2.a")
       expect(result).to include("-lws2_32")
@@ -219,7 +228,7 @@ RSpec.describe TebakoRuntimeBuilder::Mlibs do
         minilibs = mlibs.compute_minilibs(ruby_ver)
         # the stub is the only C-visible tebako_main (the driver's own is
         # not a C export); its minimal content keeps the pull collision-free
-        expect(minilibs).to include("-Wl,--push-state,--whole-archive -l:libtebako-fs.a -Wl,--pop-state")
+        expect(minilibs).to include("-Wl,--whole-archive -l:libtebako-fs.a -Wl,--no-whole-archive")
         expect(minilibs).to include("#{root}/libtebako_driver.a")
         expect(minilibs).to include("#{root}/libtfs.a")
       end
@@ -229,6 +238,55 @@ RSpec.describe TebakoRuntimeBuilder::Mlibs do
         solibs = mlibs.compute_solibs(ruby_ver)
         expect(solibs).not_to include("closure/libssl.a")
         expect(solibs).to include("-l:libssl.a")
+      end
+    end
+
+    context "with the limnifs-only arm64 link unit (an empty closure BY DESIGN)" do
+      subject(:mlibs) do
+        described_class.new(TebakoRuntimeBuilder::Platform.new("aarch64-w64-mingw32", "aarch64"), "/deps/lib")
+      end
+
+      let(:root) { Dir.mktmpdir }
+
+      before do
+        FileUtils.touch(File.join(root, "libtebako_driver.a"))
+        FileUtils.touch(File.join(root, "libtfs.a"))
+        FileUtils.mkdir_p(File.join(root, "closure"))
+        @prev_libdir = ENV.fetch("TEBAKO_RUST_LIBDIR", nil)
+        ENV["TEBAKO_RUST_LIBDIR"] = root
+      end
+
+      after do
+        @prev_libdir.nil? ? ENV.delete("TEBAKO_RUST_LIBDIR") : ENV["TEBAKO_RUST_LIBDIR"] = @prev_libdir
+        FileUtils.remove_entry(root)
+      end
+
+      it "admits the empty closure on windows/arm64 (the scoped archives need none)" do
+        minilibs = mlibs.compute_minilibs(ruby_ver)
+        expect(minilibs).to include("#{root}/libtebako_driver.a")
+        expect(minilibs).to include("#{root}/libtfs.a")
+      end
+
+      it "links the llvm C++ runtime set (clangarm64) instead of the gcc one" do
+        # clangarm64 has no libstdc++.a/-static-libstdc++ (the llvm
+        # toolchain) and no binutils libiberty.a — the hardcoded gcc set
+        # failed configure's compiler sanity test on the 3.4.10/4.0.6
+        # windows-arm64 legs (run 35530045916).
+        [mlibs.compute(ruby_ver), mlibs.compute_minilibs(ruby_ver), mlibs.compute_solibs(ruby_ver)].each do |libs|
+          expect(libs).to include("-l:libc++.a")
+          expect(libs).to include("-l:libc++abi.a")
+          expect(libs).to include("-l:libunwind.a")
+          expect(libs).to include("-static-libgcc")
+          expect(libs).not_to include("-l:libstdc++.a")
+          expect(libs).not_to include("-static-libstdc++")
+          expect(libs).not_to include("-l:libiberty.a")
+        end
+      end
+
+      it "keeps the empty-closure named error (112) on every other platform" do
+        x64 = described_class.new(TebakoRuntimeBuilder::Platform.new("x64-mingw-ucrt", "x86_64"), "/deps/lib")
+        expect { x64.compute_minilibs(ruby_ver) }
+          .to raise_error(TebakoRuntimeBuilder::Error) { |e| expect(e.error_code).to eq(112) }
       end
     end
   end
