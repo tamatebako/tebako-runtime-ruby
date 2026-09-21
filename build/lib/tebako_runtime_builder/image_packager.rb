@@ -36,15 +36,30 @@ module TebakoRuntimeBuilder
   #
   # Tool choice (documented per the owner rule): the image is written by
   # our own factory toolchain, never by a random system binary:
-  #   1. the tfs binary (tebako-rs tfs-cli, `tfs mkimage --format dwarfs`)
-  #      when one is resolvable (--tfs / TEBAKO_TFS / PATH) -- the
-  #      documented tool; mkimage binds the libdwarfs-t writer
-  #      IN-PROCESS (no mkdwarfs shell-out);
+  #   1. the tfs binary (tebako-rs tfs-cli, `tfs mkimage`) when one is
+  #      resolvable (--tfs / TEBAKO_TFS / PATH) -- the documented tool;
+  #      mkimage binds the image writer IN-PROCESS (no mkdwarfs
+  #      shell-out);
   #   2. otherwise the build's own deps/bin/mkdwarfs directly (the same
   #      prebuilt binary the deploy pass already shelled to for fs.bin).
   # Both are build-time factory tools; nothing here becomes a runtime
   # dependency of the shipped packages.
+  #
+  # The format follows the host's link unit (spec 20 §6): windows/arm64
+  # ships limnifs-only (the product's arm64 unit carries an empty
+  # closure/ BY DESIGN — the dwarfs arm64 closure is upstream dwarfs-t's
+  # milestone), so its env image must be limnifs; every other host packs
+  # dwarfs. On arm64 the mkdwarfs fallback is therefore refuse-by-name,
+  # never attempted: that binary is x64 dwarfs-t — wrong arch under Prism
+  # (SIGSEGV, v13 run 35608648436) AND a format the limnifs-only arm64
+  # driver cannot mount.
   class ImagePackager
+    # spec 20 §6 format ids as tfs mkimage spells them, keyed on the
+    # host's link-unit shape; the default is the dwarfs-t image every
+    # other driver mounts.
+    LIMNIFS_ONLY_HOSTS = ["windows-ucrt-arm64"].freeze
+    DEFAULT_FORMAT = "dwarfs"
+    LIMNIFS_FORMAT = "limnifs"
     def initialize(platform, deps_bin_dir, tfs: nil)
       @platform = platform
       @deps_bin_dir = deps_bin_dir
@@ -66,16 +81,33 @@ module TebakoRuntimeBuilder
     private
 
     def pack(layout_dir, image_path)
-      if (tfs = tfs_path)
-        pack_with_tfs(tfs, layout_dir, image_path)
-      elsif (mkdwarfs = mkdwarfs_path)
-        pack_with_mkdwarfs(mkdwarfs, layout_dir, image_path)
-      else
-        raise TebakoRuntimeBuilder::Error.new(
-          "no image tool available: tfs not found (set --tfs or TEBAKO_TFS) and no deps mkdwarfs at " \
-          "#{File.join(@deps_bin_dir, "mkdwarfs#{@platform.exe_suffix}")}", 131
-        )
-      end
+      return pack_with_tfs(tfs_path, layout_dir, image_path) if tfs_path
+      return refuse_mkdwarfs_on_limnifs_only! if limnifs_only?
+      return pack_with_mkdwarfs(mkdwarfs_path, layout_dir, image_path) if mkdwarfs_path
+
+      raise TebakoRuntimeBuilder::Error.new(
+        "no image tool available: tfs not found (set --tfs or TEBAKO_TFS) and no deps mkdwarfs at " \
+        "#{File.join(@deps_bin_dir, "mkdwarfs#{@platform.exe_suffix}")}", 131
+      )
+    end
+
+    # Never the mkdwarfs fallback on a limnifs-only host: that binary is
+    # x64 dwarfs-t — wrong arch under Prism (SIGSEGV, v13 run
+    # 35608648436) AND a format the arm64 driver cannot mount.
+    def refuse_mkdwarfs_on_limnifs_only!
+      raise TebakoRuntimeBuilder::Error.new(
+        "#{@platform.host_id} packs the env image as limnifs via the native arm64 tfs binary " \
+        "(set --tfs or TEBAKO_TFS) — deps mkdwarfs writes dwarfs-t, which the limnifs-only " \
+        "arm64 link unit cannot mount (and the x64 binary SIGSEGVs under Prism)", 131
+      )
+    end
+
+    def limnifs_only?
+      LIMNIFS_ONLY_HOSTS.include?(@platform.host_id)
+    end
+
+    def image_format
+      limnifs_only? ? LIMNIFS_FORMAT : DEFAULT_FORMAT
     end
 
     def check_layout!(layout_dir)
@@ -87,9 +119,9 @@ module TebakoRuntimeBuilder
     end
 
     def pack_with_tfs(tfs, layout_dir, image_path)
-      puts "-- Packing the runtime layout as #{image_path} (tfs mkimage)"
+      puts "-- Packing the runtime layout as #{image_path} (tfs mkimage --format #{image_format})"
       TebakoRuntimeBuilder::BuildHelpers.run_with_capture_v(
-        [tfs, "mkimage", "--format", "dwarfs", layout_dir, "-o", image_path]
+        [tfs, "mkimage", "--format", image_format, layout_dir, "-o", image_path]
       )
     end
 
