@@ -99,6 +99,8 @@ on:
         value: ${{ jobs.compute.outputs.env-matrix }}
       ruby-matrix:
         value: ${{ jobs.compute.outputs.ruby-matrix }}
+      exclude-matrix:
+        value: ${{ jobs.compute.outputs.exclude-matrix }}
       tebako-version:
         value: ${{ jobs.compute.outputs.tebako-version }}
 
@@ -266,6 +268,10 @@ jobs:
       why: ${{ steps.matrix.outputs.why }}
       env-matrix: ${{ steps.matrix.outputs.env-matrix }}
       ruby-matrix: ${{ steps.matrix.outputs.ruby-matrix }}
+      # The (version × arch) capability excludes (windows/arm64 legs
+      # whose ruby predates the mkexports llvm-nm fix) — the build job's
+      # matrix.exclude consumes it verbatim.
+      exclude-matrix: ${{ steps.matrix.outputs.exclude-matrix }}
       # The env matrix deduped by (os, arch) — one link-unit leg per
       # platform-arch, never per ruby (the native closure is ruby-free).
       link-unit-matrix: ${{ steps.matrix.outputs.link-unit-matrix }}
@@ -730,12 +736,12 @@ jobs:
     # audit path) must not take the legs down with it, and a link-unit
     # failure skips the legs here by name instead of 40 minutes into the
     # ruby link.
-    # The (version × arch) capability clause: windows/arm64 legs whose
-    # ruby predates upstream's llvm-nm mkexports fix (the ruby axis's
-    # win_arm64 key, RubyVersion#msys_arm64_capable?) skip — loudly, from
-    # compute's note — instead of dying 10 minutes into the build at the
-    # .def generation. Skipped legs are green to the verify gate.
-    if: ${{ always() && !cancelled() && needs.compute.outputs.run == 'true' && !inputs.audit && (needs.link-unit.result == 'success' || needs.link-unit.result == 'skipped') && !(matrix.env.os == 'windows' && matrix.env.arch == 'arm64' && matrix.ruby.win_arm64 == false) }}
+    # The (version × arch) capability gate lives in compute's
+    # exclude-matrix output (matrix context is unavailable in a
+    # job-level `if` — it is evaluated before expansion): legs whose
+    # ruby predates upstream's llvm-nm mkexports fix never enter the
+    # windows/arm64 matrix, and compute's note names them.
+    if: ${{ always() && !cancelled() && needs.compute.outputs.run == 'true' && !inputs.audit && (needs.link-unit.result == 'success' || needs.link-unit.result == 'skipped') }}
     runs-on: ${{ matrix.env.host }}
     # The longest green leg on record runs ~75 min cold; a hung leg fails
     # loudly at 150, never silently.
@@ -765,6 +771,10 @@ jobs:
       matrix:
         env: ${{fromJson(needs.compute.outputs.env-matrix)}}
         ruby: ${{fromJson(needs.compute.outputs.ruby-matrix)}}
+        # The (windows/arm64 × incapable-ruby) pairs, emitted by compute
+        # as deep-equal rows of the same axes (empty when none — every
+        # catalog ruby at or past the 3.4.8 mkexports boundary builds).
+        exclude: ${{fromJson(needs.compute.outputs.exclude-matrix)}}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

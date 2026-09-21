@@ -630,11 +630,31 @@ class MatrixComputer # rubocop:disable Metrics/ClassLength
 
   def emit(legs)
     out = ENV.fetch("GITHUB_OUTPUT") { raise "GITHUB_OUTPUT environment variable not set" }
-    File.write(out, "run=#{legs[:run]}\n", mode: "a")
-    File.write(out, "ruby-matrix=#{legs[:rubies].to_json}\n", mode: "a")
-    File.write(out, "env-matrix=#{legs[:env].to_json}\n", mode: "a")
-    File.write(out, "link-unit-matrix=#{link_unit_matrix(legs[:env]).to_json}\n", mode: "a")
-    File.write(out, "why=#{legs[:why]}\n", mode: "a")
+    emit_fields(legs).each { |key, value| File.write(out, "#{key}=#{value}\n", mode: "a") }
+  end
+
+  def emit_fields(legs)
+    {
+      "run" => legs[:run],
+      "ruby-matrix" => legs[:rubies].to_json,
+      "env-matrix" => legs[:env].to_json,
+      "exclude-matrix" => arm64_excludes(legs[:rubies], legs[:env]).to_json,
+      "link-unit-matrix" => link_unit_matrix(legs[:env]).to_json,
+      "why" => legs[:why]
+    }
+  end
+
+  # GHA matrix exclude entries for the (windows/arm64 × incapable ruby)
+  # pairs: both axes' FINAL emitted rows, so the exclude deep-equals the
+  # leg exactly. Empty when no arm64 row is in play or every catalog
+  # ruby is at/past the 3.4.8 mkexports boundary (fromJson([]) is a
+  # valid empty exclude).
+  def arm64_excludes(rubies, env)
+    arm64 = env.select { |entry| entry["os"] == "windows" && entry["arch"] == "arm64" }
+    return [] if arm64.empty?
+
+    incapable = rubies.reject { |row| TebakoRuntimeBuilder::RubyVersion.new(row["version"]).msys_arm64_capable? }
+    arm64.product(incapable).map { |env_row, ruby_row| { "env" => env_row, "ruby" => ruby_row } }
   end
 
   # The link-unit matrix: one leg per platform-arch, NEVER per ruby —
