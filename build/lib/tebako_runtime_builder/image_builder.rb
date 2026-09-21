@@ -81,7 +81,7 @@ module TebakoRuntimeBuilder
       # The msys support-DLL stager (spec 22 §2.1): injectable so the spec
       # stages from a fake prefix; production resolves the toolchain
       # prefixes (SupportDlls.toolchain_prefixes).
-      @support_dlls = support_dlls || TebakoRuntimeBuilder::SupportDlls.new
+      @support_dlls = support_dlls || TebakoRuntimeBuilder::SupportDlls.new(host_id: @platform.host_id)
       # The source tarball's override capability (the loadpath patch):
       # the layout's grant is emitted only when the source declares it —
       # truthful by construction (spec 17 §1, layout schema_minor 1).

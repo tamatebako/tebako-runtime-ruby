@@ -84,7 +84,7 @@ module TebakoRuntimeBuilder
         # declared from the single owner (SupportDlls) — the deploy pass
         # stages exactly these names into /bin or dies by name, so the
         # declaration is truthful by construction.
-        manifest["library_aliases"] = TebakoRuntimeBuilder::SupportDlls.alias_declarations
+        manifest["library_aliases"] = TebakoRuntimeBuilder::SupportDlls.alias_declarations(@platform.host_id)
       end
       manifest
     end

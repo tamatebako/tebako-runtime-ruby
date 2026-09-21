@@ -246,19 +246,21 @@ RSpec.describe TebakoRuntimeBuilder::ImageBuilder do
 
     def builder_with_dlls(platform, prefixes)
       rv = TebakoRuntimeBuilder::RubyVersion.new("3.3.7")
+      stager = TebakoRuntimeBuilder::SupportDlls.new(host_id: platform.host_id, prefixes: prefixes)
       described_class.new(platform, rv, File.join(@dir, "stash"), data_src_dir, File.join(@dir, "pre"),
                           File.join(@dir, "out", "fs.bin"), File.join(@dir, "deps", "bin"),
                           mount_point: "A:/t", embed: false,
-                          support_dlls: TebakoRuntimeBuilder::SupportDlls.new(prefixes: prefixes))
+                          support_dlls: stager)
     end
 
     it "stages the full set into bin/ on msys" do
       msys = TebakoRuntimeBuilder::Platform.new("x64-mingw-ucrt", "x86_64")
-      prefix = fake_prefix(TebakoRuntimeBuilder::SupportDlls::NAMES)
+      names = TebakoRuntimeBuilder::SupportDlls.names_for("windows-ucrt64")
+      prefix = fake_prefix(names)
 
       builder_with_dlls(msys, [prefix]).deploy_support_dlls
 
-      TebakoRuntimeBuilder::SupportDlls::NAMES.each do |name|
+      names.each do |name|
         expect(File.file?(File.join(data_src_dir, "bin", name))).to be(true)
       end
     end

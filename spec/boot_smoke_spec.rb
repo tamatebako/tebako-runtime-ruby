@@ -465,7 +465,7 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
         # served until the env image shipped + declared it. The probe
         # asserts the whole chain (manifest declaration, in-image /bin
         # presence, the driver's boot-extract PATH lead) against the
-        # expectation flowed from SupportDlls::NAMES. Off windows the
+        # expectation flowed from SupportDlls.names_for. Off windows the
         # channel does not exist — the probe reports unsupported.
         expect(run).to be_booted, boot_failure(run)
         state = run.state("support_dll_aliases")

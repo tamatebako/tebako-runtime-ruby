@@ -522,7 +522,7 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
   # OS's own standard search order then binds the import for any caller,
   # per-gem-code-free. The probe asserts the chain's three links — the
   # declaration, the in-image presence, and the PATH lead — against the
-  # expectation the leg flows from SupportDlls::NAMES. Off windows the
+  # expectation the leg flows from SupportDlls.names_for. Off windows the
   # channel does not exist (the boot pass's call sites are
   # windows-gated), so there is nothing to sense.
   def self.support_dll_aliases_check
@@ -544,7 +544,7 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
   end
 
   # The msys leg's expectation, flowed from the single owner
-  # (SupportDlls::NAMES) by BootSmoke#boot_env; unset is the leg lying
+  # (SupportDlls.names_for) by BootSmoke#boot_env; unset is the leg lying
   # about what it staged and declared.
   def self.expected_support_dlls
     ENV.fetch("TEBAKO_SMOKE_EXPECT_SUPPORT_DLLS") do
