@@ -1392,6 +1392,27 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      # The action caches the TrustedSigning module at the CurrentUser
+      # path (Documents\PowerShell\Modules\TrustedSigning\0.5.8) while its
+      # own Install-Module lands AllUsers on the elevated runner — so a
+      # cache hit restores a 23 KiB stub and the action SKIPS the install,
+      # leaving Invoke-TrustedSigning unrecognized (2026-09-21: v18's x64
+      # legs; v17 was green only because its cache missed). Install to
+      # CurrentUser HERE, before the action's cache step: the post-job
+      # save then captures a real module, and even a poisoned restore can
+      # only overlay — never delete — these bytes.
+      - name: Preflight the TrustedSigning module (spec 34 §8.2)
+        if: steps.signgate.outputs.armed == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Get-Module -ListAvailable TrustedSigning)) {
+            Install-Module -Name TrustedSigning -RequiredVersion 0.5.8 -Repository PSGallery -Scope CurrentUser -Force -AllowClobber
+          }
+          Import-Module TrustedSigning -Force
+          Get-Command Invoke-TrustedSigning | Out-Null
+          Write-Host "TrustedSigning module ready: $((Get-Module TrustedSigning).Version)"
+
       # Signs the leg's PE artifacts in the staging dir (the staging step
       # above renamed the contract-suffixless exe for extension
       # enumeration; the verify step below restores the contract paths).
