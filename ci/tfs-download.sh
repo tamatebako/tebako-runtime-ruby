@@ -76,8 +76,9 @@ chmod +x ".build/tfs/tfs${exe}" 2>/dev/null || true
 
 # Smoke the binary BEFORE the build leg trusts it: a binary that cannot
 # run here (wrong arch, emulation gap) must fail this step, not an hour
-# into the ruby build.
-".build/tfs/tfs${exe}" --version >/dev/null
+# into the ruby build. The CLI is a subcommand grammar with no --version
+# flag — `help` exits 0 and proves native execution.
+".build/tfs/tfs${exe}" help >/dev/null
 echo "::notice::staged $asset (sha256 verified against the release API)" >&2
 
 # Drive-letter form on windows (the invoking ruby is an msys build — its
