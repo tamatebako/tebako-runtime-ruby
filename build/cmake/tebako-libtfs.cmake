@@ -368,6 +368,26 @@ if(DWARFS_PRELOAD)
     file(ARCHIVE_EXTRACT INPUT "${LIBTFS_DOWNLOAD_DIR}/${LIBTFS_DEPS_PKG_NAME}"
          DESTINATION "${__LIBTFS_DEPS_EXTRACT_DIR}")
 
+    if(IS_MSYS AND __LIBTFS_ARCH STREQUAL "arm64")
+      # windows/arm64 host: libtfs ships no windows-arm64 deps closure, so
+      # this package is the x64 (windows-ucrt64) build. Deploying its lib/
+      # tree into the arm64-mingw-static triplet dir puts x64 archives on
+      # the link's -L path ahead of the clangarm64 sysroot, and the msys
+      # -l:libssl.a / -l:libcrypto.a / ... refs then resolve to x64
+      # archives (ld.lld: machine type x64 conflicts with arm64 —
+      # tebako-runtime-ruby run 35587119276, arm64 legs). The v2 arm64
+      # link unit is limnifs-only and needs nothing from the closure:
+      # every -l: name resolves from the pacman sysroot. The dep headers
+      # are arch-neutral and still deploy — gem native extensions compile
+      # against them.
+      message(STATUS "libtfs: windows/arm64 host — skipping the x64 deps static-lib deploy "
+                     "(v2 limnifs link resolves the pacman sysroot); deploying headers only")
+      if(EXISTS "${__LIBTFS_DEPS_EXTRACT_DIR}/include")
+        file(COPY "${__LIBTFS_DEPS_EXTRACT_DIR}/include/" DESTINATION "${LIBTFS_INCLUDE_DIR}")
+        message(STATUS "libtfs: deployed deps package headers to ${LIBTFS_INCLUDE_DIR}")
+      endif()
+    else()
+
     # Deploy into the triplet-shaped install dir the link lists consume.
     # The whole-tree copy also restores the vcpkg layout — lib/, share/ and,
     # for releases built with the deps header contract, include/ — so
@@ -395,6 +415,8 @@ if(DWARFS_PRELOAD)
     else()
       message(WARNING "libtfs: deps package carries no include/ tree; "
                       "native gem extensions wrapping shipped codecs (brotli, zstd, ...) will not compile")
+    endif()
+
     endif()
 
   else()
