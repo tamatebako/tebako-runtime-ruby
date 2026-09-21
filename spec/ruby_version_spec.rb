@@ -50,6 +50,14 @@ RSpec.describe TebakoRuntimeBuilder::RubyVersion do
     expect(rv40.lib_version).to eq("400")
   end
 
+  it "names the msys shared DLL per host cpu tag (issue #40)" do
+    expect(described_class.new("3.4.8").msys_dll_name("windows-ucrt64")).to eq("x64-ucrt-ruby340.dll")
+    expect(described_class.new("4.0.6").msys_dll_name("windows-ucrt64")).to eq("x64-ucrt-ruby400.dll")
+    expect(described_class.new("4.0.6").msys_dll_name("windows-ucrt-arm64")).to eq("aarch64-ucrt-ruby400.dll")
+    expect { rv.msys_dll_name("linux-gnu-arm64") }
+      .to raise_error(TebakoRuntimeBuilder::Error, /no msys DLL cpu tag for host_id 'linux-gnu-arm64'/)
+  end
+
   it "rejects malformed versions" do
     expect { described_class.new("3.3") }.to raise_error(TebakoRuntimeBuilder::Error, /Invalid Ruby version format/)
   end

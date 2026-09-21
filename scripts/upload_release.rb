@@ -476,7 +476,7 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
         ruby_version: ruby_version, platform_id: platform
       )
       entry[:image] = image_entry(image) if image
-      entry[:dll] = dll_entry(dll, ruby_version) if dll
+      entry[:dll] = dll_entry(dll, ruby_version, platform) if dll
       declare_signatures(entry)
     end
   end
@@ -564,10 +564,10 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   # entry materializes next to the exe so the exe's imports resolve (the
   # single owner of that name is RubyVersion#msys_dll_name -- consumers
   # ignore the `dll` key in the compat window).
-  def dll_entry(dll, ruby_version)
+  def dll_entry(dll, ruby_version, host_id)
     {
       filename: dll.basename.to_s,
-      install_as: TebakoRuntimeBuilder::RubyVersion.new(ruby_version).msys_dll_name,
+      install_as: TebakoRuntimeBuilder::RubyVersion.new(ruby_version).msys_dll_name(host_id),
       sha256: Digest::SHA256.file(dll).hexdigest,
       size_bytes: dll.size
     }

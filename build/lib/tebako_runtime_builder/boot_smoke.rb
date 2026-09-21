@@ -191,7 +191,7 @@ module TebakoRuntimeBuilder
     private
 
     # The msys shared build (issue #40): the exe's PE imports resolve
-    # x64-ucrt-ruby<ABI>.dll in the exe's own directory, but the package
+    # <cpu>-ucrt-ruby<ABI>.dll in the exe's own directory, but the package
     # dir holds the DLL under the unique package name (<runtime>.dll --
     # two same-ABI legs would collide on the PE name). Materialize the
     # PE-named copy next to the exe before booting, mirroring the store
@@ -204,7 +204,7 @@ module TebakoRuntimeBuilder
       return unless File.file?(source)
 
       dest = File.join(File.dirname(executable),
-                       TebakoRuntimeBuilder::RubyVersion.new(artifact.ruby_version).msys_dll_name)
+                       TebakoRuntimeBuilder::RubyVersion.new(artifact.ruby_version).msys_dll_name(@platform.host_id))
       FileUtils.cp(source, dest) unless File.file?(dest)
     end
 

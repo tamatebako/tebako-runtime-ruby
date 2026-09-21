@@ -186,6 +186,8 @@ RSpec.describe TebakoRuntimeBuilder::ImageBuilder do
         "interpreter_api_version" => "3.4.0"
       )
       expect(layout_for("4.0.6", platform: msys)).to include("runtime_dll" => "x64-ucrt-ruby400.dll")
+      arm64 = TebakoRuntimeBuilder::Platform.new("aarch64-mingw-ucrt", "aarch64")
+      expect(layout_for("4.0.6", platform: arm64)).to include("runtime_dll" => "aarch64-ucrt-ruby400.dll")
       expect(layout_for("3.4.8")).not_to have_key("runtime_dll")
       expect(layout_for("3.4.8", platform: TebakoRuntimeBuilder::Platform.new("x86_64-linux-musl", "x86_64")))
         .not_to have_key("runtime_dll")

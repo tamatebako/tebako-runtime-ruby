@@ -144,7 +144,7 @@ module TebakoRuntimeBuilder
       # rule binds the already-loaded copy). Flowed from
       # RubyVersion#msys_dll_name — the name's single owner; never a
       # second formula. POSIX builds omit the key.
-      declaration["runtime_dll"] = @ruby_ver.msys_dll_name if @platform.msys?
+      declaration["runtime_dll"] = @ruby_ver.msys_dll_name(@platform.host_id) if @platform.msys?
       File.write(path, YAML.dump(declaration))
       puts "   ... env image layout declaration: #{path}"
     end

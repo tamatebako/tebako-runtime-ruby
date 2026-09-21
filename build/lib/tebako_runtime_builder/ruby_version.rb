@@ -46,15 +46,28 @@ module TebakoRuntimeBuilder
     end
 
     # The shared libruby name of the msys build (issue #40): ruby
-    # configure's RUBY_SO_NAME for x86_64-w64-mingw32 (ucrt64) is
-    # x64-ucrt-ruby$(MAJOR)$(MINOR)0, so the DLL is
-    # x64-ucrt-ruby<lib_version>.dll (and its import library
-    # libx64-ucrt-ruby<lib_version>.dll.a). ONE owner: the release
+    # configure's RUBY_SO_NAME for a mingw host is
+    # <cpu-tag>-ucrt-ruby$(MAJOR)$(MINOR)0, so the DLL is
+    # <cpu-tag>-ucrt-ruby<lib_version>.dll (and its import library
+    # lib<cpu-tag>-ucrt-ruby<lib_version>.dll.a). The cpu tag follows the
+    # host — x64 on x86_64 (ucrt64), aarch64 on arm64 (clangarm64;
+    # proven by the arm64 leg's own toolchain install line,
+    # aarch64-ucrt-ruby400.dll). ONE owner: the release
     # pipeline's install-as name (scripts/upload_release.rb), the finalize
     # staging and the boot smoke's materialization all flow it; CI asserts
     # parity by linking and loading (a drifted name binds nothing).
-    def msys_dll_name
-      "x64-ucrt-ruby#{lib_version}.dll"
+    MSYS_DLL_CPU_TAGS = {
+      "windows-ucrt64" => "x64",
+      "windows-ucrt-arm64" => "aarch64"
+    }.freeze
+
+    # host_id keyed, with Platform's named-error discipline (exit 112): an
+    # msys host with no mapped tag is a build error, never a wrong guess.
+    def msys_dll_name(host_id)
+      cpu_tag = MSYS_DLL_CPU_TAGS.fetch(host_id) do
+        raise TebakoRuntimeBuilder::Error.new("no msys DLL cpu tag for host_id '#{host_id}'", 112)
+      end
+      "#{cpu_tag}-ucrt-ruby#{lib_version}.dll"
     end
 
     # Version gates compare numerically so 4.x lines fall out naturally
