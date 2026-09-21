@@ -1694,7 +1694,7 @@ RSpec.describe ReleaseManager do
       # Static notes (spec 13 §2a): they point at the shards + sidecars,
       # the consumer-side index derivation, and the registry — never an
       # asset enumeration (a read-modify-write in disguise).
-      expect(body).to include("manifest.json` shard", "tebako-pkg release-index", "tpkg-registry.yaml")
+      expect(body).to include("manifest.json` shard", "release-index entry", "tpkg-registry.yaml")
       expect(body).not_to include("### macOS", "### Windows")
     end
 
