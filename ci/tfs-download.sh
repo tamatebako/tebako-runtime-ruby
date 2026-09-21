@@ -35,28 +35,39 @@ case "$os/$arch" in
   linux-gnu/arm64)   pid=linux-gnu-arm64;   exe= ;;
   linux-musl/x86_64) pid=linux-musl-x86_64; exe= ;;
   linux-musl/arm64)  pid=linux-musl-arm64;  exe= ;;
-  *) echo "::error::no tfs asset id for $os/$arch"; exit 64 ;;
+  *) echo "::error::no tfs asset id for $os/$arch" >&2; exit 64 ;;
 esac
 
 ver=${release#v}
 asset="tfs-${ver}-${pid}${exe}"
 
-command -v gh >/dev/null || { echo "::error::gh CLI not on PATH — cannot fetch $asset"; exit 64; }
+# setup-msys2 runs path-type:minimal — the Windows PATH is invisible in
+# this shell, and with it the runner's GitHub CLI install. Probe the
+# standard location before giving up.
+GH=$(command -v gh || true)
+if [ -z "$GH" ]; then
+  for c in "/c/Program Files/GitHub CLI/gh.exe" "/c/Program Files (x86)/GitHub CLI/gh.exe"; do
+    [ -x "$c" ] && GH=$c && break
+  done
+fi
+[ -n "$GH" ] || { echo "::error::gh CLI not on PATH nor in the standard install dir — cannot fetch $asset" >&2; exit 64; }
 
-digest=$(gh api "repos/tamatebako/tebako/releases/tags/$release" \
+# Diagnostics ride stderr: the invoking step captures stdout for the
+# staged path, so anything echoed to stdout here is invisible in the log.
+digest=$("$GH" api "repos/tamatebako/tebako/releases/tags/$release" \
   --jq ".assets[] | select(.name == \"$asset\") | .digest")
 if [ -z "$digest" ]; then
-  echo "::error::no published $asset on $release — the in-process image packer needs it"
+  echo "::error::no published $asset on $release — the in-process image packer needs it" >&2
   exit 65
 fi
 
 mkdir -p .build/tfs
-gh release download "$release" --repo tamatebako/tebako --pattern "$asset" --dir .build/tfs --clobber
+"$GH" release download "$release" --repo tamatebako/tebako --pattern "$asset" --dir .build/tfs --clobber
 
 expected=${digest#sha256:}
 actual=$(openssl dgst -sha256 -r ".build/tfs/$asset" | cut -d' ' -f1)
 if [ "$actual" != "$expected" ]; then
-  echo "::error::$asset sha256 mismatch: release API declares $expected, the download is $actual — refusing the tool (never a silent fallback on a supply-chain mismatch)"
+  echo "::error::$asset sha256 mismatch: release API declares $expected, the download is $actual — refusing the tool (never a silent fallback on a supply-chain mismatch)" >&2
   exit 65
 fi
 
@@ -67,6 +78,7 @@ chmod +x ".build/tfs/tfs${exe}" 2>/dev/null || true
 # run here (wrong arch, emulation gap) must fail this step, not an hour
 # into the ruby build.
 ".build/tfs/tfs${exe}" --version >/dev/null
+echo "::notice::staged $asset (sha256 verified against the release API)" >&2
 
 # Drive-letter form on windows (the invoking ruby is an msys build — its
 # File.file? reads C:/... but /c/... works too; the spawned exe path is
