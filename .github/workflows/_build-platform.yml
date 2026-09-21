@@ -121,7 +121,10 @@ env:
   # win32.c's fallback definitions collide with the header (redefinition
   # errors, run 35543916160). The toolchain rides no cache key dimension;
   # rolling pacman under an unchanged tarball is the same class as above.
-  CACHE_VER: 5
+  # 6: the arm64 ac_cv clock-probe pin (build/CMakeLists.txt) — v5's
+  # save-always captured a fresh-but-unpinned configure whose config.cache
+  # still says HAVE_CLOCK_GETTIME=no; evict it so the env pin is unshadowed.
+  CACHE_VER: 6
   VERBOSE: no
   RUNTIME_REPO: tamatebako/tebako-runtime-ruby
 
