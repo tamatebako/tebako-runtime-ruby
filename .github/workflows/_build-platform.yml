@@ -1068,7 +1068,7 @@ jobs:
           find .build/deps/src -name "tebako-dll-exports.def" -exec sh -c '
             echo "== $1: driver/fs export lines:"; grep -nE "tebako_driver|tebako_fs_|tebako_mount|tebako_original" "$1" | head -20; echo "(count: $(wc -l < "$1"))"
           ' _ {} \; || true
-          find .build/deps/src -name "libx64-ucrt-ruby*.dll.a" -exec sh -c '
+          find .build/deps/src -name "lib*-ucrt-ruby*.dll.a" -exec sh -c '
             echo "== $1: import-lib driver exports:"; nm -g "$1" 2>/dev/null | grep -E "tebako_driver_boot|tebako_driver_contract_version" || echo "(tebako_driver_* NOT exported)"
           ' _ {} \; || true
           find .build/deps/src -maxdepth 2 -name Makefile -exec sh -c '
@@ -1093,13 +1093,13 @@ jobs:
           for d in .build/deps/src/_ruby_*; do
             [ -d "$d" ] || continue
             echo "== $d symbol/mtime state:"
-            a=$(ls "$d"/libx64-ucrt-ruby*-static.a "$d"/libruby*-static.a 2>/dev/null | head -1 || true)
+            a=$(ls "$d"/lib*-ucrt-ruby*-static.a "$d"/libruby*-static.a 2>/dev/null | head -1 || true)
             [ -n "$a" ] && echo "   static archive Init_bigdecimal: $(nm "$a" 2>/dev/null | grep -c "T Init_bigdecimal" || true)"
-            def=$(ls "$d"/x64-ucrt-ruby*.def 2>/dev/null | head -1 || true)
+            def=$(ls "$d"/*-ucrt-ruby*.def 2>/dev/null | head -1 || true)
             [ -n "$def" ] && echo "   def Init_ exports: $(grep -c "Init_" "$def" || true)"
-            imp=$(ls "$d"/libx64-ucrt-ruby*.dll.a 2>/dev/null | head -1 || true)
+            imp=$(ls "$d"/lib*-ucrt-ruby*.dll.a 2>/dev/null | head -1 || true)
             [ -n "$imp" ] && echo "   import-lib Init_bigdecimal: $(nm -g "$imp" 2>/dev/null | grep -c "Init_bigdecimal" || true)"
-            (cd "$d" && ls -la --time-style=full-iso ruby.exe exts.mk ext/extinit.o ext/extinit.c rbconfig.rb x64-mingw-ucrt-fake.rb .revision.time revision.h x64-ucrt-ruby*.def libx64-ucrt-ruby*.dll.a x64-ucrt-ruby*.dll 2>/dev/null | awk "{print \$6, \$7, \$NF}") || true
+            (cd "$d" && ls -la --time-style=full-iso ruby.exe exts.mk ext/extinit.o ext/extinit.c rbconfig.rb *-mingw-ucrt-fake.rb .revision.time revision.h *-ucrt-ruby*.def lib*-ucrt-ruby*.dll.a *-ucrt-ruby*.dll 2>/dev/null | awk "{print \$6, \$7, \$NF}") || true
             echo "   make --debug=basic ruby -n (decision trace, first 30):"
             (cd "$d" && make --debug=basic ruby -n 2>&1 | grep -E "Must remake|is newer than|Prerequisite|^\s*(gcc|\.|generating|linking|compiling)" | head -30) || true
             echo "   make -f exts.mk ruby -n (first 8):"; (cd "$d" && make -f exts.mk ruby -n 2>/dev/null | head -8) || true
@@ -1189,7 +1189,7 @@ jobs:
           probe="$PWD/build/lib/tebako_runtime_builder/boot_smoke/probe.rb"
           echo "== runtime-packages:"; ls -la runtime-packages/ || true
           echo "== exe imports:"; objdump -p "$exe" | grep -i "DLL Name" || true
-          pe=$(ls runtime-packages/x64-*-ruby*.dll 2>/dev/null | head -1 || true)
+          pe=$(ls runtime-packages/*-ucrt-ruby*.dll 2>/dev/null | head -1 || true)
           echo "== PE-named dll in place: ${pe:-NONE (boot smoke materializes it)}"
           pkgdll="${exe%.exe}.dll"
           [ -f "$pkgdll" ] && { echo "== package dll imports:"; objdump -p "$pkgdll" | grep -i "DLL Name" || true; }
@@ -1204,15 +1204,16 @@ jobs:
           # class): the exact smoke case, with the PE-named DLL materialized
           # next to the exe first (the boot smoke does it in-step; here it
           # is manual), plus the build tree's cparse.so import table — the
-          # DLL Name it binds must be the shipped x64-ucrt-ruby<ABI>.dll,
+          # DLL Name it binds must be the shipped <cpu>-ucrt-ruby<ABI>.dll
+          # (x64 on ucrt64, aarch64 on clangarm64),
           # and the extraction errno now names the failure class.
           echo "== cparse.so import tables (build tree):"
           find .build -name "cparse.so" -exec sh -c 'echo "-- $1"; objdump -p "$1" | grep -i "DLL Name"' _ {} \; 2>/dev/null || true
           echo "== racc ext link evidence (mkmf.log/Makefile):"
           find .build -path "*racc*" \( -name "Makefile" -o -name "mkmf.log" \) -exec sh -c '
-            echo "-- $1"; grep -hiE "LIBRUBYARG|-lx64-ucrt|^LIBS" "$1" | sort -u | head -6
+            echo "-- $1"; grep -hiE "LIBRUBYARG|-l[a-z0-9]+-ucrt|^LIBS" "$1" | sort -u | head -6
           ' _ {} \; 2>/dev/null || true
-          pedll=$(find .build/deps/src -maxdepth 2 -name "x64-*-ruby*.dll" 2>/dev/null | head -1 || true)
+          pedll=$(find .build/deps/src -maxdepth 2 -name "*-ucrt-ruby*.dll" 2>/dev/null | head -1 || true)
           [ -n "$pedll" ] && [ -f "$pkgdll" ] && cp "$pkgdll" "runtime-packages/$(basename "$pedll")"
           echo "== native_ext probe boot (smoke case), stdin closed, 60s:"
           TEBAKO_RUNTIME_IMAGE="$exe.tfs" RUBYOPT="-r$probe" TEBAKO_BOOT_PROBE=native_ext TEBAKO_BOOT_MOUNT_POINT=A:/t \
@@ -1280,8 +1281,15 @@ jobs:
           [ -s "$exe" ] || exe="$exe.exe"
           dll="runtime-packages/$runtime.dll"
           test -s "$dll" || { echo "::error::missing ruby DLL $dll (the --enable-shared msys build, issue 40)"; exit 1; }
-          objdump -p "$exe" | grep -F "DLL Name: x64-ucrt-ruby" \
-            || { echo "::error::$exe imports no x64-ucrt-ruby*.dll (issue 40)"; exit 1; }
+          # The PE name carries ruby's cpu tag: x64 on ucrt64, aarch64 on
+          # clangarm64 (RubyVersion::MSYS_DLL_CPU_TAGS owns the mapping
+          # ruby-side; this gate keys on the same host_id).
+          case "${{ matrix.env.host_id }}" in
+            *-arm64) cputag=aarch64 ;;
+            *)       cputag=x64 ;;
+          esac
+          objdump -p "$exe" | grep -F "DLL Name: ${cputag}-ucrt-ruby" \
+            || { echo "::error::$exe imports no ${cputag}-ucrt-ruby*.dll (issue 40)"; exit 1; }
           objdump -p "$dll" | grep -F "tebako_fs_mount" \
             || { echo "::error::$dll exports no tebako_fs_* surface (the export fragment did not land, issue 40)"; exit 1; }
           echo "ruby DLL wired: $(basename "$exe") imports it, it exports tebako_fs_*"
@@ -1298,7 +1306,7 @@ jobs:
           while IFS= read -r so; do
             found=$((found + 1))
             echo "  $so"
-            objdump -p "$so" | grep -F "DLL Name: x64-ucrt-ruby" >/dev/null \
+            objdump -p "$so" | grep -F "DLL Name: ${cputag}-ucrt-ruby" >/dev/null \
               || { echo "::error::$so does not import the ruby DLL (issue 40)"; exit 1; }
           done < <(find .build/o/s/lib/ruby -name "*.so" 2>/dev/null)
           # The census varies by ruby line (cparse is a dynamic ext on
@@ -1633,13 +1641,13 @@ jobs:
         with:
           name: runtime-packages-${{ matrix.env.os }}-${{ matrix.env.arch }}-${{ matrix.ruby.version }}
           # The boot smoke materializes the PE-named ruby DLL copy
-          # (x64-ucrt-ruby<ABI>.dll) next to the exe; it never leaves the
+          # (<cpu>-ucrt-ruby<ABI>.dll) next to the exe; it never leaves the
           # leg -- the release carries the DLL under the unique package
           # name (<runtime>.dll), so two same-ABI legs never collide in
           # the merged publish workspace (issue 40).
           path: |
             runtime-packages
-            !runtime-packages/x64-*-ruby*.dll
+            !runtime-packages/*-ucrt-ruby*.dll
           retention-days: 1
 
       # The msys devkit (spec 22 C3 — the windows dogfood leg): the two
@@ -1647,8 +1655,8 @@ jobs:
       # through the runtime's OWN mkmf on a fresh runner. The env image
       # ships no include/ (the POSIX harnesses bridge headers from the
       # factory stash), and an msys ext additionally links
-      # -lx64-ucrt-ruby<ABI> (the import library lives only in the ruby
-      # build tree). Staged into a deliberate layout — devkit/include/ +
+      # -l<cpu>-ucrt-ruby<ABI> (x64 on ucrt64, aarch64 on clangarm64; the
+      # import library lives only in the ruby build tree). Staged into a deliberate layout — devkit/include/ +
       # devkit/lib/ — so the consumer never reverse-engineers build-tree
       # paths. Same 1-day retention as the runtime package: consumed by
       # the dogfood leg, never by the release.
@@ -1659,7 +1667,7 @@ jobs:
           set -euo pipefail
           hdr=$(echo .build/deps/stash_*/include)
           [ -d "$hdr" ] || { echo "::error::stash include tree missing ($hdr)"; exit 1; }
-          imp=$(echo .build/deps/src/_ruby_*/libx64-ucrt-ruby*.dll.a)
+          imp=$(echo .build/deps/src/_ruby_*/lib*-ucrt-ruby*.dll.a)
           [ -f "$imp" ] || { echo "::error::ruby import library missing ($imp)"; exit 1; }
           mkdir -p devkit/lib
           cp -a "$hdr" devkit/include
@@ -1703,11 +1711,11 @@ jobs:
         run: |
           set -euo pipefail
           # The boot smoke / windows diagnostics materialize PE-named ruby
-          # DLL copies (x64-ucrt-ruby<ABI>.dll) next to the exe — never
+          # DLL copies (<cpu>-ucrt-ruby<ABI>.dll) next to the exe — never
           # release assets (the release ships the DLL as <runtime>.dll;
           # the artifact upload's exclusion pattern above is this rm's
           # twin).
-          rm -f runtime-packages/x64-*-ruby*.dll
+          rm -f runtime-packages/*-ucrt-ruby*.dll
           ./scripts/upload_release.rb
 
       - name: Sign the leg's release assets (spec 09 §5)
