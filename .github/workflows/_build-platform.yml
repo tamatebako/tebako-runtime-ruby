@@ -1859,13 +1859,17 @@ jobs:
           # release-asset GETs are transient-prone under publish load —
           # bounded retry, same contract as scripts/sign_release.rb.
           for attempt in 1 2 3 4; do
-            # The tfs CLI ships ucrt64 only (the product's own arm64
-            # binaries are the platform-coverage roadmap's phase 3): on
-            # windows-11-arm it runs under the OS's x64 emulation. It is
-            # harness tooling here — the runtime under test is the native
-            # arm64 package either way.
-            gh release download v0.1.9 --repo tamatebako/tebako \
-              --pattern 'tfs-0.1.9-windows-ucrt64.exe' --output tools/tfs.exe --clobber && break
+            # Pin floor v2.8.16: the arm64 leg's env image is limnifs
+            # (the link unit packs it — clangarm64 has no native
+            # dwarfs-t), and pre-spec-20 CLIs reject those bytes (the
+            # first arm64 dogfood's "Unsupported format", run
+            # 35685304693). Each leg fetches its arch's own CLI — the
+            # native arm64 build ships since v2.8.16, so no x64
+            # emulation on windows-11-arm. It is harness tooling here —
+            # the runtime under test is the native arm64 package either
+            # way.
+            gh release download v2.8.16 --repo tamatebako/tebako \
+              --pattern 'tfs-2.8.16-windows-${{ matrix.env.arch == 'arm64' && 'ucrt-arm64' || 'ucrt64' }}.exe' --output tools/tfs.exe --clobber && break
             [ "$attempt" -lt 4 ] && sleep $((2 ** attempt)) || exit 1
           done
       - name: Run the spec22-gems acceptance (msys)
