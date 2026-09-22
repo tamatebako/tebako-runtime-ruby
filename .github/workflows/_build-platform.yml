@@ -1778,18 +1778,35 @@ jobs:
   # (tamatebako/ruby's ci/spec22-gems/run-msys.sh) against THIS run's fresh
   # windows artifacts. Real sinatra + sassc, jailed, gemless, on the last
   # platform — the leg matrix and the pinned verdicts live in the
-  # harness's README. Runs after the full windows matrix (it consumes the
-  # 4.0.6 leg's runtime package + devkit — bump both places when the
-  # ecosystem's dogfood line moves); skips when an audit run or a
-  # ruby_filter dispatch excludes 4.0.6.
+  # harness's README. One leg per architecture the run actually built,
+  # on the arch-native runner: the artifact names are arch-keyed, so an
+  # arm64-sliced publish (arch_filter=arm64) has no x86_64 package in-run
+  # and must not ask for one (the v0.16.27 arm64 publish died there, run
+  # 35677556225), and the arm64 line deserves the acceptance natively.
+  # Runs after the full windows matrix (each leg consumes its arch's 4.0.6
+  # runtime package + devkit — bump all arch rows when the ecosystem's
+  # dogfood line moves); skips when an audit run or a ruby_filter dispatch
+  # excludes 4.0.6, and per arch when the run's env-matrix built no legs
+  # for it.
   dogfood:
-    name: Dogfood the fresh runtime (spec22-gems, msys)
+    name: Dogfood the fresh runtime (spec22-gems, msys, ${{ matrix.arch }})
     needs: [compute, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: windows-latest
+            msystem: ucrt64
+          - arch: arm64
+            runner: windows-11-arm
+            msystem: clangarm64
     if: >-
       inputs.platform == 'windows' && inputs.audit == false
       && needs.compute.outputs.run == 'true'
       && contains(needs.compute.outputs.ruby-matrix, '4.0.6')
-    runs-on: windows-latest
+      && contains(needs.compute.outputs.env-matrix, format('"arch":"{0}"', matrix.arch))
+    runs-on: ${{ matrix.runner }}
     steps:
       # The harness is the acceptance spec; it lives with the POSIX legs
       # in tamatebako/ruby and rides inputs.harness_ref (default main —
@@ -1809,16 +1826,17 @@ jobs:
       - name: Setup MSys
         uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
         with:
-          msystem: ucrt64
+          msystem: ${{ matrix.msystem }}
           path-type: minimal
           update: true
       # Only the gem-install leg needs a compiler (sassc's native ext
-      # compiles through the fresh runtime's OWN mkmf — the same ucrt64
-      # toolchain the build legs use). The proof legs run without it.
+      # compiles through the fresh runtime's OWN mkmf — the same toolchain
+      # the build legs use, per arch: ucrt64 on x64, clangarm64 on arm64).
+      # The proof legs run without it.
       # `make` is the MSYS package (/usr/bin/make): the runtime's rbconfig
       # recorded CONFIG["MAKE"]="make" at ITS build, so mkmf shell-outs
       # resolve it there — pacboy's make:p only ships mingw32-make.
-      - name: Install the ucrt64 toolchain
+      - name: Install the ${{ matrix.msystem }} toolchain
         shell: msys2 {0}
         run: |
           pacman -S --needed --noconfirm pactoys make
@@ -1826,12 +1844,12 @@ jobs:
       - name: Download the runtime package (this run)
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: runtime-packages-windows-x86_64-4.0.6
+          name: runtime-packages-windows-${{ matrix.arch }}-4.0.6
           path: runtime-packages
       - name: Download the msys devkit (this run)
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: devkit-windows-x86_64-4.0.6
+          name: devkit-windows-${{ matrix.arch }}-4.0.6
           path: devkit
       - name: Fetch the published windows tfs CLI
         shell: bash
@@ -1843,6 +1861,11 @@ jobs:
           # release-asset GETs are transient-prone under publish load —
           # bounded retry, same contract as scripts/sign_release.rb.
           for attempt in 1 2 3 4; do
+            # The tfs CLI ships ucrt64 only (the product's own arm64
+            # binaries are the platform-coverage roadmap's phase 3): on
+            # windows-11-arm it runs under the OS's x64 emulation. It is
+            # harness tooling here — the runtime under test is the native
+            # arm64 package either way.
             gh release download v0.1.9 --repo tamatebako/tebako \
               --pattern 'tfs-0.1.9-windows-ucrt64.exe' --output tools/tfs.exe --clobber && break
             [ "$attempt" -lt 4 ] && sleep $((2 ** attempt)) || exit 1
@@ -1864,7 +1887,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: dogfood-msys-logs
+          name: dogfood-msys-logs-${{ matrix.arch }}
           if-no-files-found: warn
           # .dogfood-scratch is dot-hidden — without this the patterns
           # match nothing and the leg diagnostics never leave the runner.
