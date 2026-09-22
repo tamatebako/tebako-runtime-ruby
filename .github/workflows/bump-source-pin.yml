@@ -69,6 +69,46 @@ jobs:
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
+      # The bump newly makes buildable whatever the source release added
+      # since the previous pin -- extend the dispatch vocabulary
+      # (matrix.json ruby.catalog/full/tidy) in the SAME commit, or a
+      # catalog/full/tidy coordinator dispatch silently misses the new
+      # ruby (the 4.0.7 gap: #182 landed the source, the vocabulary still
+      # stopped at 4.0.6). The script runs in DELTA mode: only versions
+      # the bump newly offers are admitted -- backfills the factory
+      # deliberately skipped stay skipped.
+      - name: Setup Ruby
+        if: steps.bump.outputs.changed == 'true'
+        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+        with:
+          ruby-version: 3.3
+
+      - name: sync the dispatch vocabulary
+        if: steps.bump.outputs.changed == 'true'
+        id: vocab
+        env:
+          GH_TOKEN: ${{ secrets.TEBAKO_CI_PAT_TOKEN || secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.client_payload.tag || inputs.tag }}
+          CURRENT: ${{ steps.bump.outputs.current }}
+        run: |
+          set -euo pipefail
+          # A pin DOWNGRADE (a backfill dispatch) never moves the
+          # vocabulary -- published rows never leave.
+          if [ "$(printf '%s\n%s\n' "$CURRENT" "$TAG" | sort -V | head -1)" != "$CURRENT" ]; then
+            echo "::notice::$TAG is not newer than $CURRENT -- pin-only bump, vocabulary untouched"
+            echo "summary=pin-only bump ($TAG not newer than $CURRENT), vocabulary untouched" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          gh api "repos/tamatebako/ruby/contents/versions.yml?ref=$CURRENT" \
+            -H "Accept: application/vnd.github.raw" > "$RUNNER_TEMP/versions-old.yml" \
+            || { echo "::error::cannot read versions.yml at $CURRENT -- a yanked source tag breaks the chain; fix the pin by hand"; exit 1; }
+          gh api "repos/tamatebako/ruby/contents/versions.yml?ref=$TAG" \
+            -H "Accept: application/vnd.github.raw" > "$RUNNER_TEMP/versions-new.yml" \
+            || { echo "::error::cannot read versions.yml at $TAG"; exit 1; }
+          ruby tools/sync_matrix_vocabulary.rb "$RUNNER_TEMP/versions-old.yml" "$RUNNER_TEMP/versions-new.yml" \
+            | tee "$RUNNER_TEMP/vocab.log"
+          echo "summary=$(tail -1 "$RUNNER_TEMP/vocab.log")" >> "$GITHUB_OUTPUT"
+
       - name: push branch and open pull request
         if: steps.bump.outputs.changed == 'true'
         env:
@@ -76,12 +116,13 @@ jobs:
           TAG: ${{ github.event.client_payload.tag || inputs.tag }}
           CURRENT: ${{ steps.bump.outputs.current }}
           BRANCH: ${{ steps.bump.outputs.branch }}
+          VOCAB: ${{ steps.vocab.outputs.summary }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
-          git add build/lib/tebako_runtime_builder/source_fetcher.rb
+          git add build/lib/tebako_runtime_builder/source_fetcher.rb .github/matrix.json
           git commit -m "chore: pin tamatebako/ruby src $TAG (was $CURRENT)"
           git push origin "$BRANCH"
           gh pr create --base main --head "$BRANCH" \
@@ -89,6 +130,7 @@ jobs:
             --body "Automated pin bump: tamatebako/ruby published source release **$TAG** (release-src completed successfully and dispatched this bump).
 
           - \`DEFAULT_RELEASE\` in \`build/lib/tebako_runtime_builder/source_fetcher.rb\`: \`$CURRENT\` -> \`$TAG\`
+          - Dispatch vocabulary (\`.github/matrix.json\`): $VOCAB
           - Source release: https://github.com/tamatebako/ruby/releases/tag/$TAG
 
           CI runs the full runtime matrix on this pull request. Nothing auto-merges -- a human reviews and merges."
