@@ -1230,8 +1230,17 @@ jobs:
           ' _ {} \; 2>/dev/null || true
           pedll=$(find .build/deps/src -maxdepth 2 -name "*-ucrt-ruby*.dll" 2>/dev/null | head -1 || true)
           [ -n "$pedll" ] && [ -f "$pkgdll" ] && cp "$pkgdll" "runtime-packages/$(basename "$pedll")"
+          # The aliases expectation flows from the same owner the gating
+          # smoke uses (SupportDlls.names_for) — the probe fail-closes on
+          # the unset var, so this informational boot printed a bogus
+          # "support_dll_aliases fail … is unset" line in PASSING logs
+          # (the 4.0.2 arm64 leg). Empty lookup → leave unset, as before.
+          expect=$(ruby -I build/lib -rtebako_runtime_builder \
+            -e 'puts TebakoRuntimeBuilder::SupportDlls.names_for(ARGV[0]).join(",")' \
+            "${{ matrix.env.host_id }}" 2>/dev/null || true)
           echo "== native_ext probe boot (smoke case), stdin closed, 60s:"
           TEBAKO_RUNTIME_IMAGE="$exe.tfs" RUBYOPT="-r$probe" TEBAKO_BOOT_PROBE=native_ext TEBAKO_BOOT_MOUNT_POINT=A:/t \
+            ${expect:+TEBAKO_SMOKE_EXPECT_SUPPORT_DLLS="$expect"} \
             timeout --preserve-status 60 "$exe" < /dev/null 2>&1 | tail -8; echo "native_ext exit: ${PIPESTATUS[0]}"
           exit 0
 

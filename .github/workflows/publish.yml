@@ -75,6 +75,14 @@ on:
         description: 'Audit only: verify the release against the expected matrix, no builds/uploads'
         type: boolean
         default: false
+      registry_only:
+        description: 'Registry only: render + publish the registry from the release as it stands (needs registry_version; no builds, no audit gate)'
+        type: boolean
+        default: false
+      registry_version:
+        description: 'The published tebako version to render for (e.g. 0.16.27) — required with registry_only'
+        type: string
+        default: ''
   repository_dispatch:
     types: ['tebako release']
 
@@ -82,7 +90,7 @@ jobs:
   windows:
     # repository_dispatch always fans to every platform (a source tarball
     # change reaches every scenario of the changed versions).
-    if: ${{ github.event_name == 'repository_dispatch' || inputs.platform == 'all' || inputs.platform == 'windows' }}
+    if: ${{ !inputs.registry_only && (github.event_name == 'repository_dispatch' || inputs.platform == 'all' || inputs.platform == 'windows') }}
     uses: ./.github/workflows/_build-platform.yml
     # Spec 34 §3/§8.2: the called workflow's build job declares
     # id-token:write (the windows-signing OIDC boundary) — a reusable
@@ -104,7 +112,7 @@ jobs:
     secrets: inherit
 
   linux-gnu:
-    if: ${{ github.event_name == 'repository_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux-gnu' }}
+    if: ${{ !inputs.registry_only && (github.event_name == 'repository_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux-gnu') }}
     uses: ./.github/workflows/_build-platform.yml
     # Spec 34 §3/§8.2: the called workflow's build job declares
     # id-token:write (the windows-signing OIDC boundary) — a reusable
@@ -126,7 +134,7 @@ jobs:
     secrets: inherit
 
   linux-musl:
-    if: ${{ github.event_name == 'repository_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux-musl' }}
+    if: ${{ !inputs.registry_only && (github.event_name == 'repository_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux-musl') }}
     uses: ./.github/workflows/_build-platform.yml
     # Spec 34 §3/§8.2: the called workflow's build job declares
     # id-token:write (the windows-signing OIDC boundary) — a reusable
@@ -148,7 +156,7 @@ jobs:
     secrets: inherit
 
   macos:
-    if: ${{ github.event_name == 'repository_dispatch' || inputs.platform == 'all' || inputs.platform == 'macos' }}
+    if: ${{ !inputs.registry_only && (github.event_name == 'repository_dispatch' || inputs.platform == 'all' || inputs.platform == 'macos') }}
     uses: ./.github/workflows/_build-platform.yml
     # Spec 34 §3/§8.2: the called workflow's build job declares
     # id-token:write (the windows-signing OIDC boundary) — a reusable
@@ -189,8 +197,10 @@ jobs:
       group: publish-runtime-packages
       cancel-in-progress: false
     # Run when the run asked to publish (dispatch input or a source
-    # repository_dispatch) and at least one platform actually built.
-    if: ${{ always() && !cancelled() && (github.event_name == 'repository_dispatch' || inputs.publish || inputs.audit) && (needs.windows.result == 'success' || needs.linux-gnu.result == 'success' || needs.linux-musl.result == 'success' || needs.macos.result == 'success') }}
+    # repository_dispatch) and at least one platform actually built —
+    # or unconditionally under registry_only, which builds nothing and
+    # renders from the release as it stands.
+    if: ${{ always() && !cancelled() && (((github.event_name == 'repository_dispatch' || inputs.publish || inputs.audit) && (needs.windows.result == 'success' || needs.linux-gnu.result == 'success' || needs.linux-musl.result == 'success' || needs.macos.result == 'success')) || inputs.registry_only) }}
     env:
       GITHUB_TOKEN: ${{ secrets.TEBAKO_CI_PAT_TOKEN || secrets.GITHUB_TOKEN }}
     steps:
@@ -215,6 +225,7 @@ jobs:
       # sidecars, shards, and — on signing-enabled lines — every .asc,
       # spec 09 §5) against the release's own listing, read-only.
       - name: Audit the release, per platform
+        if: ${{ !inputs.registry_only }}
         env:
           AUDIT_ONLY: "true"
           TEBAKO_RELEASE_SIGNING_ENABLED: ${{ vars.TEBAKO_RELEASE_SIGNING_ENABLED }}
@@ -276,22 +287,33 @@ jobs:
       # shards — the write-once per-leg metadata units, ground truth —
       # never from a job's local knowledge. One tebako version per
       # coordinator run, so the first platform that built names it.
+      # always(): a red audit marks the RUN for a human but must not skip
+      # the mirror — the render only ever carries what the release itself
+      # carries, so mirroring after a partial publish stays truthful (the
+      # v0.16.27 lesson: a dogfood death skipped this step and the
+      # registry silently lagged the release until hand-rendered).
       - name: Render the registry entries
-        if: ${{ !inputs.audit }}
+        if: ${{ always() && !cancelled() && !inputs.audit }}
         env:
-          TEBAKO_VERSION: ${{ needs.windows.outputs.tebako-version || needs.linux-gnu.outputs.tebako-version || needs.linux-musl.outputs.tebako-version || needs.macos.outputs.tebako-version }}
-        run: ./tools/registry_update.rb
+          TEBAKO_VERSION: ${{ inputs.registry_only && inputs.registry_version || (needs.windows.outputs.tebako-version || needs.linux-gnu.outputs.tebako-version || needs.linux-musl.outputs.tebako-version || needs.macos.outputs.tebako-version) }}
+        run: |
+          if [ -z "$TEBAKO_VERSION" ]; then
+            echo "::error::registry_only needs registry_version (e.g. 0.16.27) — none given and no platform built one"
+            exit 1
+          fi
+          ./tools/registry_update.rb
 
       # main is branch-protected: the registry lands by bot PR +
       # auto-merge, never by direct push. Idempotent across re-runs of the
       # same version (an unchanged registry exits before the branch).
       - name: Publish the registry via pull request
-        if: ${{ !inputs.audit }}
+        if: ${{ always() && !cancelled() && !inputs.audit }}
         env:
           GH_TOKEN: ${{ secrets.TEBAKO_CI_PAT_TOKEN || secrets.GITHUB_TOKEN }}
-          TEBAKO_VERSION: ${{ needs.windows.outputs.tebako-version || needs.linux-gnu.outputs.tebako-version || needs.linux-musl.outputs.tebako-version || needs.macos.outputs.tebako-version }}
+          TEBAKO_VERSION: ${{ inputs.registry_only && inputs.registry_version || (needs.windows.outputs.tebako-version || needs.linux-gnu.outputs.tebako-version || needs.linux-musl.outputs.tebako-version || needs.macos.outputs.tebako-version) }}
         run: |
           set -euo pipefail
+          [ -f tpkg-registry.yaml ] || { echo "::error::no rendered registry to publish (the render step did not run)"; exit 1; }
           cp tpkg-registry.yaml "$RUNNER_TEMP/registry.yaml"
           # main can move the registry mid-publish (a mirror PR landing
           # while the matrix builds): the in-tree render would abort the
@@ -311,6 +333,12 @@ jobs:
           git add tpkg-registry.yaml
           git commit -m "publish v${TEBAKO_VERSION}: registry entries"
           # force-with-lease on the bot branch: a re-publish re-creates it.
+          # The checkout is shallow, so the lease has no expectation for a
+          # branch a DIED run left behind — fetch it first or the push is
+          # rejected and the mirror never lands (the v0.16.27 hand-render
+          # hit exactly that). With the tracking ref in place the lease
+          # still refuses a concurrent FOREIGN push, as designed.
+          git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch" 2>/dev/null || true
           git push --force-with-lease origin "$branch"
           if ! gh pr view "$branch" >/dev/null 2>&1; then
             body="$RUNNER_TEMP/registry-pr-body.md"
