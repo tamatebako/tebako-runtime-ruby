@@ -1725,11 +1725,17 @@ jobs:
       # then signs every served name in the same invocation (spec 09 §5's
       # no-fold rule). No shared file exists, so N legs publish
       # concurrently with zero rendezvous.
+      # The tooling interpreter must exist on EVERY runner a publish leg
+      # can land on: ruby/setup-ruby's windows-11 (arm64) catalog starts
+      # at 3.4.1, so 3.3 fails there with "Unknown version 3.3" (publish
+      # run 35669322382, all 8 arm64 legs). 3.4 is served on every image
+      # in the matrix, and the Gemfile already carries the base64 shim
+      # for 3.4+ hosts.
       - name: Setup Ruby for the publish tooling
         if: ${{ inputs.publish && !inputs.audit }}
         uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
         with:
-          ruby-version: '3.3'
+          ruby-version: '3.4'
           bundler-cache: true
 
       - name: Publish the leg's runtime package (spec 13 §2a)

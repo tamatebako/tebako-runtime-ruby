@@ -306,16 +306,26 @@ module TebakoRuntimeBuilder
       image = "#{executable}.tfs"
       env["TEBAKO_RUNTIME_IMAGE"] = image if File.file?(image)
       env["TEBAKO_MOUNT_ROOT"] = mount_root_override if mount_root_override
-      # The support-DLL alias expectation (spec 22 §2.1, msys only): flowed
-      # from the single owner (SupportDlls.names_for), so the probe judges
-      # the booted runtime against exactly the set this checkout stages and
-      # declares. POSIX legs set nothing — the probe reports unsupported.
-      names = TebakoRuntimeBuilder::SupportDlls.names_for(@platform.host_id).join(",")
-      env["TEBAKO_SMOKE_EXPECT_SUPPORT_DLLS"] = names if @platform.msys?
+      support_dll_expectation(env)
       arm_jit_scenario_env(env, scenario)
       env.merge("RUBYOPT" => "-r#{PROBE_PATH}",
                 "TEBAKO_BOOT_PROBE" => scenario,
                 "TEBAKO_BOOT_MOUNT_POINT" => mount_root_override || mount_point)
+    end
+
+    # The support-DLL alias expectation (spec 22 §2.1, msys only): flowed
+    # from the single owner (SupportDlls.names_for), so the probe judges
+    # the booted runtime against exactly the set this checkout stages and
+    # declares. POSIX legs set nothing — the probe reports unsupported.
+    # names_for is fail-closed on unmapped hosts (exit 112), so the lookup
+    # itself must stay inside the msys guard: a POSIX leg never reaches it
+    # (#176 hoisted it above the guard and every POSIX leg's boot smoke
+    # died by name — PR #178's CI, ruby 3.3.12/4.0.6 linux+macos legs).
+    def support_dll_expectation(env)
+      return unless @platform.msys?
+
+      env["TEBAKO_SMOKE_EXPECT_SUPPORT_DLLS"] =
+        TebakoRuntimeBuilder::SupportDlls.names_for(@platform.host_id).join(",")
     end
 
     # The jit scenarios boot enabled on purpose: a compiled-in JIT must
