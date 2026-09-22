@@ -535,6 +535,29 @@ RSpec.describe ReleaseManager do
       .to output(/Missing runtime package: tebako-runtime-#{SPEC_VERSION}-3\.3\.7-macos-arm64/).to_stdout
   end
 
+  # The (version × arch) capability floor in the audit's expectation
+  # (the build matrix's exclude-matrix applies the same rule via
+  # RubyVersion#msys_arm64_capable?): a windows/arm64 package below the
+  # floor is never built, so it must never be expected — the v0.16.27
+  # arm64 audit demanded 42 assets for incapable rubies (run 35683750004).
+  it "expects a windows/arm64 package only for a ruby at or above the capability floor" do
+    ENV["EXPECTED_ENV_MATRIX"] = '[{"host":"windows-11-arm","container":null,"os":"windows","arch":"arm64"}]'
+    ENV["EXPECTED_RUBY_MATRIX"] = '["3.3.12", "3.4.10"]'
+
+    expect { manager.report_missing_packages([]) }
+      .to output(/Missing runtime package: tebako-runtime-#{SPEC_VERSION}-3\.4\.10-windows-ucrt-arm64/).to_stdout
+    expect { manager.report_missing_packages([]) }
+      .not_to output(/3\.3\.12-windows-ucrt-arm64/).to_stdout
+  end
+
+  it "still expects the same ruby on windows/x64 (the floor gates arm64 only)" do
+    ENV["EXPECTED_ENV_MATRIX"] = '[{"host":"windows-latest","container":null,"os":"windows","arch":"x86_64"}]'
+    ENV["EXPECTED_RUBY_MATRIX"] = '["3.3.12"]'
+
+    expect { manager.report_missing_packages([]) }
+      .to output(/Missing runtime package: tebako-runtime-#{SPEC_VERSION}-3\.3\.12-windows-ucrt64/).to_stdout
+  end
+
   # The era-2 contract set the monolithic manifest.json used to carry now
   # lives in the per-package shard (spec 13 §2a) — the shard-content
   # assertions ride the "per-package metadata (issue 139)" describe below.
