@@ -628,11 +628,18 @@ jobs:
         if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'windows' && matrix.env.arch == 'x86_64'
         shell: msys2 {0}
         run: |
-          pacman -Syu --needed --noconfirm git tar bison flex pactoys
-          pacboy sync --needed --noconfirm cmake:p diffutils:p          \
-            dlfcn:p ninja:p                                             \
-            gtest:p autotools:p ncurses:p ruby:p toolchain:p openssl:p  \
-            make:p libyaml:p libxslt:p
+          # pacman/pacboy fetches die on mirror stalls (the "Operation too
+          # slow" killer) — bounded retry, same contract as the release-asset
+          # GETs; a killed attempt can leave the db lock behind.
+          for attempt in 1 2 3 4; do
+            rm -f /var/lib/pacman/db.lck
+            pacman -Syu --needed --noconfirm git tar bison flex pactoys && \
+              pacboy sync --needed --noconfirm cmake:p diffutils:p          \
+                dlfcn:p ninja:p                                             \
+                gtest:p autotools:p ncurses:p ruby:p toolchain:p openssl:p  \
+                make:p libyaml:p libxslt:p && break
+            [ "$attempt" -lt 4 ] && sleep $((2 ** attempt)) || exit 1
+          done
       - uses: dtolnay/rust-toolchain@e43eeffd51aefeea929f4ea14e09fd077153e788 # 1.94.1
         if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'windows' && matrix.env.arch == 'x86_64'
         with:
@@ -983,11 +990,18 @@ jobs:
         if: matrix.env.os == 'windows'
         shell: msys2 {0}
         run: |
-          pacman -Syu --needed --noconfirm git tar bison flex pactoys
-          pacboy sync --needed --noconfirm cmake:p diffutils:p          \
-            dlfcn:p ninja:p                                             \
-            gtest:p autotools:p ncurses:p ruby:p toolchain:p openssl:p  \
-            make:p libyaml:p libxslt:p
+          # pacman/pacboy fetches die on mirror stalls (the "Operation too
+          # slow" killer) — bounded retry, same contract as the release-asset
+          # GETs; a killed attempt can leave the db lock behind.
+          for attempt in 1 2 3 4; do
+            rm -f /var/lib/pacman/db.lck
+            pacman -Syu --needed --noconfirm git tar bison flex pactoys && \
+              pacboy sync --needed --noconfirm cmake:p diffutils:p          \
+                dlfcn:p ninja:p                                             \
+                gtest:p autotools:p ncurses:p ruby:p toolchain:p openssl:p  \
+                make:p libyaml:p libxslt:p && break
+            [ "$attempt" -lt 4 ] && sleep $((2 ** attempt)) || exit 1
+          done
 
       # The v2 link unit (scoped staticlibs + the mingw closure) stages
       # ONCE per run in the link-unit job above on EVERY platform — a
@@ -1846,8 +1860,15 @@ jobs:
       - name: Install the msys toolchain (${{ matrix.env.arch }})
         shell: msys2 {0}
         run: |
-          pacman -S --needed --noconfirm pactoys make
-          pacboy sync --needed --noconfirm toolchain:p
+          # The dogfood toolchain sync dies on mirror stalls (observed:
+          # "Operation too slow. Less than 1 bytes/sec" wedging a 4.0.2
+          # leg) — bounded retry; a killed attempt can leave the db lock.
+          for attempt in 1 2 3 4; do
+            rm -f /var/lib/pacman/db.lck
+            pacman -S --needed --noconfirm pactoys make && \
+              pacboy sync --needed --noconfirm toolchain:p && break
+            [ "$attempt" -lt 4 ] && sleep $((2 ** attempt)) || exit 1
+          done
       - name: Download the runtime package (this run)
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
