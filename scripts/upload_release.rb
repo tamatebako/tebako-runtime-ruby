@@ -248,17 +248,29 @@ class ReleaseManager # rubocop:disable Metrics/ClassLength
   end
 
   def expected_package_names
-    env_json = ENV.fetch("EXPECTED_ENV_MATRIX", nil)
-    ruby_json = ENV.fetch("EXPECTED_RUBY_MATRIX", nil)
+    env_json, ruby_json = ENV.values_at("EXPECTED_ENV_MATRIX", "EXPECTED_RUBY_MATRIX")
     return [] unless env_json && ruby_json
 
-    JSON.parse(env_json).product(expected_ruby_versions(ruby_json)).map do |env, ruby|
+    JSON.parse(env_json).product(expected_ruby_versions(ruby_json)).filter_map do |env, ruby|
+      next if incapable_pair?(env, ruby)
+
       platform = TebakoRuntimeBuilder::Platform.host_id_for(env["os"], env["arch"])
       "tebako-runtime-#{@version}-#{ruby}-#{platform}"
     end
   rescue JSON::ParserError => e
     puts "::warning::Could not compute expected package list: #{e.message}"
     []
+  end
+
+  # The (version × arch) capability floor, mirrored from the build
+  # matrix's exclude-matrix (the gate's single owner is
+  # RubyVersion#msys_arm64_capable?): a windows/arm64 leg exists only
+  # for a capable ruby — an incapable pair is never built, so the audit
+  # must never expect it (the v0.16.27 arm64 audit, run 35683750004,
+  # demanded 42 assets for rubies the architecture does not serve).
+  def incapable_pair?(env, ruby)
+    env["os"] == "windows" && env["arch"] == "arm64" &&
+      !TebakoRuntimeBuilder::RubyVersion.new(ruby).msys_arm64_capable?
   end
 
   # The prepare job's ruby matrix rows are {version, src_sha256} objects
