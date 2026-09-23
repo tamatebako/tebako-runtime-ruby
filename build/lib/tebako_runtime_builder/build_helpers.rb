@@ -25,14 +25,22 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
+require "digest"
+require "fileutils"
 require "open3"
 require "json"
 require "net/http"
 require "uri"
 
 module TebakoRuntimeBuilder
-  # Ruby build helpers (gem Tebako::BuildHelpers)
+  # Ruby build helpers (gem Tebako::BuildHelpers) plus the shared download
+  # core every fetcher uses (SourceFetcher carries its own private copy for
+  # the SHA256SUMS flow; TfsTool consumes this one) — so the Net::HTTP
+  # discipline (redirect bound, timeouts, named failures) exists exactly
+  # once per consumer class, mirrored from the python factory.
   module BuildHelpers
+    MAX_REDIRECTS = 5
+
     class << self
       # The names of a GitHub release's assets, read off the release API
       # (in-process Net::HTTP — never a gh/curl shell-out). The CI leg
@@ -93,6 +101,57 @@ module TebakoRuntimeBuilder
 
       def verbose?
         %w[yes true].include?(ENV.fetch("VERBOSE", nil))
+      end
+
+      def sha256_file(path)
+        Digest::SHA256.file(path).hexdigest
+      end
+
+      # Download url to dest (creating the parent dir); a failure deletes
+      # the partial file and raises with the caller's exit code.
+      def download(url, dest, code:)
+        FileUtils.mkdir_p(File.dirname(dest))
+        File.binwrite(dest, read_url(url, code: code))
+        dest
+      rescue TebakoRuntimeBuilder::Error
+        FileUtils.rm_f(dest)
+        raise
+      end
+
+      def read_url(url, code:, redirects_left: MAX_REDIRECTS) # rubocop:disable Metrics/MethodLength,Metrics/AbcSize
+        uri = URI.parse(url)
+        return read_file_url(uri, code) if uri.scheme == "file"
+        raise TebakoRuntimeBuilder::Error.new("too many redirects fetching #{url}", code) if redirects_left.zero?
+
+        response = http_get(uri)
+        case response
+        when Net::HTTPSuccess then response.body
+        when Net::HTTPRedirection
+          read_url(URI.join(url, response["location"]).to_s, code: code,
+                                                             redirects_left: redirects_left - 1)
+        else
+          raise TebakoRuntimeBuilder::Error.new("#{response.code} #{response.message} fetching #{url}", code)
+        end
+      end
+
+      def read_file_url(uri, code)
+        # RFC 8089: a Windows drive letter rides the file URL path as
+        # /D:/...; a mingw/ucrt ruby needs D:/... (the slashed form is
+        # EINVAL to File.binread). This is URL decoding, not a fallback.
+        path = uri.path.sub(%r{\A/([A-Za-z]:/)}, '\1')
+        File.binread(path)
+      rescue Errno::ENOENT
+        raise TebakoRuntimeBuilder::Error.new("not found: #{path}", code)
+      end
+
+      def http_get(uri)
+        http = Net::HTTP.new(uri.host, uri.port)
+        http.use_ssl = uri.scheme == "https"
+        http.open_timeout = 15
+        http.read_timeout = 600
+        http.start do |session|
+          session.get(uri.request_uri.empty? ? "/" : uri.request_uri)
+        end
       end
 
       private

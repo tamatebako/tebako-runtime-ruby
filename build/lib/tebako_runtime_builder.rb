@@ -44,6 +44,7 @@ module TebakoRuntimeBuilder
   autoload :Builder,        File.expand_path("tebako_runtime_builder/builder", __dir__)
   autoload :Capabilities,   File.expand_path("tebako_runtime_builder/capabilities", __dir__)
   autoload :CaBundle,       File.expand_path("tebako_runtime_builder/ca_bundle", __dir__)
+  autoload :Contract,       File.expand_path("tebako_runtime_builder/contract", __dir__)
   autoload :Error,          File.expand_path("tebako_runtime_builder/error", __dir__)
   autoload :ImageBuilder,   File.expand_path("tebako_runtime_builder/image_builder", __dir__)
   autoload :ImageManifest,  File.expand_path("tebako_runtime_builder/image_manifest", __dir__)
@@ -55,6 +56,7 @@ module TebakoRuntimeBuilder
   autoload :SourceFetcher,  File.expand_path("tebako_runtime_builder/source_fetcher", __dir__)
   autoload :Stripper,       File.expand_path("tebako_runtime_builder/stripper", __dir__)
   autoload :SupportDlls,    File.expand_path("tebako_runtime_builder/support_dlls", __dir__)
+  autoload :TfsTool,        File.expand_path("tebako_runtime_builder/tfs_tool", __dir__)
 
   # Bundler/rubygems versions pinned by the gem's scenario manager. For the
   # supported ruby matrix (>= 3.1.6) the gem's deploy gates make the rubygems

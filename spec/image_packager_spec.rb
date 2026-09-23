@@ -3,9 +3,9 @@
 require "spec_helper"
 require "fileutils"
 
-# A fake image tool: logs its argv (one arg per line) to $FAKE_ARGS_LOG
+# A fake tfs CLI: logs its argv (one arg per line) to $FAKE_ARGS_LOG
 # and creates the file named after -o.
-FAKE_TOOL_SCRIPT = <<~SH
+FAKE_TFS_SCRIPT = <<~SH
   #!/bin/sh
   printf '%s\\n' "$@" > "$FAKE_ARGS_LOG"
   out=""
@@ -27,6 +27,13 @@ RSpec.describe TebakoRuntimeBuilder::ImagePackager do
     end
   end
 
+  def fake_tfs
+    File.join(@dir, "tfs").tap do |path|
+      File.write(path, FAKE_TFS_SCRIPT)
+      FileUtils.chmod(0o755, path)
+    end
+  end
+
   def layout_dir
     File.join(@dir, "s").tap do |dir|
       FileUtils.mkdir_p(File.join(dir, "bin"))
@@ -34,19 +41,8 @@ RSpec.describe TebakoRuntimeBuilder::ImagePackager do
     end
   end
 
-  def deps_bin_dir
-    File.join(@dir, "deps", "bin").tap { |dir| FileUtils.mkdir_p(dir) }
-  end
-
   def image_path
     File.join(@dir, "out", "tebako-runtime-9.9.9-3.3.7-macos-arm64.tfs")
-  end
-
-  def fake_tool(dir, name)
-    File.join(dir, name).tap do |path|
-      File.write(path, FAKE_TOOL_SCRIPT)
-      FileUtils.chmod(0o755, path)
-    end
   end
 
   def args_log
@@ -61,81 +57,33 @@ RSpec.describe TebakoRuntimeBuilder::ImagePackager do
     old.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
   end
 
-  it "packs the layout via tfs mkimage when tfs resolves (the in-process writer — no mkdwarfs handoff)" do
-    tfs = fake_tool(@dir, "tfs")
-    fake_tool(deps_bin_dir, "mkdwarfs")
-    packager = described_class.new(platform, deps_bin_dir, tfs: tfs)
+  it "packs the layout via tfs mkimage (no --format flag: the CLI default is limnifs, spec 20 §6)" do
+    packager = described_class.new(platform, tfs: fake_tfs)
 
     with_env("FAKE_ARGS_LOG" => File.join(@dir, "args.log")) do
       packager.package(layout_dir, image_path)
     end
 
     expect(File.file?(image_path)).to be(true)
-    expect(args_log).to eq(["mkimage", "--format", "dwarfs", layout_dir, "-o", image_path])
+    expect(args_log).to eq(["mkimage", layout_dir, "-o", image_path])
   end
 
-  it "uses tfs from PATH when nothing is requested explicitly" do
-    bin = File.join(@dir, "path-bin")
-    FileUtils.mkdir_p(bin)
-    fake_tool(bin, "tfs")
-    fake_tool(deps_bin_dir, "mkdwarfs")
-    packager = described_class.new(platform, deps_bin_dir)
-
-    with_env("FAKE_ARGS_LOG" => File.join(@dir, "args.log"), "PATH" => bin, "TEBAKO_TFS" => nil) do
-      packager.package(layout_dir, image_path)
-    end
-
-    expect(args_log.first(3)).to eq(["mkimage", "--format", "dwarfs"])
-  end
-
-  it "falls back to the deps mkdwarfs when no tfs resolves" do
-    fake_tool(deps_bin_dir, "mkdwarfs")
-    empty = File.join(@dir, "empty-path")
-    FileUtils.mkdir_p(empty)
-    packager = described_class.new(platform, deps_bin_dir)
-
-    with_env("FAKE_ARGS_LOG" => File.join(@dir, "args.log"), "PATH" => empty, "TEBAKO_TFS" => nil) do
-      packager.package(layout_dir, image_path)
-    end
-
-    expect(File.file?(image_path)).to be(true)
-    expect(args_log).to eq(["-i", layout_dir, "-o", image_path, "--no-progress", "--force"])
-  end
-
-  it "packs limnifs via tfs on windows/arm64 (the limnifs-only link unit)" do
+  it "packs windows/arm64 exactly like every other host (limnifs is the only first-class image)" do
     arm64 = TebakoRuntimeBuilder::Platform.new("aarch64-mingw-ucrt", "aarch64")
-    tfs = fake_tool(@dir, "tfs")
-    packager = described_class.new(arm64, deps_bin_dir, tfs: tfs)
+    packager = described_class.new(arm64, tfs: fake_tfs)
 
     with_env("FAKE_ARGS_LOG" => File.join(@dir, "args.log")) do
       packager.package(layout_dir, image_path)
     end
 
-    expect(args_log).to eq(["mkimage", "--format", "limnifs", layout_dir, "-o", image_path])
-  end
-
-  it "refuses the mkdwarfs fallback by name on windows/arm64 (x64 dwarfs-t: wrong arch, wrong format)" do
-    arm64 = TebakoRuntimeBuilder::Platform.new("aarch64-mingw-ucrt", "aarch64")
-    fake_tool(deps_bin_dir, "mkdwarfs")
-    empty = File.join(@dir, "empty-path")
-    FileUtils.mkdir_p(empty)
-    packager = described_class.new(arm64, deps_bin_dir)
-
-    with_env("PATH" => empty, "TEBAKO_TFS" => nil) do
-      expect { packager.package(layout_dir, image_path) }
-        .to raise_error(TebakoRuntimeBuilder::Error) do |error|
-          expect(error.error_code).to eq(131)
-          expect(error.message).to include("limnifs", "TEBAKO_TFS")
-        end
-    end
+    expect(args_log).to eq(["mkimage", layout_dir, "-o", image_path])
   end
 
   it "replaces a stale image from a previous run" do
-    fake_tool(@dir, "tfs")
-    fake_tool(deps_bin_dir, "mkdwarfs")
+    tfs = fake_tfs
     FileUtils.mkdir_p(File.dirname(image_path))
     File.write(image_path, "stale")
-    packager = described_class.new(platform, deps_bin_dir, tfs: File.join(@dir, "tfs"))
+    packager = described_class.new(platform, tfs: tfs)
 
     with_env("FAKE_ARGS_LOG" => File.join(@dir, "args.log")) do
       packager.package(layout_dir, image_path)
@@ -144,32 +92,80 @@ RSpec.describe TebakoRuntimeBuilder::ImagePackager do
     expect(File.read(image_path)).to eq("")
   end
 
-  it "fails loudly when an explicitly requested tfs does not resolve" do
-    packager = described_class.new(platform, deps_bin_dir, tfs: File.join(@dir, "no-such-tfs"))
-
-    expect { packager.package(layout_dir, image_path) }
-      .to raise_error(TebakoRuntimeBuilder::Error) { |error| expect(error.error_code).to eq(131) }
-  end
-
-  it "fails loudly when neither tfs nor the deps mkdwarfs is available" do
-    empty = File.join(@dir, "empty-path")
-    FileUtils.mkdir_p(empty)
-    packager = described_class.new(platform, deps_bin_dir)
-
-    with_env("PATH" => empty, "TEBAKO_TFS" => nil) do
-      expect { packager.package(layout_dir, image_path) }
-        .to raise_error(TebakoRuntimeBuilder::Error) do |error|
-          expect(error.error_code).to eq(131)
-          expect(error.message).to include("no image tool available")
-        end
-    end
-  end
-
   it "fails loudly when the layout tree is missing" do
-    packager = described_class.new(platform, deps_bin_dir)
+    packager = described_class.new(platform, tfs: fake_tfs)
 
     expect { packager.package(File.join(@dir, "no-such-layout"), image_path) }
       .to raise_error(TebakoRuntimeBuilder::Error) { |error| expect(error.error_code).to eq(131) }
+  end
+end
+
+RSpec.describe TebakoRuntimeBuilder::TfsTool do
+  around do |example|
+    Dir.mktmpdir do |dir|
+      @dir = dir
+      example.run
+    end
+  end
+
+  def with_env(vars)
+    old = vars.to_h { |key,| [key, ENV.fetch(key, nil)] }
+    vars.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
+    yield
+  ensure
+    old.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
+  end
+
+  describe ".resolve_requested" do
+    let(:platform) { TebakoRuntimeBuilder::Platform.new("arm64-darwin23", "arm64") }
+
+    it "resolves a direct executable path" do
+      tfs = File.join(@dir, "tfs-custom")
+      File.write(tfs, "#!/bin/sh\n")
+      FileUtils.chmod(0o755, tfs)
+
+      expect(described_class.resolve_requested(tfs, platform)).to eq(tfs)
+    end
+
+    it "resolves a bare name off PATH" do
+      bin = File.join(@dir, "bin")
+      FileUtils.mkdir_p(bin)
+      File.write(File.join(bin, "tfs"), "#!/bin/sh\n")
+      FileUtils.chmod(0o755, File.join(bin, "tfs"))
+
+      with_env("PATH" => bin) do
+        expect(described_class.resolve_requested("tfs", platform)).to eq(File.join(bin, "tfs"))
+      end
+    end
+
+    it "tries the .exe spelling on msys hosts" do
+      msys = TebakoRuntimeBuilder::Platform.new("x64-mingw-ucrt", "x64")
+      bin = File.join(@dir, "bin")
+      FileUtils.mkdir_p(bin)
+      File.write(File.join(bin, "tfs.exe"), "MZ")
+      FileUtils.chmod(0o755, File.join(bin, "tfs.exe"))
+
+      with_env("PATH" => bin) do
+        expect(described_class.resolve_requested("tfs", msys)).to eq(File.join(bin, "tfs.exe"))
+      end
+    end
+
+    it "fails closed when the request does not resolve (never a silent fallback)" do
+      with_env("PATH" => @dir) do
+        expect { described_class.resolve_requested("no-such-tfs", platform) }
+          .to raise_error(TebakoRuntimeBuilder::Error) do |error|
+            expect(error.error_code).to eq(131)
+            expect(error.message).to include("no-such-tfs")
+          end
+      end
+    end
+  end
+
+  it "names the CLI asset after the release pin and the platform" do
+    platform = TebakoRuntimeBuilder::Platform.new("arm64-darwin23", "arm64")
+    tool = described_class.new(cache_dir: @dir, release: "v2.8.16", platform: platform)
+
+    expect(tool.asset_name).to eq("tfs-2.8.16-macos-arm64")
   end
 end
 

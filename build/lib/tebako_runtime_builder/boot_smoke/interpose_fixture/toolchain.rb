@@ -95,7 +95,16 @@ module TebakoRuntimeBuilder
           [".build/smoke-tools/mkdwarfs", ".build/deps/bin/mkdwarfs"].each do |tool|
             return File.expand_path(tool) if File.executable?(tool)
           end
-          which!("tfs")
+          fetched_tfs || which!("tfs")
+        end
+
+        # The builder's pin-verified TfsTool cache (the legs pack with it —
+        # no workflow-side staging anymore); the fixture still packs
+        # --format dwarfs for dwarfs-READER coverage.
+        def fetched_tfs
+          path = Dir.glob(File.join(".build", "downloads", "tfs", "*", "tfs-*"))
+                    .find { |candidate| File.executable?(candidate) && !File.directory?(candidate) }
+          path && File.expand_path(path)
         end
 
         def which!(tool)

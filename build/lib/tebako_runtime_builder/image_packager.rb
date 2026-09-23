@@ -29,40 +29,29 @@ require "fileutils"
 
 module TebakoRuntimeBuilder
   # Packs the assembled runtime layout tree (the deploy pass's DATA_SRC_DIR)
-  # into the standalone DwarFS image published next to the runtime
-  # executable: tebako-runtime-<tebako>-<ruby>-<platform>.tfs (item 30,
-  # producer side). The lean flow's driver mounts this image directly
-  # instead of extracting a runtime layout.
+  # into the standalone image published next to the runtime executable:
+  # tebako-runtime-<tebako>-<ruby>-<platform>.tfs. The lean flow's driver
+  # mounts this image directly instead of extracting a runtime layout.
   #
-  # Tool choice (documented per the owner rule): the image is written by
-  # our own factory toolchain, never by a random system binary:
-  #   1. the tfs binary (tebako-rs tfs-cli, `tfs mkimage`) when one is
-  #      resolvable (--tfs / TEBAKO_TFS / PATH) -- the documented tool;
-  #      mkimage binds the image writer IN-PROCESS (no mkdwarfs
-  #      shell-out);
-  #   2. otherwise the build's own deps/bin/mkdwarfs directly (the same
-  #      prebuilt binary the deploy pass already shelled to for fs.bin).
-  # Both are build-time factory tools; nothing here becomes a runtime
-  # dependency of the shipped packages.
+  # The image is limnifs on EVERY host (spec 20 §6: the only first-class
+  # image format; the dwarfs backend stays a read path for existing
+  # payloads and nothing new is written in it). Every link unit in the
+  # pinned closure mounts limnifs: the unix and windows-x64 units carry
+  # backend-limnifs alongside the read backends, the windows-arm64 unit is
+  # limnifs-only by design (dwarfs-t #100). The boot smoke proves the
+  # mount on every leg.
   #
-  # The format follows the host's link unit (spec 20 §6): windows/arm64
-  # ships limnifs-only (the product's arm64 unit carries an empty
-  # closure/ BY DESIGN — the dwarfs arm64 closure is upstream dwarfs-t's
-  # milestone), so its env image must be limnifs; every other host packs
-  # dwarfs. On arm64 the mkdwarfs fallback is therefore refuse-by-name,
-  # never attempted: that binary is x64 dwarfs-t — wrong arch under Prism
-  # (SIGSEGV, v13 run 35608648436) AND a format the limnifs-only arm64
-  # driver cannot mount.
+  # One tool only (mirrored from the python factory): the tfs CLI the
+  # Builder resolved (--tfs / TEBAKO_TFS, else the pin-verified TfsTool
+  # fetch off contract.yml's link_unit_release), `tfs mkimage` WITHOUT a
+  # --format flag — the CLI default is limnifs (spec 20 §6), and pinning a
+  # flag here would drift from it. There is deliberately no mkdwarfs
+  # fallback: that binary writes dwarfs-t, a format nothing new ships in
+  # (and on arm64 it is the x64 binary under Prism — SIGSEGV, run
+  # 35608648436).
   class ImagePackager
-    # spec 20 §6 format ids as tfs mkimage spells them, keyed on the
-    # host's link-unit shape; the default is the dwarfs-t image every
-    # other driver mounts.
-    LIMNIFS_ONLY_HOSTS = ["windows-ucrt-arm64"].freeze
-    DEFAULT_FORMAT = "dwarfs"
-    LIMNIFS_FORMAT = "limnifs"
-    def initialize(platform, deps_bin_dir, tfs: nil)
+    def initialize(platform, tfs:)
       @platform = platform
-      @deps_bin_dir = deps_bin_dir
       @tfs = tfs
     end
 
@@ -70,45 +59,16 @@ module TebakoRuntimeBuilder
       check_layout!(layout_dir)
       FileUtils.mkdir_p(File.dirname(image_path))
       FileUtils.rm_f(image_path)
-      pack(layout_dir, image_path)
+      puts "-- Packing the runtime layout as #{image_path} (tfs mkimage, the default limnifs format)"
+      TebakoRuntimeBuilder::BuildHelpers.run_with_capture_v([@tfs, "mkimage", layout_dir, "-o", image_path])
       image_path
     rescue TebakoRuntimeBuilder::Error => e
-      raise e if e.error_code == 131
+      raise e if e.error_code == 131 && e.message.include?("layout tree")
 
       raise TebakoRuntimeBuilder::Error.new("runtime image packaging failed: #{e.message}", 131)
     end
 
     private
-
-    def pack(layout_dir, image_path)
-      return pack_with_tfs(tfs_path, layout_dir, image_path) if tfs_path
-      return refuse_mkdwarfs_on_limnifs_only! if limnifs_only?
-      return pack_with_mkdwarfs(mkdwarfs_path, layout_dir, image_path) if mkdwarfs_path
-
-      raise TebakoRuntimeBuilder::Error.new(
-        "no image tool available: tfs not found (set --tfs or TEBAKO_TFS) and no deps mkdwarfs at " \
-        "#{File.join(@deps_bin_dir, "mkdwarfs#{@platform.exe_suffix}")}", 131
-      )
-    end
-
-    # Never the mkdwarfs fallback on a limnifs-only host: that binary is
-    # x64 dwarfs-t — wrong arch under Prism (SIGSEGV, v13 run
-    # 35608648436) AND a format the arm64 driver cannot mount.
-    def refuse_mkdwarfs_on_limnifs_only!
-      raise TebakoRuntimeBuilder::Error.new(
-        "#{@platform.host_id} packs the env image as limnifs via the native arm64 tfs binary " \
-        "(set --tfs or TEBAKO_TFS) — deps mkdwarfs writes dwarfs-t, which the limnifs-only " \
-        "arm64 link unit cannot mount (and the x64 binary SIGSEGVs under Prism)", 131
-      )
-    end
-
-    def limnifs_only?
-      LIMNIFS_ONLY_HOSTS.include?(@platform.host_id)
-    end
-
-    def image_format
-      limnifs_only? ? LIMNIFS_FORMAT : DEFAULT_FORMAT
-    end
 
     def check_layout!(layout_dir)
       return if File.directory?(layout_dir)
@@ -116,63 +76,6 @@ module TebakoRuntimeBuilder
       raise TebakoRuntimeBuilder::Error.new(
         "runtime layout tree #{layout_dir} does not exist (the deploy pass did not assemble it)", 131
       )
-    end
-
-    def pack_with_tfs(tfs, layout_dir, image_path)
-      puts "-- Packing the runtime layout as #{image_path} (tfs mkimage --format #{image_format})"
-      TebakoRuntimeBuilder::BuildHelpers.run_with_capture_v(
-        [tfs, "mkimage", "--format", image_format, layout_dir, "-o", image_path]
-      )
-    end
-
-    def pack_with_mkdwarfs(mkdwarfs, layout_dir, image_path)
-      puts "-- Packing the runtime layout as #{image_path} (deps mkdwarfs; tfs not found -- " \
-           "set --tfs or TEBAKO_TFS to use the documented tool)"
-      TebakoRuntimeBuilder::BuildHelpers.run_with_capture_v(
-        [mkdwarfs, "-i", layout_dir, "-o", image_path, "--no-progress", "--force"]
-      )
-    end
-
-    # An explicitly requested tfs (--tfs / TEBAKO_TFS) that does not resolve
-    # is a hard error -- silently falling back would hide a misconfigured
-    # toolchain. With nothing requested, tfs on PATH is used when present.
-    def tfs_path
-      requested = @tfs || ENV.fetch("TEBAKO_TFS", nil)
-      return which(requested) || missing_tfs!(requested) if requested
-
-      which("tfs#{@platform.exe_suffix}")
-    end
-
-    def missing_tfs!(requested)
-      raise TebakoRuntimeBuilder::Error.new(
-        "requested tfs binary '#{requested}' was not found (not a file, not on PATH)", 131
-      )
-    end
-
-    def mkdwarfs_path
-      path = File.join(@deps_bin_dir, "mkdwarfs#{@platform.exe_suffix}")
-      return path if File.file?(path)
-
-      # No deps mkdwarfs (e.g. a caller that only wants the image): let tfs
-      # resolve mkdwarfs itself (TEBAKO_MKDWARFS / PATH); direct fallback
-      # cannot run without it.
-      nil
-    end
-
-    def which(executable)
-      return executable if File.file?(executable) && File.executable?(executable)
-
-      path_candidates(executable).each do |path|
-        return path if File.file?(path) && File.executable?(path)
-      end
-      nil
-    end
-
-    def path_candidates(executable)
-      exts = @platform.msys? ? [".exe", ""] : [""]
-      ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).product(exts).map do |dir, ext|
-        File.join(dir, "#{executable}#{ext}")
-      end
     end
   end
 end

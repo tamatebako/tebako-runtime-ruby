@@ -76,7 +76,8 @@ module TebakoRuntimeBuilder
     end
 
     # The standalone runtime filesystem image published next to the runtime
-    # executable (item 30): the assembled layout tree, DwarFS image form.
+    # executable (item 30): the assembled layout tree, limnifs image form
+    # (the only first-class format, spec 20 §6).
     def image_output
       "#{output.sub(/\.exe\z/, "")}.tfs"
     end
@@ -205,8 +206,38 @@ module TebakoRuntimeBuilder
     # is finalized: the tree is the exact content the embedded fs.bin was
     # written from, and the deploy pass leaves it in place.
     def pack_image
-      TebakoRuntimeBuilder::ImagePackager.new(@platform, File.join(deps, "bin"), tfs: @tfs)
+      TebakoRuntimeBuilder::ImagePackager.new(@platform, tfs: image_tfs)
                                          .package(layout_tree, image_output)
+    end
+
+    # The image step's tfs CLI: an explicit --tfs/TEBAKO_TFS wins (a
+    # developer testing an unreleased CLI) and resolves fail-closed; the
+    # default is the pin-verified fetch of the CLI published with
+    # contract.yml's link_unit_release (one product release carries the
+    # link unit AND the CLI — the consumed unit proves the CLI exists).
+    # Never a PATH lookup (provenance) and never a format fallback —
+    # limnifs is the only first-class image (spec 20 §6).
+    def image_tfs
+      requested = @tfs || ENV.fetch("TEBAKO_TFS", nil)
+      return TebakoRuntimeBuilder::TfsTool.resolve_requested(requested, @platform) if requested
+
+      pin = contract.link_unit_release
+      if pin.empty?
+        raise TebakoRuntimeBuilder::Error.new(
+          "no --tfs given and contract.yml pins no link_unit_release (a source-built driver) — " \
+          "the env image needs the tfs CLI: pass --tfs PATH to a tfs-cli build", 131
+        )
+      end
+      tfs_tool(pin).fetch
+    end
+
+    def tfs_tool(pin)
+      @tfs_tool ||= TebakoRuntimeBuilder::TfsTool.new(release: pin, platform: @platform,
+                                                      cache_dir: File.join(@prefix, "downloads"))
+    end
+
+    def contract
+      @contract ||= TebakoRuntimeBuilder::Contract.new(File.join(@repo_root, "contract.yml"))
     end
 
     # The env image's L1 payload manifest (ImageManifest — spec 03 §1):

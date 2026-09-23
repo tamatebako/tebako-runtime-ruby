@@ -285,7 +285,9 @@ RSpec.describe "publish coordinator workflow" do
     publish = release_steps.find { |step| step["name"] == "Publish the registry via pull request" }
     [render, publish].each do |step|
       expect(step).not_to be_nil
-      expect(step["if"]).to eq("${{ !inputs.audit }}")
+      # always(): a flaked upstream leg must not strand the registry on a
+      # publish run (the audit reads what shipped, the registry mirrors it).
+      expect(step["if"]).to eq("${{ always() && !cancelled() && !inputs.audit }}")
     end
     expect(render.fetch("run")).to include("./tools/registry_update.rb")
     # The registry lands by bot PR against origin/main — git arbitrates.
