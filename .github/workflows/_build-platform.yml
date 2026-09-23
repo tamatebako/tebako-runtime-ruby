@@ -1664,7 +1664,9 @@ jobs:
             -e TEBAKO_SMOKE_EXPECT_OPENSSL \
             alpine:3.21 sh -c '
               set -e
-              apk add --no-cache ruby ruby-dev build-base ruby-bundler >/dev/null
+              # git: the Gemfile pins tebako-release-tooling from its git
+              # tag (contract.yml release_tooling) — bundler shell-outs.
+              apk add --no-cache ruby ruby-dev build-base ruby-bundler git >/dev/null
               bundle install --jobs 4 --retry 3
               bundle exec rspec --tag boot_smoke --format documentation'
 
