@@ -1036,21 +1036,12 @@ jobs:
           tools/build_runtime --ruby "${{ matrix.ruby.version }}" --output "runtime-packages/$runtime" --prefix .build \
             --src-mirror "file://${{ github.workspace }}/.build/spec22-src-roll" --src-release spec22-chain
 
-      # windows/arm64 packs the env image as limnifs via the NATIVE arm64
-      # tfs CLI (the link unit is limnifs-only; deps mkdwarfs is x64
-      # dwarfs-t — wrong arch under Prism, wrong format for the driver).
-      # Staged from the pinned product release, digest-verified; the
-      # packer refuses the mkdwarfs fallback by name, so a miss here is
-      # the leg's named error, never a silent x64 handoff.
-      - name: Stage the native tfs CLI (windows/arm64 limnifs packer)
-        if: matrix.env.os == 'windows' && matrix.env.arch == 'arm64'
-        shell: msys2 {0}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          tfs=$(bash ci/tfs-download.sh windows arm64 "${{ needs.compute.outputs.link-unit-release }}")
-          echo "TEBAKO_TFS=$tfs" >> "$GITHUB_ENV"
-
+      # The image step's tfs CLI is fetched IN-BUILDER by TfsTool —
+      # pin-verified against the contract.yml link_unit_release's published
+      # .sha256 sidecar, native per leg (windows/arm64 included: the
+      # product release ships the arm64 CLI since v2.8.16). There is no
+      # workflow-side staging and no mkdwarfs fallback: the env image is
+      # limnifs on every host (spec 20 §6).
       - name: Build runtime on Windows
         if: matrix.env.container == null && matrix.env.os == 'windows'
         shell: msys2 {0}
@@ -1900,12 +1891,12 @@ jobs:
           # release-asset GETs are transient-prone under publish load —
           # bounded retry, same contract as scripts/sign_release.rb.
           for attempt in 1 2 3 4; do
-            # Pin floor v2.8.16: the arm64 leg's env image is limnifs
-            # (the link unit packs it — clangarm64 has no native
-            # dwarfs-t), and pre-spec-20 CLIs reject those bytes (the
-            # first arm64 dogfood's "Unsupported format", run
-            # 35685304693). Each leg fetches its arch's own CLI — the
-            # native arm64 build ships since v2.8.16, so no x64
+            # Pin floor v2.8.16: every leg's env image is limnifs (the
+            # builder packs it with the pin-verified TfsTool CLI — the
+            # only first-class format, spec 20 §6), and pre-spec-20 CLIs
+            # reject those bytes (the first arm64 dogfood's "Unsupported
+            # format", run 35685304693). Each leg fetches its arch's own
+            # CLI — the native arm64 build ships since v2.8.16, so no x64
             # emulation on windows-11-arm. It is harness tooling here —
             # the runtime under test is the native arm64 package either
             # way.

@@ -51,19 +51,18 @@ mount the embedded image exactly as before (graceful degradation, no
 republish needed). The variable wins wherever it is set, so an embedded
 build also mounts the named image.
 
-The image is written with the writer defaults
-(mkdwarfs compression level 7) by our own factory toolchain:
+The image is written by our own factory toolchain — the `tfs` CLI's
+`mkimage` with its default format (limnifs), resolved in exactly one way:
 
-1. `tfs mkimage --format dwarfs` (the tebako-rs tfs-cli binary) when one
-   resolves — `--tfs PATH`, then `TEBAKO_TFS`, then `tfs` on `PATH`. It is
-   pointed at the build's own SHA256-verified `mkdwarfs` via `--mkdwarfs`
-   so the embedded image and the standalone image share one writer.
-2. Otherwise the build's own `deps/bin/mkdwarfs` directly — the same
-   prebuilt binary the deploy pass already uses for the embedded image
-   (tfs-cli's `mkimage` is a wrapper over exactly this invocation until it
-   binds the writer API in-process).
+1. An explicit `--tfs PATH` or `TEBAKO_TFS` setting wins (fail-closed: a
+   request that does not resolve is a named error, never a fallback).
+2. Otherwise the builder fetches the CLI published with the pinned
+   tamatebako/tebako release (`contract.yml`'s `link_unit_release`),
+   verified against its published `.sha256` sidecar and cached per digest.
+   An empty pin means a source-built driver — a named error asking for
+   `--tfs`.
 
-Both are build-time factory tools; neither becomes a runtime dependency of
+Either way it is a build-time factory tool, never a runtime dependency of
 the shipped packages. `--no-image` skips the step (only meaningful with
 `--embed-image`, the v1 shape — an image-era executable without the `.tfs`
 cannot boot); `--embed-image` embeds the image into the executable instead
