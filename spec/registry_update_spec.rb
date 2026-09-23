@@ -9,8 +9,8 @@ require "yaml"
 
 require_relative "../tools/registry_update"
 
-# Recording stand-ins in the sign_release_spec idiom: the renderer accepts
-# any client object, and every interaction is observable through the fake.
+# Recording stand-ins: the renderer accepts any client object, and every
+# interaction is observable through the fake.
 RegistrySpecRelease = Struct.new(:url, :tag_name)
 RegistrySpecAsset = Struct.new(:name, :browser_download_url)
 RegistrySpecContents = Struct.new(:content)

@@ -17,3 +17,7 @@ properties:
     type: string
     pattern: '^$|^v\d+\.\d+\.\d+$'
     description: the tamatebako/tebako release whose published link unit the legs consume (empty = build the closure from source)
+  release_tooling:
+    type: string
+    pattern: '^v\d+\.\d+\.\d+$'
+    description: the tamatebako/tebako-release-tooling tag the Gemfile pins (the release machinery's single owner; consumed by the publish/sign legs and the coordinator's audit)

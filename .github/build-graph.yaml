@@ -66,8 +66,7 @@ validation_only:
 # class (a scripts/upload_release.rb-only PR once spent the tidy matrix on
 # every platform for zero build signal).
 publish_only:
-  - scripts/upload_release.rb              # the in-leg publish + the coordinator's audit (spec 13 §2a)
-  - scripts/sign_release.rb                # the in-leg signer (spec 09 §5) — consumed at release time
+  - scripts/release_adapter.rb           # this factory's tebako-release declaration (the gem owns the machinery; spec 13 §2a / spec 09 §5)
   - tools/registry_update.rb               # the registry renderer (spec 04 §2) — the coordinator's release job
   - tpkg-registry.yaml                     # the registry mirror — a bot-PR landing must never trigger build legs
   - .github/workflows/publish.yml          # the release coordinator (dispatch-only)

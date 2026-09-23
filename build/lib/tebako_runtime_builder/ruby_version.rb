@@ -53,9 +53,11 @@ module TebakoRuntimeBuilder
     # host — x64 on x86_64 (ucrt64), aarch64 on arm64 (clangarm64;
     # proven by the arm64 leg's own toolchain install line,
     # aarch64-ucrt-ruby400.dll). ONE owner: the release
-    # pipeline's install-as name (scripts/upload_release.rb), the finalize
-    # staging and the boot smoke's materialization all flow it; CI asserts
-    # parity by linking and loading (a drifted name binds nothing).
+    # pipeline's install-as name flows it (the tebako-release gem's
+    # uploader, via scripts/release_adapter.rb's dll_install_name), the
+    # finalize staging and the boot smoke's materialization all flow it;
+    # CI asserts parity by linking and loading (a drifted name binds
+    # nothing).
     MSYS_DLL_CPU_TAGS = {
       "windows-ucrt64" => "x64",
       "windows-ucrt-arm64" => "aarch64"

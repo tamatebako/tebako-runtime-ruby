@@ -85,7 +85,7 @@ module TebakoRuntimeBuilder
     # The era-2 contract card constants (spec 18 C2): what this factory
     # builds. Written into every package's .contract.yaml sidecar by
     # write_contract_sidecar (see below) and folded into the release
-    # manifest entry by scripts/upload_release.rb.
+    # manifest entry by the tebako-release gem's uploader.
     CONTRACT_CARD = { "contract_era" => 2, "image_layout" => 1 }.freeze
 
     private
@@ -277,8 +277,8 @@ module TebakoRuntimeBuilder
     # and the boot shim's SSL_CERT_FILE composition read. Written at build
     # so a factory tree boots store-faithfully (the boot smoke's
     # TEBAKO_RUNTIME_IMAGE then resolves the same image key the store
-    # would give it); never uploaded — upload_release rejects the suffix
-    # alongside .abi/.contract.yaml.
+    # would give it); never uploaded — the tebako-release gem's uploader
+    # rejects the suffix alongside .abi/.contract.yaml.
     def write_image_sidecar
       hex = Digest::SHA256.file(image_output).hexdigest
       File.write("#{image_output}.sha256", "#{hex}  #{File.basename(image_output)}\n")
@@ -303,8 +303,9 @@ module TebakoRuntimeBuilder
     end
 
     # The era-2 contract provenance (spec 18 C2) as `<output>.contract.yaml`,
-    # folded into the release manifest entry by scripts/upload_release.rb
-    # (fail-closed there: a package without it is pre-era and refused).
+    # folded into the release manifest entry by the tebako-release gem's
+    # uploader (fail-closed there: a package without it is pre-era and
+    # refused).
     # mount_root is the SAME flow as -DFS_MOUNT_POINT (the tarball's
     # tebako-mount-root manifest — ONE source, memoized at configure);
     # built_from names the source release and every consumed tarball with

@@ -161,10 +161,10 @@ Two representations, locked in agreement by CI
 matrix builds, and by `spec/contract_spec.rb`):
 
 - `contract.yml` (schema: `schema/contract.schema.yml`) — the release
-  pipeline's single source of truth. `scripts/upload_release.rb` emits it
-  as an additive `contract_version` key in every package's manifest entry
-  (the `<package>.manifest.json` shard; consumers ignoring the key keep
-  working, same rule as `image`).
+  pipeline's single source of truth. The tebako-release gem's uploader
+  emits it as an additive `contract_version` key in every package's
+  manifest entry (the `<package>.manifest.json` shard; consumers ignoring
+  the key keep working, same rule as `image`).
 - `TEBAKO_CONTRACT_VERSION` in `build/src/tebako-main.cpp` — the constant
   compiled into the runtime itself. The driver exports it as the
   `TEBAKO_CONTRACT_VERSION` environment variable before the entry dispatch,
@@ -249,10 +249,12 @@ the digests). It never touches a monolith or the notes.
   coordinator — one version everywhere / one platform all versions / one
   version on one platform, via workflow dispatch). `scripts/` holds the
   dependency-tree matrix computer (`compute_matrix.rb`, walking
-  `.github/build-graph.yaml`), the in-leg release assembly
-  (`upload_release.rb` — write-once per-leg publish + audit) and the
-  in-leg signer (`sign_release.rb`); `tools/registry_update.rb` renders
-  the `tpkg-registry.yaml` mirror from a release's shards.
+  `.github/build-graph.yaml`) and this factory's release declaration
+  (`release_adapter.rb` — the tebako-release gem's adapter seam: the
+  per-leg publish jobs' upload + sign and the coordinator's audit run the
+  gem's machinery, pinned at `contract.yml`'s `release_tooling`);
+  `tools/registry_update.rb` renders the `tpkg-registry.yaml` mirror from
+  a release's shards.
   **The architecture and the cache/determinism invariants are documented
   in `docs/build-chain.md` — read it before touching any workflow, the
   roll tooling, or a cache key.**

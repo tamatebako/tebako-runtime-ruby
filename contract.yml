@@ -9,9 +9,9 @@
 # as libtebako_driver.a; contract 1 was build/src/tebako-main.cpp). The
 # two are CI-locked in agreement by scripts/check_contract_version.rb
 # (TEBAKO_DRIVER_SRC points the check at the consumed driver's source).
-# The release pipeline reads this file (scripts/upload_release.rb emits
-# it into every manifest.json entry) and the driver exports it as the
-# TEBAKO_CONTRACT_VERSION env var.
+# The release pipeline reads this file (the tebako-release gem's uploader
+# emits it into every manifest.json entry) and the driver exports it as
+# the TEBAKO_CONTRACT_VERSION env var.
 #
 # Schema: schema/contract.schema.yml (validated by the same check).
 #
@@ -152,3 +152,11 @@ container_version: "0.16.2"
 # import sets: undefined section symbols + short-form members).
 # Contract unchanged (2).
 link_unit_release: "v2.8.16"
+
+# The release machinery pin: the tamatebako/tebako-release-tooling tag
+# the Gemfile resolves (the legs' publish/sign jobs + the coordinator's
+# audit consume the gem's tebako-release exe). The gem is the machinery's
+# single owner (ecosystem invariant 10) — this factory declares its
+# identity + policy in scripts/release_adapter.rb and carries no copy of
+# the uploader/signer. A machinery bump is THIS one edit.
+release_tooling: "v0.1.0"

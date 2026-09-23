@@ -36,16 +36,21 @@
 #     rebuilds 4.0.x), on every platform, and publishes.
 #
 # Every leg fans out to _build-platform.yml to BUILD, and — spec 13 §2a's
-# de-rendezvous — to PUBLISH and SIGN in-leg: the leg that
-# built a package uploads its write-once names (payload + .sha256 sidecars
-# + .manifest.json shard) and signs every served name, all inside the leg
-# that holds the fresh bytes. No shared mutable file exists anymore (the
+# de-rendezvous — to PUBLISH and SIGN from each leg's own publish job
+# (#190's split): the leg that built a package uploads its write-once
+# names (payload + .sha256 sidecars + .manifest.json shard) and signs
+# every served name, publishing the bytes the build job handed off as an
+# immutable in-run artifact. No shared mutable file exists anymore (the
 # monolithic manifest.json / SHA256SUMS.txt are gone — each shard IS its
-# release-index entry, and the monoliths derive consumer-side), so N legs publish
-# concurrently with zero rendezvous. What remains here is the ONE release
-# job per coordinator run: it AUDITS the whole matrix against the release
-# (read-only) and renders + publishes the tpkg-registry.yaml mirror by bot
-# PR (spec 04 §2) — the two duties that genuinely need the full matrix.
+# release-index entry, and the monoliths derive consumer-side), so N legs
+# publish concurrently with zero rendezvous. What remains here is the ONE
+# release job per coordinator run: it AUDITS the whole matrix against the
+# release (read-only) and renders + publishes the tpkg-registry.yaml
+# mirror by bot PR (spec 04 §2) — the two duties that genuinely need the
+# full matrix. And a force_rebuild republication passes through the
+# prepare-release job first (#189): the release OBJECT is recreated under
+# the kept tag, so every publish leg is a pure create on a free
+# namespace — the per-asset delete→re-upload wedge never gets triggered.
 name: publish
 
 on:
@@ -68,7 +73,7 @@ on:
         type: boolean
         default: true
       force_rebuild:
-        description: 'Re-upload even unchanged assets'
+        description: 'Republication: recreate the release OBJECT under the kept tag, then publish fresh (#189 — the one exception to per-name byte-immutability, and never a per-asset delete)'
         type: boolean
         default: false
       audit:
@@ -87,10 +92,41 @@ on:
     types: ['tebako release']
 
 jobs:
+  # #189: a force_rebuild republication never deletes individual assets —
+  # a deleted name 422-blocks re-uploads for hours server-side, and the
+  # wedge's scope is the release OBJECT (proven by probe: a fresh object
+  # under the same tag accepts the same names immediately). So a forced
+  # republication recreates the release object under the kept tag BEFORE
+  # any leg publishes; every publish leg on a fresh object is a pure
+  # create (the gem's race-safe create arbitrates the legs' concurrent
+  # re-creation). Non-forced runs skip this job entirely (payload assets
+  # stay byte-immutable per name).
+  prepare-release:
+    name: Recreate the release object (force_rebuild)
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' && !inputs.registry_only && !inputs.audit && inputs.publish && inputs.force_rebuild }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Delete the release object, keeping the tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="v$(cat VERSION)"
+          # Idempotent: a missing object is already the recreated state
+          # (a re-run after a mid-air death). --cleanup-tag=false (the
+          # default, spelled out) keeps the tag on its commit.
+          gh release delete "$tag" --yes --cleanup-tag=false 2>/dev/null || \
+            echo "no release object for $tag — already the recreated state"
+          echo "release object for $tag recreated (tag kept) — every leg's publish is a pure create"
+
   windows:
     # repository_dispatch always fans to every platform (a source tarball
     # change reaches every scenario of the changed versions).
-    if: ${{ !inputs.registry_only && (github.event_name == 'repository_dispatch' || inputs.platform == 'all' || inputs.platform == 'windows') }}
+    needs: prepare-release
+    # always() + !cancelled(): a SKIPPED prepare-release (the ordinary
+    # non-forced publish) must not skip the platform fan-out.
+    if: ${{ always() && !cancelled() && !inputs.registry_only && (github.event_name == 'repository_dispatch' || inputs.platform == 'all' || inputs.platform == 'windows') }}
     uses: ./.github/workflows/_build-platform.yml
     # Spec 34 §3/§8.2: the called workflow's build job declares
     # id-token:write (the windows-signing OIDC boundary) — a reusable
@@ -108,11 +144,11 @@ jobs:
       arch_filter: ${{ inputs.arch_filter || '' }}
       audit: ${{ inputs.audit || false }}
       publish: ${{ github.event_name == 'repository_dispatch' || inputs.publish }}
-      force_rebuild: ${{ inputs.force_rebuild || false }}
     secrets: inherit
 
   linux-gnu:
-    if: ${{ !inputs.registry_only && (github.event_name == 'repository_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux-gnu') }}
+    needs: prepare-release
+    if: ${{ always() && !cancelled() && !inputs.registry_only && (github.event_name == 'repository_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux-gnu') }}
     uses: ./.github/workflows/_build-platform.yml
     # Spec 34 §3/§8.2: the called workflow's build job declares
     # id-token:write (the windows-signing OIDC boundary) — a reusable
@@ -130,11 +166,11 @@ jobs:
       arch_filter: ${{ inputs.arch_filter || '' }}
       audit: ${{ inputs.audit || false }}
       publish: ${{ github.event_name == 'repository_dispatch' || inputs.publish }}
-      force_rebuild: ${{ inputs.force_rebuild || false }}
     secrets: inherit
 
   linux-musl:
-    if: ${{ !inputs.registry_only && (github.event_name == 'repository_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux-musl') }}
+    needs: prepare-release
+    if: ${{ always() && !cancelled() && !inputs.registry_only && (github.event_name == 'repository_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux-musl') }}
     uses: ./.github/workflows/_build-platform.yml
     # Spec 34 §3/§8.2: the called workflow's build job declares
     # id-token:write (the windows-signing OIDC boundary) — a reusable
@@ -152,11 +188,11 @@ jobs:
       arch_filter: ${{ inputs.arch_filter || '' }}
       audit: ${{ inputs.audit || false }}
       publish: ${{ github.event_name == 'repository_dispatch' || inputs.publish }}
-      force_rebuild: ${{ inputs.force_rebuild || false }}
     secrets: inherit
 
   macos:
-    if: ${{ !inputs.registry_only && (github.event_name == 'repository_dispatch' || inputs.platform == 'all' || inputs.platform == 'macos') }}
+    needs: prepare-release
+    if: ${{ always() && !cancelled() && !inputs.registry_only && (github.event_name == 'repository_dispatch' || inputs.platform == 'all' || inputs.platform == 'macos') }}
     uses: ./.github/workflows/_build-platform.yml
     # Spec 34 §3/§8.2: the called workflow's build job declares
     # id-token:write (the windows-signing OIDC boundary) — a reusable
@@ -174,7 +210,6 @@ jobs:
       arch_filter: ${{ inputs.arch_filter || '' }}
       audit: ${{ inputs.audit || false }}
       publish: ${{ github.event_name == 'repository_dispatch' || inputs.publish }}
-      force_rebuild: ${{ inputs.force_rebuild || false }}
     secrets: inherit
 
   # The ONE release job per coordinator run. Spec 13 §2a's de-rendezvous
@@ -219,11 +254,12 @@ jobs:
           ruby-version: '3.3'
           bundler-cache: true
 
-      # The audit, per platform that built: the legs already published
-      # their packages in-leg, so this job never downloads a byte — it
+      # The audit, per platform that built: the legs' publish jobs already
+      # landed their packages, so this job never downloads a byte — it
       # verifies each platform's expected names (payloads, .sha256
       # sidecars, shards, and — on signing-enabled lines — every .asc,
-      # spec 09 §5) against the release's own listing, read-only.
+      # spec 09 §5) against the release's own listing, read-only (the
+      # gem's uploader under AUDIT_ONLY).
       - name: Audit the release, per platform
         if: ${{ !inputs.registry_only }}
         env:
@@ -259,7 +295,7 @@ jobs:
             fi
             echo "=== auditing $name (tebako $ver)"
             TEBAKO_VERSION="$ver" EXPECTED_ENV_MATRIX="$envm" EXPECTED_RUBY_MATRIX="$rubym" \
-              ./scripts/upload_release.rb || audit_failed="$audit_failed $name"
+              bundle exec tebako-release upload || audit_failed="$audit_failed $name"
           }
           audit_platform "$WIN_RUN"  "$WIN_VER"  "$WIN_ENV"  "$WIN_RUBY"  windows
           audit_platform "$GNU_RUN"  "$GNU_VER"  "$GNU_ENV"  "$GNU_RUBY"  linux-gnu
