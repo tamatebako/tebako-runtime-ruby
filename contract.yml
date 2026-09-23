@@ -159,4 +159,4 @@ link_unit_release: "v2.8.16"
 # single owner (ecosystem invariant 10) — this factory declares its
 # identity + policy in scripts/release_adapter.rb and carries no copy of
 # the uploader/signer. A machinery bump is THIS one edit.
-release_tooling: "v0.1.0"
+release_tooling: "v0.1.1"

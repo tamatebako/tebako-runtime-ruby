@@ -20,13 +20,17 @@ RegistrySpecContents = Struct.new(:content)
 # document, a proc (so a spec can read back what the last run wrote), or
 # Octokit::NotFound (no registry on main yet).
 class FakeRegistryClient
+  attr_reader :queried_tags
+
   def initialize(release:, shards:, registry: nil)
     @release = release
     @shards = shards
     @registry = registry
+    @queried_tags = []
   end
 
-  def release_for_tag(_repo, _tag)
+  def release_for_tag(_repo, tag)
+    @queried_tags << tag
     @release
   end
 
@@ -280,6 +284,18 @@ RSpec.describe RegistryUpdate do
                                            "REGISTRY_PATH" => File.join(dir, "r.yaml") })
       expect { updater.run }
         .to raise_error(RegistryUpdate::RegistryUpdateError, /no release found for tag v9.9.9/)
+    end
+  end
+
+  it "queries the TEBAKO_RELEASE_TAG release when the override is set" do
+    Dir.mktmpdir do |dir|
+      shards = shards_of({ ruby: "3.4.10", platform: "linux-gnu-x86_64" })
+      client = FakeRegistryClient.new(release: release, shards: shards)
+      described_class.new(client: client,
+                          env: { "TEBAKO_VERSION" => version,
+                                 "TEBAKO_RELEASE_TAG" => "v#{version}-ruby9.9",
+                                 "REGISTRY_PATH" => File.join(dir, "r.yaml") }).run
+      expect(client.queried_tags).to eq(["v#{version}-ruby9.9"])
     end
   end
 

@@ -88,7 +88,12 @@ class RegistryUpdate # rubocop:disable Metrics/ClassLength
     @env = env
     @client = client || Octokit::Client.new(access_token: @env.fetch("GITHUB_TOKEN"), auto_paginate: true)
     @version = @env.fetch("TEBAKO_VERSION")
-    @tag = "v#{@version}"
+    # The release the shards are read from is normally "v#{version}", but a
+    # catalog publish sharded across several tags (a single release object
+    # caps at 1000 assets) pins each entry at the tag that actually hosts
+    # its artifacts: TEBAKO_RELEASE_TAG overrides the derived tag, exactly
+    # as it does in the tebako-release gem's uploader/signer.
+    @tag = @env.fetch("TEBAKO_RELEASE_TAG", "v#{@version}")
     @registry_path = @env["REGISTRY_PATH"] || File.expand_path("../#{REGISTRY_BASENAME}", __dir__)
   end
 

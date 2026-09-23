@@ -88,6 +88,10 @@ on:
         description: 'The published tebako version to render for (e.g. 0.16.27) — required with registry_only'
         type: string
         default: ''
+      release_tag:
+        description: 'Host the release under this tag instead of v<VERSION> — a release object caps at 1000 assets, so a catalog publish shards per ruby line (v0.16.28-ruby4.0, …). Artifact names stay version-branded; only the tag moves. Empty = v<VERSION>.'
+        type: string
+        default: ''
   repository_dispatch:
     types: ['tebako release']
 
@@ -110,9 +114,10 @@ jobs:
       - name: Delete the release object, keeping the tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
-          tag="v$(cat VERSION)"
+          tag="${RELEASE_TAG:-v$(cat VERSION)}"
           # Idempotent: a missing object is already the recreated state
           # (a re-run after a mid-air death). --cleanup-tag=false (the
           # default, spelled out) keeps the tag on its commit.
@@ -144,6 +149,7 @@ jobs:
       arch_filter: ${{ inputs.arch_filter || '' }}
       audit: ${{ inputs.audit || false }}
       publish: ${{ github.event_name == 'repository_dispatch' || inputs.publish }}
+      release_tag: ${{ inputs.release_tag || '' }}
     secrets: inherit
 
   linux-gnu:
@@ -166,6 +172,7 @@ jobs:
       arch_filter: ${{ inputs.arch_filter || '' }}
       audit: ${{ inputs.audit || false }}
       publish: ${{ github.event_name == 'repository_dispatch' || inputs.publish }}
+      release_tag: ${{ inputs.release_tag || '' }}
     secrets: inherit
 
   linux-musl:
@@ -188,6 +195,7 @@ jobs:
       arch_filter: ${{ inputs.arch_filter || '' }}
       audit: ${{ inputs.audit || false }}
       publish: ${{ github.event_name == 'repository_dispatch' || inputs.publish }}
+      release_tag: ${{ inputs.release_tag || '' }}
     secrets: inherit
 
   macos:
@@ -210,6 +218,7 @@ jobs:
       arch_filter: ${{ inputs.arch_filter || '' }}
       audit: ${{ inputs.audit || false }}
       publish: ${{ github.event_name == 'repository_dispatch' || inputs.publish }}
+      release_tag: ${{ inputs.release_tag || '' }}
     secrets: inherit
 
   # The ONE release job per coordinator run. Spec 13 §2a's de-rendezvous
@@ -265,6 +274,7 @@ jobs:
         env:
           AUDIT_ONLY: "true"
           TEBAKO_RELEASE_SIGNING_ENABLED: ${{ vars.TEBAKO_RELEASE_SIGNING_ENABLED }}
+          TEBAKO_RELEASE_TAG: ${{ inputs.release_tag }}
           WIN_RUN: ${{ needs.windows.outputs.run }}
           WIN_VER: ${{ needs.windows.outputs.tebako-version }}
           WIN_ENV: ${{ needs.windows.outputs.env-matrix }}
@@ -283,6 +293,8 @@ jobs:
           MAC_RUBY: ${{ needs.macos.outputs.ruby-matrix }}
         run: |
           set -uo pipefail
+          # An empty override is no override: the gem derives v<VERSION>.
+          [ -n "${TEBAKO_RELEASE_TAG:-}" ] || unset TEBAKO_RELEASE_TAG
           # Audit every platform that built green; THEN fail loudly naming
           # any selected platform that did not — a green platform's audit
           # always runs, and a coverage gap never goes unreported.
@@ -332,11 +344,14 @@ jobs:
         if: ${{ always() && !cancelled() && !inputs.audit }}
         env:
           TEBAKO_VERSION: ${{ inputs.registry_only && inputs.registry_version || (needs.windows.outputs.tebako-version || needs.linux-gnu.outputs.tebako-version || needs.linux-musl.outputs.tebako-version || needs.macos.outputs.tebako-version) }}
+          TEBAKO_RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           if [ -z "$TEBAKO_VERSION" ]; then
             echo "::error::registry_only needs registry_version (e.g. 0.16.27) — none given and no platform built one"
             exit 1
           fi
+          # An empty override is no override: the render derives v<VERSION>.
+          [ -n "${TEBAKO_RELEASE_TAG:-}" ] || unset TEBAKO_RELEASE_TAG
           ./tools/registry_update.rb
 
       # main is branch-protected: the registry lands by bot PR +
@@ -347,6 +362,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.TEBAKO_CI_PAT_TOKEN || secrets.GITHUB_TOKEN }}
           TEBAKO_VERSION: ${{ inputs.registry_only && inputs.registry_version || (needs.windows.outputs.tebako-version || needs.linux-gnu.outputs.tebako-version || needs.linux-musl.outputs.tebako-version || needs.macos.outputs.tebako-version) }}
+          TEBAKO_RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
           [ -f tpkg-registry.yaml ] || { echo "::error::no rendered registry to publish (the render step did not run)"; exit 1; }
@@ -359,7 +375,11 @@ jobs:
           git config user.name "tebako-ci"
           git config user.email "tebako@ribose.com"
           git fetch origin main
-          branch="publish/v${TEBAKO_VERSION}-registry"
+          # A sharded catalog publish (TEBAKO_RELEASE_TAG set) branches per
+          # shard tag: the line shards' renders must never force-push each
+          # other's bot branch.
+          ref="${TEBAKO_RELEASE_TAG:-v${TEBAKO_VERSION}}"
+          branch="publish/${ref}-registry"
           git checkout -b "$branch" origin/main
           cp "$RUNNER_TEMP/registry.yaml" tpkg-registry.yaml
           if git diff --quiet origin/main -- tpkg-registry.yaml; then
@@ -367,7 +387,7 @@ jobs:
             exit 0
           fi
           git add tpkg-registry.yaml
-          git commit -m "publish v${TEBAKO_VERSION}: registry entries"
+          git commit -m "publish ${ref}: registry entries"
           # force-with-lease on the bot branch: a re-publish re-creates it.
           # The checkout is shallow, so the lease has no expectation for a
           # branch a DIED run left behind — fetch it first or the push is
@@ -379,13 +399,13 @@ jobs:
           if ! gh pr view "$branch" >/dev/null 2>&1; then
             body="$RUNNER_TEMP/registry-pr-body.md"
             cat > "$body" <<EOF
-          Automated registry entries for v${TEBAKO_VERSION} — rendered from the
+          Automated registry entries for ${ref} — rendered from the
           release's per-package .manifest.json shards by tools/registry_update.rb
           (spec 13 §2a's audit+registry job; spec 04 §2's mirror). main is
           protected, so the registry lands by PR.
           EOF
             gh pr create --base main --head "$branch" \
-              --title "publish v${TEBAKO_VERSION}: registry entries" \
+              --title "publish ${ref}: registry entries" \
               --body-file "$body"
           fi
           gh pr merge --auto --squash "$branch" || gh pr merge --squash "$branch"
