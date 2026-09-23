@@ -89,6 +89,10 @@ on:
         description: 'Publish each leg''s runtime package to the release and sign its served names (spec 13 §2a / spec 09 §5)'
         type: boolean
         default: false
+      release_tag:
+        description: 'Host the release under this tag instead of v<VERSION> — a release object caps at 1000 assets, so a catalog publish shards per ruby line (v0.16.28-ruby4.0, …). Artifact names stay version-branded; only the tag moves. Empty = v<VERSION>.'
+        type: string
+        default: ''
     # The coordinator (publish.yml) reads these for its release job's
     # AUDIT (the legs publish their own packages from their own publish
     # jobs — spec 13 §2a's de-rendezvous — so the coordinator never
@@ -1832,6 +1836,7 @@ jobs:
           EXPECTED_RUBY_MATRIX: '[${{ toJSON(matrix.ruby) }}]'
           TEBAKO_RELEASE_SIGNING_ENABLED: ${{ vars.TEBAKO_RELEASE_SIGNING_ENABLED }}
           TEBAKO_RELEASE_SIGNING_KEYID: ${{ vars.TEBAKO_RELEASE_SIGNING_KEYID }}
+          TEBAKO_RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
           # The boot smoke / windows diagnostics materialize PE-named ruby
@@ -1840,6 +1845,8 @@ jobs:
           # the artifact upload's exclusion pattern above is this rm's
           # twin).
           rm -f runtime-packages/*-ucrt-ruby*.dll
+          # An empty override is no override: the gem derives v<VERSION>.
+          [ -n "${TEBAKO_RELEASE_TAG:-}" ] || unset TEBAKO_RELEASE_TAG
           bundle exec tebako-release upload
 
       - name: Sign the leg's release assets (spec 09 §5)
@@ -1851,7 +1858,12 @@ jobs:
           TEBAKO_RELEASE_SIGNING_ENABLED: ${{ vars.TEBAKO_RELEASE_SIGNING_ENABLED }}
           TEBAKO_RELEASE_SIGNING_KEY: ${{ secrets.TEBAKO_RELEASE_SIGNING_KEY }}
           SIGN_ONLY_STEMS: tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}
-        run: bundle exec tebako-release sign
+          TEBAKO_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          # An empty override is no override: the gem derives v<VERSION>.
+          [ -n "${TEBAKO_RELEASE_TAG:-}" ] || unset TEBAKO_RELEASE_TAG
+          bundle exec tebako-release sign
 
   # Spec 22 C3 — the windows dogfood: the spec22-gems gem-level acceptance
   # (tamatebako/ruby's ci/spec22-gems/run-msys.sh) against THIS run's fresh
