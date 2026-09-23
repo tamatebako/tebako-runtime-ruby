@@ -87,6 +87,12 @@ class ReleaseSigner # rubocop:disable Metrics/ClassLength
   # three bounded polls then a named failure.
   CONVERGENCE_DELAYS = [5, 15, 30].freeze
 
+  # served-bytes convergence: a young release object lists an asset before
+  # the byte store serves it (the 0.16.28 republish's sign-step class —
+  # the listing had converged, the download 404ed as "no assets");
+  # bounded re-asks, then the named failure stands.
+  SERVED_BYTES_DELAYS = [5, 10, 20, 40, 80].freeze
+
   def initialize(client: nil, executor: nil, env: ENV)
     @env = env
     @client = client || Octokit::Client.new(access_token: @env.fetch("GITHUB_TOKEN"), auto_paginate: true)
@@ -256,11 +262,11 @@ class ReleaseSigner # rubocop:disable Metrics/ClassLength
   end
 
   # The backfill byte source: download the served asset and refuse to sign
-  # anything but the listing's bytes.
+  # anything but the listing's bytes. A digest mismatch after a successful
+  # download is a hard provenance failure, never retried.
   def download_served_bytes(dir, name, digest)
     FileUtils.mkdir_p(dir)
-    @executor.run("gh", "release", "download", @tag, "--repo", RUNTIME_REPO,
-                  "--pattern", name, "--dir", dir.to_s, "--clobber")
+    download_when_served(dir, name)
     target = dir.join(name)
     actual = Digest::SHA256.file(target).hexdigest
     return target if actual == digest
@@ -268,6 +274,24 @@ class ReleaseSigner # rubocop:disable Metrics/ClassLength
     raise SigningGateError,
           "NAMED FAILURE: refusing to sign bytes the release does not serve — " \
           "#{name} downloaded with sha256 #{actual}, the listing says #{digest}"
+  end
+
+  # The bounded re-ask for the young-release-object lag: the name came FROM
+  # the release listing, so gh's "no assets to download" is the byte store
+  # trailing the listing, never absence — it retries; every other named
+  # failure (auth, usage, a genuinely gone release) raises at once.
+  def download_when_served(dir, name)
+    pauses = SERVED_BYTES_DELAYS.dup
+    begin
+      @executor.run("gh", "release", "download", @tag, "--repo", RUNTIME_REPO,
+                    "--pattern", name, "--dir", dir.to_s, "--clobber")
+    rescue SigningGateError => e
+      raise unless e.message.include?("no assets to download") && (pause = pauses.shift)
+
+      puts "#{name} is listed but not served yet (young release object) — re-asking in #{pause}s"
+      sleep pause
+      retry
+    end
   end
 
   # A tiny metadata upload, converged: replace whatever the name serves,
