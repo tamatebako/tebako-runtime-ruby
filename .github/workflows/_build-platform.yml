@@ -1739,28 +1739,37 @@ jobs:
       # then signs every served name in the same invocation (spec 09 §5's
       # no-fold rule). No shared file exists, so N legs publish
       # concurrently with zero rendezvous.
-      # The tooling interpreter must exist on EVERY runner a publish leg
-      # can land on: ruby/setup-ruby's windows-11 (arm64) catalog starts
-      # at 3.4.1, so 3.3 fails there with "Unknown version 3.3" (publish
-      # run 35669322382, all 8 arm64 legs). 3.4 is served on every image
-      # in the matrix, and the Gemfile already carries the base64 shim
-      # for 3.4+ hosts.
-      # ...but not on macos: the leg pins Xcode 16.1 (MD_APPLE_SDK_ROOT)
-      # for the runtime build, and the prebuilt 3.4 x86_64 headers were
-      # configured on a newer image — ruby/internal/stdckdint.h does an
-      # angled #include <stdckdint.h> that Xcode 16.1's clang does not
-      # ship, so racc's native ext dies and bundle install fails (era
-      # cut 35792419602: every macos/x86_64 leg, AFTER the runtime built
-      # — publish never ran). macos pins 3.3: its headers predate
-      # stdckdint, 3.3 is served on macos-14 and macos-15-intel alike,
-      # and the publish tooling needs nothing 3.4-specific. Linux stays
-      # on 3.4 with the windows legs (no header/toolchain mismatch
-      # there; uniformity of the served catalog is the constraint).
+      # The tooling interpreter is 4.0 on every runner a publish leg can
+      # land on: the catalog serves it everywhere (windows-11-arm via
+      # rubyinstaller2's arm builds, macos/linux via ruby-builder), and
+      # the Gemfile already carries the base64 shim for 3.4+ hosts.
+      # (3.3 cannot serve here: the windows-11-arm catalog starts at
+      # 3.4.1 — publish run 35669322382, all 8 arm64 legs.)
+      #
+      # macos needs one accommodation — NOT a ruby pin: the leg selects
+      # Xcode 16.1 (matrix.json) for the RUNTIME build, and ruby >= 3.4
+      # headers do an angled #include <stdckdint.h> that its clang does
+      # not ship, so the tooling bundle's native extensions (racc, json)
+      # died at bundle install (era cut 35792419602: every macos/x86_64
+      # leg, AFTER the runtime built — publish never ran). The fix is to
+      # stop compiling the tooling against the runtime's pinned SDK: the
+      # build is long finished by publish time, so the step below floats
+      # DEVELOPER_DIR to the runner's newest installed Xcode (>= 16.3
+      # ships the header). The 16.1 pin itself is untouched — it is a
+      # deliberate reproducibility pin for the shipped binaries, not for
+      # CI glue.
+      - name: Float the SDK for the publish tooling (macos)
+        if: ${{ inputs.publish && !inputs.audit && matrix.env.os == 'macos' }}
+        run: |
+          set -euo pipefail
+          latest=$(ls -d /Applications/Xcode_*.app | awk -F'Xcode_|[.]' '{print $2+0, $3+0, $0}' | sort -k1,1n -k2,2n | tail -1 | cut -d' ' -f3-)
+          echo "-- publish tooling SDK: $latest (build was pinned to $(xcode-select -p))"
+          echo "DEVELOPER_DIR=$latest/Contents/Developer" >> "$GITHUB_ENV"
       - name: Setup Ruby for the publish tooling
         if: ${{ inputs.publish && !inputs.audit }}
         uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
         with:
-          ruby-version: ${{ matrix.env.os == 'macos' && '3.3' || '3.4' }}
+          ruby-version: '4.0'
           bundler-cache: true
 
       - name: Publish the leg's runtime package (spec 13 §2a)
