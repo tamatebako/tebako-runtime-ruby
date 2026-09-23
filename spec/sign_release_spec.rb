@@ -63,19 +63,22 @@ end
 # requested patterns as canned bytes ("BYTES-<name>" — the specs' asset
 # digests are computed over exactly these bytes, so the digest-verified
 # signing path can pass honestly); `tebako-pkg sign` writes the .asc the
-# way the real tool does; `tebako-pkg verify` succeeds.
+# way the real tool does; `tebako-pkg verify` succeeds. `unserved:` maps a
+# pattern to the number of "no assets to download" failures it raises
+# before serving — the young-release-object lag, exactly as gh words it.
 class FakeSignExecutor
   attr_reader :calls
 
-  def initialize(tool_sha_ok: true)
+  def initialize(tool_sha_ok: true, unserved: {})
     @calls = []
     @tool_sha_ok = tool_sha_ok
+    @unserved = unserved
   end
 
   def run(*argv, chdir: ".")
     @calls << [argv, chdir]
     if argv[0] == "gh"
-      materialize_download(argv)
+      lag_or_materialize(argv)
     elsif argv[1] == "sign"
       File.write(File.join(chdir, "#{argv.last}.asc"), "ASC-#{argv.last}")
     end
@@ -94,6 +97,19 @@ class FakeSignExecutor
 
   def patterns_from(argv)
     argv.each_with_index.with_object([]) { |(arg, i), acc| acc << argv[i + 1] if arg == "--pattern" }
+  end
+
+  # A lagging pattern raises the real gh wording until its budget is spent,
+  # then serves — the signer's re-ask loop is what's under test.
+  def lag_or_materialize(argv)
+    patterns = patterns_from(argv)
+    lagging = patterns.find { |name| @unserved[name].to_i.positive? }
+    if lagging
+      @unserved[lagging] -= 1
+      raise ReleaseSigner::SigningGateError,
+            "NAMED FAILURE: `gh release download vX --pattern #{lagging} --clobber` exited 1: no assets to download"
+    end
+    materialize_download(argv)
   end
 
   def materialize_download(argv) # rubocop:disable Metrics/AbcSize
@@ -267,6 +283,28 @@ RSpec.describe ReleaseSigner do
     signer, = signer_for([lying])
     expect { signer.sign_release }
       .to raise_error(ReleaseSigner::SigningGateError, /refusing to sign bytes the release does not serve/)
+  end
+
+  it "re-asks a listed-but-unserved asset (young release object) until the bytes arrive" do
+    stub_const("ReleaseSigner::CONVERGENCE_DELAYS", [0, 0, 0])
+    stub_const("ReleaseSigner::SERVED_BYTES_DELAYS", [0, 0, 0])
+    new = Time.utc(2026, 9, 9)
+    executor = FakeSignExecutor.new(unserved: { "pkg-lagged" => 2 })
+    signer, = signer_for([asset(1, "pkg-lagged", new)], executor: executor)
+
+    expect(signer.sign_release).to eq(:signed)
+
+    expect(executor.sign_calls).to eq(["pkg-lagged"])
+    expect(executor.download_patterns.count("pkg-lagged")).to eq(3)
+  end
+
+  it "fails named when a listed asset never becomes servable within the budget" do
+    stub_const("ReleaseSigner::SERVED_BYTES_DELAYS", [0, 0])
+    new = Time.utc(2026, 9, 9)
+    executor = FakeSignExecutor.new(unserved: { "pkg-absent" => 99 })
+    signer, = signer_for([asset(1, "pkg-absent", new)], executor: executor)
+    expect { signer.sign_release }
+      .to raise_error(ReleaseSigner::SigningGateError, /no assets to download/)
   end
 
   it "fails named when the listing carries no digest for a target" do
