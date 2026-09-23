@@ -251,8 +251,9 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
     let(:artifact) { smoke.artifact }
 
     # contract.yml at the repo root is the release pipeline's source of
-    # truth for the contract_version every manifest entry emits
-    # (scripts/upload_release.rb); the exe's compiled-in export must agree.
+    # truth for the contract_version every manifest entry emits (the
+    # tebako-release gem's uploader); the exe's compiled-in export must
+    # agree.
     def contract_yml_version
       YAML.load_file(File.join(REPO_ROOT, "contract.yml")).fetch("contract_version")
     end
@@ -714,8 +715,8 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
       # Host-side validation of the manifest entry's contract fields
       # BEFORE the artifacts leave the leg -- the 0.16.2 corrupt-manifest
       # incident class. The publish pipeline re-validates fail-closed
-      # (scripts/upload_release.rb#contract_sidecar); catching it here
-      # fails the ONE leg instead of the whole matrix at publish time.
+      # (the tebako-release gem's uploader); catching it here fails the
+      # ONE leg instead of the whole matrix at publish time.
       let(:card_path) { "#{smoke.executable.sub(/\.exe\z/, "")}.contract.yaml" }
       let(:card) { File.file?(card_path) ? YAML.load_file(card_path) : nil }
 

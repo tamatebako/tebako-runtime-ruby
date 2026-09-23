@@ -173,46 +173,84 @@ RSpec.describe "build-platform reusable workflow" do
       .to include("needs.compute.outputs.run == 'true' && contains(needs.compute.outputs.ruby-matrix, '4.0.6')")
   end
 
-  # Spec 13 §2a's de-rendezvous (roadmap 85): the leg that built a package
-  # publishes it and signs its served names IN-LEG — write-once names the
-  # leg owns alone, so N legs publish concurrently with zero rendezvous.
-  # Locked structurally so the publish can never creep back out into a
-  # shared coordinator-side mutation.
-  it "publishes and signs in-leg, gated on inputs.publish && !inputs.audit" do
-    steps = workflow.fetch("jobs").fetch("build").fetch("steps")
+  # Spec 13 §2a's de-rendezvous (roadmap 85) as its OWN job (#190): the
+  # leg that built a package publishes it and signs its served names from
+  # the publish job — write-once names the leg owns alone, so N legs
+  # publish concurrently with zero rendezvous, and a publish-layer
+  # failure re-runs as a download + upload, never a rebuild. Locked
+  # structurally so the publish can never creep back into the build job
+  # or out into a shared coordinator-side mutation.
+  it "publishes and signs from the publish job, gated on run && inputs.publish && !inputs.audit" do
+    jobs = workflow.fetch("jobs")
+    build_steps = jobs.fetch("build").fetch("steps")
+    build_names = build_steps.map { |step| step["name"].to_s }
+
+    # The build job hands off an immutable in-run artifact: the
+    # .leg-complete marker is written after every gate and before the
+    # upload, and the upload carries hidden files (the marker is
+    # dot-hidden; upload-artifact excludes dotfiles by default).
+    marker = build_steps.find { |step| step["name"] == "Mark the leg complete" }
+    upload = build_steps.find { |step| step["name"] == "Upload runtime package" }
+    expect(marker).not_to be_nil
+    expect(upload.dig("with", "include-hidden-files")).to be(true)
+    expect(build_names.index("Mark the leg complete")).to be < build_names.index("Upload runtime package")
+    # The publish can never creep back into the build job.
+    expect(build_names).not_to include("Publish the leg's runtime package (spec 13 §2a)",
+                                       "Sign the leg's release assets (spec 09 §5)")
+
+    publish_job = jobs.fetch("publish")
+    expect(publish_job.fetch("needs")).to eq(%w[compute build])
+    expect(publish_job.fetch("if")).to eq(
+      "${{ always() && !cancelled() && needs.compute.outputs.run == 'true' && inputs.publish && !inputs.audit }}"
+    )
+    # The publish matrix mirrors the build matrix's axes exactly (a pair
+    # that never built never publishes).
+    expect(publish_job.dig("strategy", "matrix")).to eq(
+      jobs.fetch("build").dig("strategy", "matrix")
+    )
+
+    steps = publish_job.fetch("steps")
     names = steps.map { |step| step["name"].to_s }
+    download = steps.find { |step| step["name"] == "Download the leg's runtime packages" }
+    guard = steps.find { |step| step["name"] == "Guard the artifact's completeness" }
     publish = steps.find { |step| step["name"] == "Publish the leg's runtime package (spec 13 §2a)" }
     sign = steps.find { |step| step["name"] == "Sign the leg's release assets (spec 09 §5)" }
-    expect(publish).not_to be_nil
-    expect(sign).not_to be_nil
-    [publish, sign].each do |step|
-      expect(step["if"]).to eq("${{ inputs.publish && !inputs.audit }}")
-    end
-    # The leg scopes both tools to its own (ruby, platform) slice: the
-    # publish reads a one-row expected matrix, the signer a one-stem scope.
+    [download, guard, publish, sign].each { |step| expect(step).not_to be_nil }
+    # A red/absent artifact fails named, never publishes partial bytes.
+    expect(download.fetch("continue-on-error")).to be(true)
+    expect(guard.fetch("run")).to include("steps.download.outcome", ".leg-complete")
+    # The order is the contract: download → guard → publish → sign.
+    dl, gd, pu, sg = ["Download the leg's runtime packages", "Guard the artifact's completeness",
+                      "Publish the leg's runtime package (spec 13 §2a)",
+                      "Sign the leg's release assets (spec 09 §5)"].map { |n| names.index(n) }
+    expect(dl).to be < gd
+    expect(gd).to be < pu
+    expect(pu).to be < sg
+    # The machinery is the tebako-release gem; the leg scopes both tools
+    # to its own (ruby, platform) slice: the publish reads a one-row
+    # expected matrix, the signer a one-stem scope. No FORCE_REBUILD —
+    # #189's republication is the coordinator's prepare-release job.
+    expect(publish.fetch("run")).to include("bundle exec tebako-release upload")
     expect(publish.dig("env", "EXPECTED_ENV_MATRIX")).to eq("[${{ toJSON(matrix.env) }}]")
     expect(publish.dig("env", "EXPECTED_RUBY_MATRIX")).to eq("[${{ toJSON(matrix.ruby) }}]")
     expect(publish.dig("env", "TEBAKO_VERSION")).to eq("${{ needs.compute.outputs.tebako-version }}")
-    expect(publish.dig("env", "FORCE_REBUILD")).to eq("${{ inputs.force_rebuild && 'true' || 'false' }}")
     expect(publish.dig("env", "TEBAKO_RELEASE_SIGNING_ENABLED")).to eq("${{ vars.TEBAKO_RELEASE_SIGNING_ENABLED }}")
     expect(publish.dig("env", "TEBAKO_RELEASE_SIGNING_KEYID")).to eq("${{ vars.TEBAKO_RELEASE_SIGNING_KEYID }}")
+    expect(publish.fetch("env")).not_to have_key("FORCE_REBUILD")
+    expect(sign.fetch("run")).to include("bundle exec tebako-release sign")
     expect(sign.dig("env", "SIGN_ONLY_STEMS")).to eq(
       "tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
     )
     expect(sign.dig("env", "TEBAKO_RELEASE_SIGNING_KEY")).to eq("${{ secrets.TEBAKO_RELEASE_SIGNING_KEY }}")
-    # Both run after the leg's artifact upload (the publish consumes the
-    # same workspace bytes the upload ships).
-    upload_index = names.index("Upload runtime package")
-    expect(names.index(publish["name"])).to be > upload_index
-    expect(names.index(sign["name"])).to be > upload_index
+    # The verify gate depends on the publish legs on publish runs.
+    expect(jobs.fetch("verify").fetch("needs")).to include("publish")
   end
 
-  it "accepts publish and force_rebuild as workflow_call inputs" do
+  it "accepts publish as a workflow_call input (force_rebuild is the coordinator's, #189)" do
     inputs = workflow.dig(true, "workflow_call", "inputs") # YAML 1.1: the `on:` key parses as boolean true
     expect(inputs.dig("publish", "type")).to eq("boolean")
     expect(inputs.dig("publish", "default")).to be(false)
-    expect(inputs.dig("force_rebuild", "type")).to eq("boolean")
-    expect(inputs.dig("force_rebuild", "default")).to be(false)
+    expect(inputs).not_to have_key("force_rebuild")
   end
 
   it "exposes the compute matrices and version as workflow_call outputs for the coordinator" do
@@ -276,7 +314,7 @@ RSpec.describe "publish coordinator workflow" do
     expect(audit).not_to be_nil
     expect(audit.dig("env", "AUDIT_ONLY")).to eq("true")
     expect(audit.dig("env", "TEBAKO_RELEASE_SIGNING_ENABLED")).to eq("${{ vars.TEBAKO_RELEASE_SIGNING_ENABLED }}")
-    expect(audit.fetch("run")).to include("./scripts/upload_release.rb")
+    expect(audit.fetch("run")).to include("bundle exec tebako-release upload")
     expect(audit.fetch("run")).not_to include("FINALIZE_ONLY")
   end
 
@@ -298,14 +336,31 @@ RSpec.describe "publish coordinator workflow" do
       .to be < release_step_names.index("Render the registry entries")
   end
 
-  it "threads publish and force_rebuild from the coordinator into every platform caller" do
+  it "threads publish (never force_rebuild) from the coordinator into every platform caller" do
     %w[windows linux-gnu linux-musl macos].each do |platform|
-      with = workflow.fetch("jobs").fetch(platform).fetch("with")
+      job = workflow.fetch("jobs").fetch(platform)
+      with = job.fetch("with")
       expect(with["publish"])
         .to(eq("${{ github.event_name == 'repository_dispatch' || inputs.publish }}"),
             "#{platform} must thread publish")
-      expect(with["force_rebuild"])
-        .to(eq("${{ inputs.force_rebuild || false }}"), "#{platform} must thread force_rebuild")
+      # #189: force_rebuild is consumed by the coordinator's own
+      # prepare-release job (the release-object recreate) — it never
+      # reaches the platform workflows.
+      expect(with).not_to have_key("force_rebuild"),
+                          "#{platform} must not thread force_rebuild (#189: it is the coordinator's)"
+      # #189: every platform fan-out waits on prepare-release, and a
+      # SKIPPED prepare-release (the ordinary non-forced publish) must
+      # not skip the platform.
+      expect(job.fetch("needs")).to include("prepare-release")
+      expect(job.fetch("if").to_s).to start_with("${{ always() && !cancelled() && ")
     end
+  end
+
+  it "recreates the release object only on a forced republication (#189)" do
+    prepare = workflow.fetch("jobs").fetch("prepare-release")
+    expect(prepare.fetch("if")).to include("inputs.force_rebuild", "inputs.publish",
+                                           "!inputs.registry_only", "!inputs.audit")
+    run = prepare.fetch("steps").map { |step| step["run"].to_s }.join("\n")
+    expect(run).to include("gh release delete", "--cleanup-tag=false")
   end
 end

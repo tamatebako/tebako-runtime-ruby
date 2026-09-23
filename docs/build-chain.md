@@ -40,10 +40,10 @@ call it; it is never dispatched directly. Stages:
   build workflow, the matrix planner, the matrix vocabulary).
 - `platforms:<p>:` inputs reach only that platform.
 - `publish_only:` paths (release tooling consumed at release time —
-  `scripts/upload_release.rb`, `scripts/sign_release.rb`,
-  `tools/registry_update.rb`, `tpkg-registry.yaml`, the `publish.yml`
-  coordinator, the pin-bump bot, the bare-launch probe) produce no legs:
-  a change there cannot affect build outputs.
+  `scripts/release_adapter.rb`, `tools/registry_update.rb`,
+  `tpkg-registry.yaml`, the `publish.yml` coordinator, the pin-bump bot,
+  the bare-launch probe) produce no legs: a change there cannot affect
+  build outputs.
 - `ignore:` paths (docs, etc.) produce no legs.
 - `validation_only:` paths validate on the tidy set, never build-shaped.
 - A source-pin move (`DEFAULT_RELEASE` in

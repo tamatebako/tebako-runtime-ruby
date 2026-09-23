@@ -34,8 +34,8 @@ require "yaml"
 # Contract version agreement check. The bootstrap <-> runtime
 # contract version lives in TWO representations on purpose:
 #   - contract.yml at the repo root -- the release pipeline's source of
-#     truth (scripts/upload_release.rb emits it into every manifest.json
-#     entry, schema/contract.schema.yml governs the file)
+#     truth (the tebako-release gem's uploader emits it into every
+#     manifest.json entry, schema/contract.schema.yml governs the file)
 #   - TEBAKO_CONTRACT_VERSION in build/src/tebako-main.cpp -- the constant
 #     compiled into the runtime and exported as the env var of the same name
 # The two must never drift: a contract bump edits both in the same commit,

@@ -44,17 +44,21 @@
 # Stage 3 (build): the matrix legs, exactly the retired monolith's steps,
 #   consuming the staged unit via TEBAKO_RUST_LIBDIR instead of rebuilding
 #   the native closure per ruby version.
-# Stage 4 (publish + sign): the leg that built a package publishes it
-#   (scripts/upload_release.rb) and signs its served names
-#   (scripts/sign_release.rb) in the same invocation — spec 13 §2a's
-#   de-rendezvous: write-once names this leg owns alone
-#   (payload + .sha256 sidecars + .manifest.json shard + every .asc),
-#   so N legs publish concurrently with zero rendezvous and no shared
-#   mutable file exists (the monolithic manifest.json / SHA256SUMS.txt
-#   are gone — each shard IS its release-index entry, the resolver's
-#   primary form; the monoliths are derivable consumer-side).
-#   The coordinator (publish.yml) keeps ONE release job: the audit of
-#   the whole matrix + the registry render/PR.
+# Stage 4 (publish + sign): the publish job — one leg per
+#   (env × ruby) of the build matrix's axes, re-running THIS leg's
+#   artifact handoff. The leg that built a package publishes it (the
+#   tebako-release gem's uploader) and signs its served names (the gem's
+#   signer) — spec 13 §2a's de-rendezvous: write-once names this leg owns
+#   alone (payload + .sha256 sidecars + .manifest.json shard + every
+#   .asc), so N legs publish concurrently with zero rendezvous and no
+#   shared mutable file exists (the monolithic manifest.json /
+#   SHA256SUMS.txt are gone — each shard IS its release-index entry, the
+#   resolver's primary form; the monoliths are derivable consumer-side).
+#   The publish job is a SEPARATE job from the build (#190): GitHub's
+#   re-run granularity is the job, so a publish-layer failure re-runs as
+#   a minutes-long download + upload, never a rebuild. The coordinator
+#   (publish.yml) keeps ONE release job: the audit of the whole matrix +
+#   the registry render/PR.
 
 name: build-platform (reusable)
 
@@ -85,13 +89,10 @@ on:
         description: 'Publish each leg''s runtime package to the release and sign its served names (spec 13 §2a / spec 09 §5)'
         type: boolean
         default: false
-      force_rebuild:
-        description: 'Re-upload even unchanged assets'
-        type: boolean
-        default: false
     # The coordinator (publish.yml) reads these for its release job's
-    # AUDIT (the legs publish their own packages in-leg — spec 13 §2a's
-    # de-rendezvous — so the coordinator never touches a package byte).
+    # AUDIT (the legs publish their own packages from their own publish
+    # jobs — spec 13 §2a's de-rendezvous — so the coordinator never
+    # touches a package byte).
     outputs:
       run:
         value: ${{ jobs.compute.outputs.run }}
@@ -1367,8 +1368,8 @@ jobs:
       # the contract-named paths before signtool-verifying them in place
       # (signtool verifies content, not filename). Sign-then-hash (spec 34
       # §1.3) needs NO re-hash step in this repo: the release's .sha256
-      # sidecars / SHA256SUMS.txt are computed at publish time by
-      # scripts/upload_release.rb from the uploaded bytes, so signing
+      # sidecars / SHA256SUMS.txt are computed at publish time by the
+      # tebako-release gem's uploader from the uploaded bytes, so signing
       # before upload anchors the signed bytes by construction. Gate off:
       # every step below skips and the leg ships unsigned, byte-identically
       # to today (spec 00 invariant 7 — §7.4 gate-off parity).
@@ -1663,7 +1664,9 @@ jobs:
             -e TEBAKO_SMOKE_EXPECT_OPENSSL \
             alpine:3.21 sh -c '
               set -e
-              apk add --no-cache ruby ruby-dev build-base ruby-bundler >/dev/null
+              # git: the Gemfile pins tebako-release-tooling from its git
+              # tag (contract.yml release_tooling) — bundler shell-outs.
+              apk add --no-cache ruby ruby-dev build-base ruby-bundler git >/dev/null
               bundle install --jobs 4 --retry 3
               bundle exec rspec --tag boot_smoke --format documentation'
 
@@ -1686,6 +1689,17 @@ jobs:
           bundle install --jobs 4 --retry 3
           bundle exec rspec --tag boot_smoke --format documentation
 
+      # The leg-complete marker (#190): written only when every gate
+      # above passed — a failed step stops the job before this point
+      # (default step gating), so a red leg ships NO artifact at all
+      # and its publish leg fails named at the download guard. The
+      # marker is the belt to that suspenders: an artifact without it
+      # (a runner lost mid-upload, a future always() diagnostic upload)
+      # is never publishable.
+      - name: Mark the leg complete
+        shell: bash
+        run: touch runtime-packages/.leg-complete
+
       - name: Upload runtime package
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -1695,6 +1709,10 @@ jobs:
           # leg -- the release carries the DLL under the unique package
           # name (<runtime>.dll), so two same-ABI legs never collide in
           # the merged publish workspace (issue 40).
+          # include-hidden-files: the .leg-complete marker above is
+          # dot-hidden (upload-artifact excludes dotfiles by default
+          # since v4.4) and IS the publish job's completeness gate.
+          include-hidden-files: true
           path: |
             runtime-packages
             !runtime-packages/*-ucrt-ruby*.dll
@@ -1733,55 +1751,85 @@ jobs:
           path: devkit/
           retention-days: 1
 
-      # Spec 13 §2a (the de-rendezvous): the leg that built a
-      # package publishes it — payload assets + .sha256 sidecars + the
-      # .manifest.json shard, write-once names this leg owns alone — and
-      # then signs every served name in the same invocation (spec 09 §5's
-      # no-fold rule). No shared file exists, so N legs publish
-      # concurrently with zero rendezvous.
-      # The tooling interpreter is 4.0 on every runner a publish leg can
-      # land on: the catalog serves it everywhere (windows-11-arm via
-      # rubyinstaller2's arm builds, macos/linux via ruby-builder), and
-      # the Gemfile already carries the base64 shim for 3.4+ hosts.
-      # (3.3 cannot serve here: the windows-11-arm catalog starts at
-      # 3.4.1 — publish run 35669322382, all 8 arm64 legs.)
-      #
-      # macos needs one accommodation — NOT a ruby pin: the leg selects
-      # Xcode 16.1 (matrix.json) for the RUNTIME build, and ruby >= 3.4
-      # headers do an angled #include <stdckdint.h> that its clang does
-      # not ship, so the tooling bundle's native extensions (racc, json)
-      # died at bundle install (era cut 35792419602: every macos/x86_64
-      # leg, AFTER the runtime built — publish never ran). The fix is to
-      # stop compiling the tooling against the runtime's pinned SDK: the
-      # build is long finished by publish time, so the step below floats
-      # DEVELOPER_DIR to the runner's newest installed Xcode (>= 16.3
-      # ships the header). The 16.1 pin itself is untouched — it is a
-      # deliberate reproducibility pin for the shipped binaries, not for
-      # CI glue.
-      - name: Float the SDK for the publish tooling (macos)
-        if: ${{ inputs.publish && !inputs.audit && matrix.env.os == 'macos' }}
+  # Spec 13 §2a (the de-rendezvous) as its OWN job (#190): the leg that
+  # built a package publishes it — payload assets + .sha256 sidecars +
+  # the .manifest.json shard, write-once names this leg owns alone — and
+  # then signs every served name (spec 09 §5's no-fold rule). No shared
+  # file exists, so N legs publish concurrently with zero rendezvous.
+  # The split is the recovery story: GitHub's re-run granularity is the
+  # job, so a publish-layer failure re-runs as a minutes-long download +
+  # upload of the immutable in-run artifact — never a rebuild (the
+  # 2026-09-23 wedge cost a full-catalog rebuild before this job
+  # existed). The machinery is the tebako-release gem (the Gemfile pins
+  # contract.yml's release_tooling tag); this factory's identity + policy
+  # live in scripts/release_adapter.rb.
+  #
+  # Runner-native on ubuntu-latest for every leg: the uploader is pure
+  # API work, and the signer auto-detects THIS host's tebako-pkg
+  # (linux-gnu-x86_64) — an OpenPGP detached signature over served bytes
+  # is host-independent. (This also retires the macos SDK-float dance
+  # the in-leg publish needed: no tooling compiles here at all beyond
+  # the bundle.)
+  publish:
+    name: publish ${{ matrix.ruby.version }} / ${{ matrix.env.os }}-${{ matrix.env.arch }}
+    needs: [compute, build]
+    # always(): one failed build leg must not skip the GREEN legs'
+    # publishes — the de-rendezvous holds across jobs. A leg whose build
+    # failed ships no artifact; its publish leg fails named at the
+    # guards below.
+    if: ${{ always() && !cancelled() && needs.compute.outputs.run == 'true' && inputs.publish && !inputs.audit }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        env: ${{fromJson(needs.compute.outputs.env-matrix)}}
+        ruby: ${{fromJson(needs.compute.outputs.ruby-matrix)}}
+        # The same (windows/arm64 × incapable-ruby) exclusions as the
+        # build matrix — a pair that never built never publishes.
+        exclude: ${{fromJson(needs.compute.outputs.exclude-matrix)}}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          submodules: true
+
+      - name: Download the leg's runtime packages
+        id: download
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: runtime-packages-${{ matrix.env.os }}-${{ matrix.env.arch }}-${{ matrix.ruby.version }}
+          path: runtime-packages
+
+      - name: Guard the artifact's completeness
+        shell: bash
         run: |
           set -euo pipefail
-          latest=$(ls -d /Applications/Xcode_*.app | awk -F'Xcode_|[.]' '{print $2+0, $3+0, $0}' | sort -k1,1n -k2,2n | tail -1 | cut -d' ' -f3-)
-          echo "-- publish tooling SDK: $latest (build was pinned to $(xcode-select -p))"
-          echo "DEVELOPER_DIR=$latest/Contents/Developer" >> "$GITHUB_ENV"
-      - name: Setup Ruby for the publish tooling
-        if: ${{ inputs.publish && !inputs.audit }}
+          if [ "${{ steps.download.outcome }}" != "success" ]; then
+            echo "::error::no runtime-packages artifact for this leg — its build leg did not complete"
+            echo "(a failed build publishes nothing; fix the build leg, then re-run failed jobs)"
+            exit 1
+          fi
+          if [ ! -f runtime-packages/.leg-complete ]; then
+            echo "::error::the leg's artifact carries no .leg-complete marker — the build leg died before its gates passed; these partial bytes are not publishable"
+            exit 1
+          fi
+
+      - name: Setup Ruby (the release tooling)
         uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
         with:
           ruby-version: '4.0'
           bundler-cache: true
 
       - name: Publish the leg's runtime package (spec 13 §2a)
-        if: ${{ inputs.publish && !inputs.audit }}
         shell: bash
-        continue-on-error: false
         env:
           GITHUB_TOKEN: ${{ secrets.TEBAKO_CI_PAT_TOKEN || secrets.GITHUB_TOKEN }}
           TEBAKO_VERSION: ${{ needs.compute.outputs.tebako-version }}
           EXPECTED_ENV_MATRIX: '[${{ toJSON(matrix.env) }}]'
           EXPECTED_RUBY_MATRIX: '[${{ toJSON(matrix.ruby) }}]'
-          FORCE_REBUILD: ${{ inputs.force_rebuild && 'true' || 'false' }}
           TEBAKO_RELEASE_SIGNING_ENABLED: ${{ vars.TEBAKO_RELEASE_SIGNING_ENABLED }}
           TEBAKO_RELEASE_SIGNING_KEYID: ${{ vars.TEBAKO_RELEASE_SIGNING_KEYID }}
         run: |
@@ -1792,21 +1840,18 @@ jobs:
           # the artifact upload's exclusion pattern above is this rm's
           # twin).
           rm -f runtime-packages/*-ucrt-ruby*.dll
-          ./scripts/upload_release.rb
+          bundle exec tebako-release upload
 
       - name: Sign the leg's release assets (spec 09 §5)
-        if: ${{ inputs.publish && !inputs.audit }}
         shell: bash
-        continue-on-error: false
         env:
           GITHUB_TOKEN: ${{ secrets.TEBAKO_CI_PAT_TOKEN || secrets.GITHUB_TOKEN }}
           GH_TOKEN: ${{ secrets.TEBAKO_CI_PAT_TOKEN || secrets.GITHUB_TOKEN }}
           TEBAKO_VERSION: ${{ needs.compute.outputs.tebako-version }}
-          TEBAKO_PKG_HOST_ID: ${{ matrix.env.sign_tool_host_id }}
           TEBAKO_RELEASE_SIGNING_ENABLED: ${{ vars.TEBAKO_RELEASE_SIGNING_ENABLED }}
           TEBAKO_RELEASE_SIGNING_KEY: ${{ secrets.TEBAKO_RELEASE_SIGNING_KEY }}
           SIGN_ONLY_STEMS: tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}
-        run: ./scripts/sign_release.rb
+        run: bundle exec tebako-release sign
 
   # Spec 22 C3 — the windows dogfood: the spec22-gems gem-level acceptance
   # (tamatebako/ruby's ci/spec22-gems/run-msys.sh) against THIS run's fresh
@@ -1898,7 +1943,8 @@ jobs:
           set -euo pipefail
           mkdir -p tools
           # release-asset GETs are transient-prone under publish load —
-          # bounded retry, same contract as scripts/sign_release.rb.
+          # bounded retry, same contract as the tebako-release gem's
+          # signer.
           for attempt in 1 2 3 4; do
             # Pin floor v2.8.16: every leg's env image is limnifs (the
             # builder packs it with the pin-verified TfsTool CLI — the
@@ -1962,7 +2008,7 @@ jobs:
   # runs (publish.yml's audit mode) build nothing and skip this job.
   verify:
     name: all legs green
-    needs: [roll-source, compute, preflight-containers, link-unit, build, dogfood]
+    needs: [roll-source, compute, preflight-containers, link-unit, build, publish, dogfood]
     if: ${{ always() && !cancelled() && !inputs.audit }}
     runs-on: ubuntu-24.04
     steps:
@@ -1974,6 +2020,7 @@ jobs:
           echo "preflight-containers: ${{ needs.preflight-containers.result }}"
           echo "link-unit:            ${{ needs.link-unit.result }}"
           echo "build:                ${{ needs.build.result }}"
+          echo "publish:              ${{ needs.publish.result }} (requested=${{ inputs.publish }})"
           echo "dogfood:              ${{ needs.dogfood.result }}"
           # run==true: a run that computed no legs (an arch slice, an
           # unaffected diff) built nothing for the dogfood to consume —
@@ -2001,6 +2048,13 @@ jobs:
               echo "::error::not every ${{ inputs.platform }} leg succeeded: ${{ needs.build.result }}"
               exit 1
             fi
+          fi
+          # A publish-requested run gates on the publish legs too (the job
+          # is skipped outright when publish was not requested — that is
+          # the success() semantics for a non-publish run).
+          if [ "${{ inputs.publish }}" = "true" ] && [ "${{ needs.compute.outputs.run }}" = "true" ] && [ "${{ needs.publish.result }}" != "success" ]; then
+            echo "::error::not every ${{ inputs.platform }} publish leg succeeded: ${{ needs.publish.result }}"
+            exit 1
           fi
           if [ "$dogfood_required" = "true" ] && [ "${{ needs.dogfood.result }}" != "success" ]; then
             echo "::error::the windows dogfood leg failed: ${{ needs.dogfood.result }}"

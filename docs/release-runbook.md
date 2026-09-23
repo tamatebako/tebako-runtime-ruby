@@ -11,12 +11,13 @@ How a runtime release ships under the multi-staged hierarchy. Written after the
 - `build-<platform>.yml` × 4 — the thin triggers (push/PR/dispatch).
 - `_build-platform.yml` — the one per-platform unit: compute → build → publish.
 - `publish.yml` — the coordinator (era baselines, audits, slice dispatches).
-- `scripts/upload_release.rb` — the in-leg publish + the coordinator's
-  audit: write-once per-leg asset upload, content skip, convergence loop,
-  completeness gate. Spec-locked in `spec/release_manager_spec.rb`.
-- `scripts/sign_release.rb` — the in-leg signer (spec 09 §5): every served
-  name carries its own `.asc`, digest-verified against the release listing.
-  Spec-locked in `spec/sign_release_spec.rb`.
+- `scripts/release_adapter.rb` — this factory's declaration for the
+  tebako-release gem (tamatebako/tebako-release-tooling, pinned at
+  `contract.yml`'s `release_tooling`): the per-leg publish jobs' upload +
+  sign and the coordinator's audit run the gem's `tebako-release` exe —
+  write-once per-leg asset upload, content skip, convergence loop,
+  completeness gate, the spec 09 §5 signer. The machinery is spec-locked
+  in the gem's own suite; this repo declares identity + policy only.
 - `tools/registry_update.rb` — the registry renderer (spec 04 §2): the
   coordinator's release job renders `tpkg-registry.yaml` from the release's
   shards and lands it on main by bot PR. Spec-locked in
@@ -169,9 +170,9 @@ release'` route exists for back-compat only.
 - Log-reading trap: the runner stamps log lines at FLUSH time, and Ruby
   block-buffers stdout to a pipe — lines written minutes apart (sleeps
   included) appeared 2 ms apart in this incident's log, reading as a busy
-  spin that was not one. `upload_release.rb` now sets `$stdout.sync = true`;
-  trust the message content, and only trust timestamps when the publisher
-  flushes per line.
+  spin that was not one. The release uploader (now the tebako-release
+  gem) sets `$stdout.sync = true`; trust the message content, and only
+  trust timestamps when the publisher flushes per line.
 
 ## Incident field notes (2026-08-23, the 0.16.6 re-publish)
 
