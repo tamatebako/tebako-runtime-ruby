@@ -675,6 +675,9 @@ payloads:
       aarch64-macos:
         artifact: tebako-runtime-0.16.28-4.0.4-macos-arm64
         sha256: d92bae4a6ab61b3e499d4e6f53ed2a544831d2aa23037d416428eb62f9568057
+      aarch64-windows-ucrt:
+        artifact: tebako-runtime-0.16.28-4.0.4-windows-ucrt-arm64
+        sha256: de1802502692e65d737f3e0ad3300d7757f1b6ba1ccb58e6b45d736dc267e1e2
       x86_64-linux-gnu:
         artifact: tebako-runtime-0.16.28-4.0.4-linux-gnu-x86_64
         sha256: 6a1350aeb6a38f7f695e38e56e5e5893ea73ecf29ce78da5ac6cce4294200dcc
