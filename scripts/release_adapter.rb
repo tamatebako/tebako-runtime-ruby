@@ -69,6 +69,15 @@ class RubyReleaseAdapter < TebakoRelease::Adapter
   def dll_install_name(version, host_id)
     TebakoRuntimeBuilder::RubyVersion.new(version).msys_dll_name(host_id)
   end
+
+  # Spec 36: this factory publishes the bundle era — one <stem>.tar.gz
+  # per leg (exe + env image + DLL + in-bundle SHA256SUMS) instead of
+  # the per-file enumeration. Opt-in is deliberate and factory-scoped:
+  # the bundle-era resolver ships downstream first (spec 36 §4's compat
+  # window), and pre-bundle releases stay installable forever.
+  def bundle_publish?
+    true
+  end
 end
 
 TebakoRelease.configure(

@@ -54,12 +54,14 @@ RSpec.describe RegistryUpdate do
   let(:version) { "9.9.9" }
   let(:release) { RegistrySpecRelease.new("https://api.test/releases/1", "v#{version}") }
 
-  def shard(ruby:, platform:, filename: nil, sha256: nil, tebako_version: version)
+  def shard(ruby:, platform:, filename: nil, sha256: nil, tebako_version: version, bundle: nil) # rubocop:disable Metrics/ParameterLists
     suffix = platform.start_with?("windows") ? ".exe" : ""
     filename ||= "tebako-runtime-#{tebako_version}-#{ruby}-#{platform}#{suffix}"
     sha256 ||= Digest::SHA256.hexdigest("BYTES-#{filename}")
-    body = JSON.generate("tebako_version" => tebako_version, "ruby_version" => ruby,
-                         "platform" => platform, "filename" => filename, "sha256" => sha256)
+    card = { "tebako_version" => tebako_version, "ruby_version" => ruby,
+             "platform" => platform, "filename" => filename, "sha256" => sha256 }
+    card["bundle"] = bundle if bundle
+    body = JSON.generate(card)
     asset = RegistrySpecAsset.new("#{filename}.manifest.json", "https://download.test/#{filename}.manifest.json")
     @bodies[asset] = body
     asset
@@ -108,6 +110,23 @@ RSpec.describe RegistryUpdate do
       .to eq("tebako-runtime-9.9.9-3.4.10-windows-ucrt64.exe")
     expect(v344["release"]).to eq("ref" => "tfs:github:tamatebako/tebako-runtime-ruby:v9.9.9")
     expect(payload["default"]).to eq("3.10.1-9.9.9")
+  end
+
+  # Spec 36 §5: a bundle-era shard's platform row names the BUNDLE (the
+  # one payload asset the release serves) and pins its sha — the shard's
+  # exe field stays a member pin, never the served artifact.
+  it "renders the bundle as the platform artifact on bundle-era shards" do
+    stem = "tebako-runtime-9.9.9-3.4.10-macos-arm64"
+    bundle_sha = Digest::SHA256.hexdigest("BYTES-#{stem}.tar.gz")
+    shards = shards_of({ ruby: "3.4.10", platform: "macos-arm64",
+                         bundle: { "filename" => "#{stem}.tar.gz", "sha256" => bundle_sha,
+                                   "size_bytes" => 46_012_377 } })
+    doc = YAML.safe_load(render(shards))
+
+    row = doc["payloads"].find { |p| p["name"] == "ruby" }
+                         .fetch("versions").find { |v| v["version"] == "3.4.10-9.9.9" }
+                         .fetch("platforms").fetch("aarch64-macos")
+    expect(row).to eq("artifact" => "#{stem}.tar.gz", "sha256" => bundle_sha)
   end
 
   it "upserts into an existing registry, preserving other payloads and withdrawn marks" do
@@ -170,7 +189,7 @@ RSpec.describe RegistryUpdate do
     expect(second).to eq(first)
   end
 
-  it "upserts implementation onto an existing implementation-less ruby entry (the spec 28 §8 backfill, never a hand-edit)" do
+  it "upserts implementation onto an implementation-less ruby entry (the spec 28 §8 backfill, never a hand-edit)" do
     existing = <<~YAML
       schema_version: 1
       payloads:
