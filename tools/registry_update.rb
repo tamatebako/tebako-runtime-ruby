@@ -167,6 +167,11 @@ class RegistryUpdate # rubocop:disable Metrics/ClassLength
   # One shard → one (triplet, {artifact, sha256}) platform row. The
   # triplet mapping is fail-closed: a host_id the Platform model does not
   # know can never become a silently wrong registry row.
+  # Spec 36 §5: a bundle-era shard's row names the BUNDLE — the one
+  # payload asset the release serves; the shard's exe/image/dll fields
+  # stay member pins (they name nothing served). A per-file-era shard's
+  # row names the exe, as always — the registry mirrors what the pinned
+  # release serves, era by era.
   def platform_row(asset_name, entry)
     host_id = entry.fetch("platform")
     triplet = TebakoRuntimeBuilder::Platform::TPKG_TRIPLETS[host_id]
@@ -176,19 +181,32 @@ class RegistryUpdate # rubocop:disable Metrics/ClassLength
             "no spec 03 §3 triplet mapping for it"
     end
 
+    bundle = entry["bundle"]
+    return [triplet, { "artifact" => bundle.fetch("filename"), "sha256" => bundle.fetch("sha256") }] if bundle
+
     [triplet, { "artifact" => entry.fetch("filename"), "sha256" => entry.fetch("sha256") }]
   end
 
-  # The current registry on main (contents API — the canonical published
-  # state), or the seed document when the file does not exist yet.
+  # The current registry the render merges into: main's published state
+  # (contents API — the canonical published registry), or the seed
+  # document when the file does not exist yet. REGISTRY_BASE_PATH reads a
+  # LOCAL file instead — the sharded catalog's render loop (spec 36 §6)
+  # accumulates each line's rows onto the previous line's render, so the
+  # per-tag bot PRs are supersets of one another and merge in any order
+  # without losing rows.
   def current_registry
-    res = @client.contents(RUNTIME_REPO, path: REGISTRY_BASENAME)
-    data = YAML.safe_load(Base64.decode64(res.content.to_s))
-    return seed unless data.is_a?(Hash)
+    data = read_registry_base
+    data.is_a?(Hash) ? data : seed
+  end
 
-    data
+  def read_registry_base
+    base = @env["REGISTRY_BASE_PATH"]
+    return YAML.safe_load_file(base) if base && File.exist?(base)
+
+    res = @client.contents(RUNTIME_REPO, path: REGISTRY_BASENAME)
+    YAML.safe_load(Base64.decode64(res.content.to_s))
   rescue Octokit::NotFound
-    seed
+    nil
   end
 
   def seed

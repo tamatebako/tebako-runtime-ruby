@@ -288,10 +288,14 @@ RSpec.describe "build-platform reusable workflow" do
   end
 end
 
-# The coordinator after spec 13 §2a's de-rendezvous (roadmap 85): the legs
-# publish and sign; the ONE release job only audits (read-only) and renders
-# + publishes the registry mirror by bot PR. Locked structurally: no
-# artifact download, no sign step, no shared-name mutation can creep back.
+# The coordinator after spec 13 §2a's de-rendezvous (roadmap 85) and spec
+# 36 §6's audit relocation: the legs publish and sign; the per-platform
+# AUDIT rides the tail of each (platform × shard) _build-platform run
+# (that run owns the matrix truth — never a recomputation); the ONE
+# release job only checks the selected platforms green and renders +
+# publishes the registry mirror by bot PR, one per shard tag. Locked
+# structurally: no artifact download, no sign step, no audit step, no
+# shared-name mutation can creep back.
 RSpec.describe "publish coordinator workflow" do
   let(:workflow_path) { File.join(REPO_ROOT, ".github", "workflows", "publish.yml") }
   let(:workflow) { YAML.load_file(workflow_path) }
@@ -299,28 +303,43 @@ RSpec.describe "publish coordinator workflow" do
   let(:release_steps) { release.fetch("steps") }
   let(:release_step_names) { release_steps.map { |step| step["name"].to_s } }
 
-  it "audits + publishes the registry — and never downloads, uploads, or signs a package byte" do
-    expect(release.fetch("name")).to eq("Audit the release + publish the registry")
+  it "checks the run + publishes the registry — and never downloads, uploads, signs, or audits a package byte" do
+    expect(release.fetch("name")).to eq("Check the run + publish the registry")
     forbidden = release_steps.select do |step|
       step.fetch("uses", "").to_s.start_with?("actions/download-artifact@") ||
-        step["name"].to_s.match?(/\A(Sign|Publish the runtime|Update the release)/)
+        step["name"].to_s.match?(/\A(Sign|Publish the runtime|Update the release|Audit the release)/)
     end
     expect(forbidden).to be_empty
+    # Spec 36 §6: no audit survives in the coordinator — it lives at each
+    # platform run's tail, where the matrix truth lives.
+    expect(release_steps.map { |step| step.dig("env", "AUDIT_ONLY") }.compact).to be_empty
     expect(release.fetch("timeout-minutes")).to eq(30)
   end
 
-  it "runs the per-platform audit read-only (AUDIT_ONLY=true), threaded with the signing gate" do
-    audit = release_steps.find { |step| step["name"] == "Audit the release, per platform" }
-    expect(audit).not_to be_nil
-    expect(audit.dig("env", "AUDIT_ONLY")).to eq("true")
-    expect(audit.dig("env", "TEBAKO_RELEASE_SIGNING_ENABLED")).to eq("${{ vars.TEBAKO_RELEASE_SIGNING_ENABLED }}")
-    expect(audit.fetch("run")).to include("bundle exec tebako-release upload")
-    expect(audit.fetch("run")).not_to include("FINALIZE_ONLY")
+  it "runs the per-(platform × shard) audit read-only at each platform run's tail (spec 36 §6)" do
+    platform = YAML.load_file(File.join(REPO_ROOT, ".github", "workflows", "_build-platform.yml"))
+    audit = platform.fetch("jobs").fetch("audit")
+    expect(audit.fetch("needs")).to contain_exactly("compute", "publish")
+    # always(): a red publish leg must not skip the audit — the audit is
+    # what NAMES the missing assets.
+    expect(audit.fetch("if").to_s).to include("always()", "!cancelled()",
+                                              "needs.compute.outputs.run == 'true'",
+                                              "inputs.publish || inputs.audit")
+    step = audit.fetch("steps").find { |s| s["name"] == "Audit the release against this run's expected matrix" }
+    expect(step).not_to be_nil
+    expect(step.dig("env", "AUDIT_ONLY")).to eq("true")
+    expect(step.dig("env", "TEBAKO_RELEASE_SIGNING_ENABLED")).to eq("${{ vars.TEBAKO_RELEASE_SIGNING_ENABLED }}")
+    # The matrix truth is THIS run's own compute outputs — never a
+    # recomputation, never a cross-run stale read.
+    expect(step.dig("env", "EXPECTED_ENV_MATRIX")).to eq("${{ needs.compute.outputs.env-matrix }}")
+    expect(step.dig("env", "EXPECTED_RUBY_MATRIX")).to eq("${{ needs.compute.outputs.ruby-matrix }}")
+    expect(step.fetch("run")).to include("bundle exec tebako-release upload")
+    expect(step.fetch("run")).not_to include("FINALIZE_ONLY")
   end
 
-  it "renders and publishes the registry only on publish runs (never audit-only)" do
-    render = release_steps.find { |step| step["name"] == "Render the registry entries" }
-    publish = release_steps.find { |step| step["name"] == "Publish the registry via pull request" }
+  it "renders and publishes the registry only on publish runs (never audit-only), per shard tag" do
+    render = release_steps.find { |step| step["name"] == "Render the registry entries (per shard tag)" }
+    publish = release_steps.find { |step| step["name"] == "Publish the registry via pull request (per shard tag)" }
     [render, publish].each do |step|
       expect(step).not_to be_nil
       # always(): a flaked upstream leg must not strand the registry on a
@@ -328,12 +347,30 @@ RSpec.describe "publish coordinator workflow" do
       expect(step["if"]).to eq("${{ always() && !cancelled() && !inputs.audit }}")
     end
     expect(render.fetch("run")).to include("./tools/registry_update.rb")
+    # The renders accumulate across shards (each per-tag PR is a superset
+    # of the previous, merging conflict-free in any order).
+    expect(render.fetch("run")).to include("REGISTRY_BASE_PATH")
     # The registry lands by bot PR against origin/main — git arbitrates.
     expect(publish.fetch("run")).to include("git checkout -b", "origin/main",
                                             "gh pr create", "--body-file", "gh pr merge --auto --squash")
-    # The audit precedes the registry work.
-    expect(release_step_names.index("Audit the release, per platform"))
-      .to be < release_step_names.index("Render the registry entries")
+    # The green check precedes the registry work.
+    expect(release_step_names.index("Check the selected platforms built green"))
+      .to be < release_step_names.index("Render the registry entries (per shard tag)")
+  end
+
+  it "derives the publish topology in the plan job and threads one shard to every platform caller" do
+    plan = workflow.fetch("jobs").fetch("plan")
+    plan_run = plan.fetch("steps").map { |step| step["run"].to_s }.join("\n")
+    # A catalog publish (no release_tag override) derives its per-line
+    # shard tags from the catalog vocabulary itself — no operator input.
+    expect(plan_run).to include("matrix.json", "group_by", "release_tag")
+    %w[windows linux-gnu linux-musl macos].each do |platform|
+      job = workflow.fetch("jobs").fetch(platform)
+      expect(job.dig("strategy", "matrix", "shard").to_s).to include("needs.plan.outputs.shards")
+      expect(job.fetch("with").fetch("ruby_filter")).to eq("${{ matrix.shard.ruby_filter }}")
+      expect(job.fetch("with").fetch("release_tag")).to eq("${{ matrix.shard.release_tag }}")
+      expect(job.fetch("needs")).to include("plan")
+    end
   end
 
   it "threads publish (never force_rebuild) from the coordinator into every platform caller" do

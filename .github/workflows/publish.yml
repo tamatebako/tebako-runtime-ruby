@@ -43,14 +43,23 @@
 # immutable in-run artifact. No shared mutable file exists anymore (the
 # monolithic manifest.json / SHA256SUMS.txt are gone — each shard IS its
 # release-index entry, and the monoliths derive consumer-side), so N legs
-# publish concurrently with zero rendezvous. What remains here is the ONE
-# release job per coordinator run: it AUDITS the whole matrix against the
-# release (read-only) and renders + publishes the tpkg-registry.yaml
-# mirror by bot PR (spec 04 §2) — the two duties that genuinely need the
-# full matrix. And a force_rebuild republication passes through the
+# publish concurrently with zero rendezvous. The AUDIT lives at the tail
+# of each _build-platform.yml run (spec 36 §6): the duty is per-platform
+# by construction, and the platform run owns the matrix truth — never a
+# recomputation, never a cross-run stale read. What remains here is the
+# ONE release job per coordinator run: the selected-platforms-green check
+# and the tpkg-registry.yaml mirror renders + bot PRs (spec 04 §2), one
+# per shard tag. And a force_rebuild republication passes through the
 # prepare-release job first (#189): the release OBJECT is recreated under
 # the kept tag, so every publish leg is a pure create on a free
 # namespace — the per-asset delete→re-upload wedge never gets triggered.
+#
+# Spec 36 §6's topology: a CATALOG publish (ruby_filter=catalog, no
+# release_tag override) derives its per-line shard tags itself —
+# v<VERSION>-ruby<line> per ruby line in .github/matrix.json's catalog
+# vocabulary, no operator input. The plan job emits the shard list; the
+# platform callers matrix over it; the release job renders one registry
+# bot PR per shard tag. The release_tag input remains as the override.
 name: publish
 
 on:
@@ -96,6 +105,40 @@ on:
     types: ['tebako release']
 
 jobs:
+  # Spec 36 §6's topology derivation: a catalog publish (ruby_filter=
+  # catalog, no release_tag override) shards itself across per-line
+  # release tags — v<VERSION>-ruby<line> per ruby line in the catalog
+  # vocabulary, no operator input. Every other run is ONE shard carrying
+  # the inputs verbatim, so the platform callers and the release job
+  # consume the same plan either way.
+  plan:
+    name: Plan the publish topology
+    runs-on: ubuntu-latest
+    if: ${{ !inputs.registry_only }}
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: plan
+        env:
+          RUBY_FILTER: ${{ inputs.ruby_filter }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if [ "${RUBY_FILTER:-}" = "catalog" ] && [ -z "${RELEASE_TAG:-}" ]; then
+            ruby -rjson -e '
+              catalog = JSON.parse(File.read(".github/matrix.json")).fetch("ruby").fetch("catalog")
+              version = File.read("VERSION").strip
+              shards = catalog.group_by { |v| v.split(".").first(2).join(".") }.map do |line, rubies|
+                { "ruby_filter" => rubies.join(","), "release_tag" => "v#{version}-ruby#{line}" }
+              end
+              puts "catalog publish derives #{shards.size} line shards: #{shards.map { |s| s["release_tag"] }.join(", ")}"
+              File.open(ENV.fetch("GITHUB_OUTPUT"), "a") { |f| f.puts "shards=#{JSON.generate(shards)}" }
+            '
+          else
+            echo "shards=[{\"ruby_filter\":\"${RUBY_FILTER:-}\",\"release_tag\":\"${RELEASE_TAG:-}\"}]" >> "$GITHUB_OUTPUT"
+          fi
+
   # #189: a force_rebuild republication never deletes individual assets —
   # a deleted name 422-blocks re-uploads for hours server-side, and the
   # wedge's scope is the release OBJECT (proven by probe: a fresh object
@@ -107,28 +150,41 @@ jobs:
   # stay byte-immutable per name).
   prepare-release:
     name: Recreate the release object (force_rebuild)
+    needs: plan
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'workflow_dispatch' && !inputs.registry_only && !inputs.audit && inputs.publish && inputs.force_rebuild }}
+    if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' && !inputs.registry_only && !inputs.audit && inputs.publish && inputs.force_rebuild }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Delete the release object, keeping the tag
+      - name: Delete the release object(s), keeping the tag(s)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
+          SHARDS: ${{ needs.plan.outputs.shards }}
         run: |
           set -euo pipefail
-          tag="${RELEASE_TAG:-v$(cat VERSION)}"
-          # Idempotent: a missing object is already the recreated state
-          # (a re-run after a mid-air death). --cleanup-tag=false (the
-          # default, spelled out) keeps the tag on its commit.
-          gh release delete "$tag" --yes --cleanup-tag=false 2>/dev/null || \
-            echo "no release object for $tag — already the recreated state"
-          echo "release object for $tag recreated (tag kept) — every leg's publish is a pure create"
+          # Every shard tag's object is recreated (a sharded catalog's
+          # republication recreates each line's object); the single-shard
+          # case is exactly the old behavior.
+          echo "${SHARDS:-[{\"release_tag\":\"\"}]}" | jq -r '.[].release_tag' | while read -r shard_tag; do
+            tag="${shard_tag:-v$(cat VERSION)}"
+            # Idempotent: a missing object is already the recreated state
+            # (a re-run after a mid-air death). --cleanup-tag=false (the
+            # default, spelled out) keeps the tag on its commit.
+            gh release delete "$tag" --yes --cleanup-tag=false 2>/dev/null || \
+              echo "no release object for $tag — already the recreated state"
+            echo "release object for $tag recreated (tag kept) — every leg's publish is a pure create"
+          done
 
   windows:
     # repository_dispatch always fans to every platform (a source tarball
     # change reaches every scenario of the changed versions).
-    needs: prepare-release
+    needs: [prepare-release, plan]
+    # Spec 36 §6: a catalog publish runs one caller per derived line shard
+    # (fail-fast: false — one line's failure never blocks another line);
+    # any other run is a single shard carrying the inputs verbatim.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards || '[{"ruby_filter":"","release_tag":""}]') }}
     # always() + !cancelled(): a SKIPPED prepare-release (the ordinary
     # non-forced publish) must not skip the platform fan-out.
     if: ${{ always() && !cancelled() && !inputs.registry_only && (github.event_name == 'repository_dispatch' || inputs.platform == 'all' || inputs.platform == 'windows') }}
@@ -145,15 +201,19 @@ jobs:
       id-token: write
     with:
       platform: windows
-      ruby_filter: ${{ inputs.ruby_filter || '' }}
+      ruby_filter: ${{ matrix.shard.ruby_filter }}
       arch_filter: ${{ inputs.arch_filter || '' }}
       audit: ${{ inputs.audit || false }}
       publish: ${{ github.event_name == 'repository_dispatch' || inputs.publish }}
-      release_tag: ${{ inputs.release_tag || '' }}
+      release_tag: ${{ matrix.shard.release_tag }}
     secrets: inherit
 
   linux-gnu:
-    needs: prepare-release
+    needs: [prepare-release, plan]
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards || '[{"ruby_filter":"","release_tag":""}]') }}
     if: ${{ always() && !cancelled() && !inputs.registry_only && (github.event_name == 'repository_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux-gnu') }}
     uses: ./.github/workflows/_build-platform.yml
     # Spec 34 §3/§8.2: the called workflow's build job declares
@@ -168,15 +228,19 @@ jobs:
       id-token: write
     with:
       platform: linux-gnu
-      ruby_filter: ${{ inputs.ruby_filter || '' }}
+      ruby_filter: ${{ matrix.shard.ruby_filter }}
       arch_filter: ${{ inputs.arch_filter || '' }}
       audit: ${{ inputs.audit || false }}
       publish: ${{ github.event_name == 'repository_dispatch' || inputs.publish }}
-      release_tag: ${{ inputs.release_tag || '' }}
+      release_tag: ${{ matrix.shard.release_tag }}
     secrets: inherit
 
   linux-musl:
-    needs: prepare-release
+    needs: [prepare-release, plan]
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards || '[{"ruby_filter":"","release_tag":""}]') }}
     if: ${{ always() && !cancelled() && !inputs.registry_only && (github.event_name == 'repository_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux-musl') }}
     uses: ./.github/workflows/_build-platform.yml
     # Spec 34 §3/§8.2: the called workflow's build job declares
@@ -191,15 +255,19 @@ jobs:
       id-token: write
     with:
       platform: linux-musl
-      ruby_filter: ${{ inputs.ruby_filter || '' }}
+      ruby_filter: ${{ matrix.shard.ruby_filter }}
       arch_filter: ${{ inputs.arch_filter || '' }}
       audit: ${{ inputs.audit || false }}
       publish: ${{ github.event_name == 'repository_dispatch' || inputs.publish }}
-      release_tag: ${{ inputs.release_tag || '' }}
+      release_tag: ${{ matrix.shard.release_tag }}
     secrets: inherit
 
   macos:
-    needs: prepare-release
+    needs: [prepare-release, plan]
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards || '[{"ruby_filter":"","release_tag":""}]') }}
     if: ${{ always() && !cancelled() && !inputs.registry_only && (github.event_name == 'repository_dispatch' || inputs.platform == 'all' || inputs.platform == 'macos') }}
     uses: ./.github/workflows/_build-platform.yml
     # Spec 34 §3/§8.2: the called workflow's build job declares
@@ -214,28 +282,29 @@ jobs:
       id-token: write
     with:
       platform: macos
-      ruby_filter: ${{ inputs.ruby_filter || '' }}
+      ruby_filter: ${{ matrix.shard.ruby_filter }}
       arch_filter: ${{ inputs.arch_filter || '' }}
       audit: ${{ inputs.audit || false }}
       publish: ${{ github.event_name == 'repository_dispatch' || inputs.publish }}
-      release_tag: ${{ inputs.release_tag || '' }}
+      release_tag: ${{ matrix.shard.release_tag }}
     secrets: inherit
 
   # The ONE release job per coordinator run. Spec 13 §2a's de-rendezvous
   # moved the publish into the legs (write-once per-leg names — no shared
-  # release-asset mutation remains); what serializes here is only the two
-  # duties that need the whole matrix: the AUDIT (every platform's
-  # expected names verified against the release, read-only) and the
-  # registry render + bot PR (git arbitrates the PR — the concurrency
-  # group is politeness now, not correctness).
+  # release-asset mutation remains), and spec 36 §6 moved the AUDIT to the
+  # tail of each (platform × shard) run — the matrix truth lives there,
+  # never recomputed here. What serializes here is the
+  # selected-platforms-green check and the registry renders + bot PRs, one
+  # per shard tag (git arbitrates the PRs — the concurrency group is
+  # politeness now, not correctness).
   release:
-    name: Audit the release + publish the registry
-    needs: [windows, linux-gnu, linux-musl, macos]
+    name: Check the run + publish the registry
+    needs: [plan, windows, linux-gnu, linux-musl, macos]
     runs-on: ubuntu-latest
     # The legs publish; this job only reads the release and pushes one
-    # registry branch. The 2026-08-09 hostage lesson still bounds it —
-    # but there is no 2.5 GB download here anymore, so the bound drops
-    # from the platform-publish 150 to 30.
+    # registry branch per shard. The 2026-08-09 hostage lesson still
+    # bounds it — but there is no 2.5 GB download here anymore, so the
+    # bound drops from the platform-publish 150 to 30.
     timeout-minutes: 30
     concurrency:
       group: publish-runtime-packages
@@ -263,56 +332,14 @@ jobs:
           ruby-version: '3.3'
           bundler-cache: true
 
-      # The audit, per platform that built: the legs' publish jobs already
-      # landed their packages, so this job never downloads a byte — it
-      # verifies each platform's expected names (payloads, .sha256
-      # sidecars, shards, and — on signing-enabled lines — every .asc,
-      # spec 09 §5) against the release's own listing, read-only (the
-      # gem's uploader under AUDIT_ONLY).
-      - name: Audit the release, per platform
+      # The platform-green check: a platform SELECTED that did not build
+      # green is named loudly (its own run's tail audit carries the
+      # asset-level detail). The renders below still run (always()) — the
+      # mirror carries what the release carries, never less (the
+      # v0.16.27 lesson: a skipped render silently lags the release).
+      - name: Check the selected platforms built green
         if: ${{ !inputs.registry_only }}
-        env:
-          AUDIT_ONLY: "true"
-          TEBAKO_RELEASE_SIGNING_ENABLED: ${{ vars.TEBAKO_RELEASE_SIGNING_ENABLED }}
-          TEBAKO_RELEASE_TAG: ${{ inputs.release_tag }}
-          WIN_RUN: ${{ needs.windows.outputs.run }}
-          WIN_VER: ${{ needs.windows.outputs.tebako-version }}
-          WIN_ENV: ${{ needs.windows.outputs.env-matrix }}
-          WIN_RUBY: ${{ needs.windows.outputs.ruby-matrix }}
-          GNU_RUN: ${{ needs.linux-gnu.outputs.run }}
-          GNU_VER: ${{ needs.linux-gnu.outputs.tebako-version }}
-          GNU_ENV: ${{ needs.linux-gnu.outputs.env-matrix }}
-          GNU_RUBY: ${{ needs.linux-gnu.outputs.ruby-matrix }}
-          MUSL_RUN: ${{ needs.linux-musl.outputs.run }}
-          MUSL_VER: ${{ needs.linux-musl.outputs.tebako-version }}
-          MUSL_ENV: ${{ needs.linux-musl.outputs.env-matrix }}
-          MUSL_RUBY: ${{ needs.linux-musl.outputs.ruby-matrix }}
-          MAC_RUN: ${{ needs.macos.outputs.run }}
-          MAC_VER: ${{ needs.macos.outputs.tebako-version }}
-          MAC_ENV: ${{ needs.macos.outputs.env-matrix }}
-          MAC_RUBY: ${{ needs.macos.outputs.ruby-matrix }}
         run: |
-          set -uo pipefail
-          # An empty override is no override: the gem derives v<VERSION>.
-          [ -n "${TEBAKO_RELEASE_TAG:-}" ] || unset TEBAKO_RELEASE_TAG
-          # Audit every platform that built green; THEN fail loudly naming
-          # any selected platform that did not — a green platform's audit
-          # always runs, and a coverage gap never goes unreported.
-          audit_failed=""
-          audit_platform() {
-            local run="$1" ver="$2" envm="$3" rubym="$4" name="$5"
-            if [ "$run" != "true" ]; then
-              echo "--- $name did not build this run; skipping its audit"
-              return 0
-            fi
-            echo "=== auditing $name (tebako $ver)"
-            TEBAKO_VERSION="$ver" EXPECTED_ENV_MATRIX="$envm" EXPECTED_RUBY_MATRIX="$rubym" \
-              bundle exec tebako-release upload || audit_failed="$audit_failed $name"
-          }
-          audit_platform "$WIN_RUN"  "$WIN_VER"  "$WIN_ENV"  "$WIN_RUBY"  windows
-          audit_platform "$GNU_RUN"  "$GNU_VER"  "$GNU_ENV"  "$GNU_RUBY"  linux-gnu
-          audit_platform "$MUSL_RUN" "$MUSL_VER" "$MUSL_ENV" "$MUSL_RUBY" linux-musl
-          audit_platform "$MAC_RUN"  "$MAC_VER"  "$MAC_ENV"  "$MAC_RUBY"  macos
           failed=""
           mark() { # $1=selected? $2=result $3=name
             if [ "$1" = "true" ] && [ "$2" != "success" ] && [ "$2" != "skipped" ]; then
@@ -325,90 +352,101 @@ jobs:
           mark "${{ github.event_name == 'repository_dispatch' || inputs.platform == 'all' || inputs.platform == 'macos' }}"      "${{ needs.macos.result }}"      macos
           if [ -n "$failed" ]; then
             echo "::error::these platforms were selected but did not build green — their packages did not land:$failed"
-          fi
-          if [ -n "$audit_failed" ]; then
-            echo "::error::these platforms' audits FAILED — the release is incomplete:$audit_failed"
-          fi
-          [ -z "$failed" ] && [ -z "$audit_failed" ]
-
-      # The registry mirror (spec 04 §2): rendered from the release's own
-      # shards — the write-once per-leg metadata units, ground truth —
-      # never from a job's local knowledge. One tebako version per
-      # coordinator run, so the first platform that built names it.
-      # always(): a red audit marks the RUN for a human but must not skip
-      # the mirror — the render only ever carries what the release itself
-      # carries, so mirroring after a partial publish stays truthful (the
-      # v0.16.27 lesson: a dogfood death skipped this step and the
-      # registry silently lagged the release until hand-rendered).
-      - name: Render the registry entries
-        if: ${{ always() && !cancelled() && !inputs.audit }}
-        env:
-          TEBAKO_VERSION: ${{ inputs.registry_only && inputs.registry_version || (needs.windows.outputs.tebako-version || needs.linux-gnu.outputs.tebako-version || needs.linux-musl.outputs.tebako-version || needs.macos.outputs.tebako-version) }}
-          TEBAKO_RELEASE_TAG: ${{ inputs.release_tag }}
-        run: |
-          if [ -z "$TEBAKO_VERSION" ]; then
-            echo "::error::registry_only needs registry_version (e.g. 0.16.27) — none given and no platform built one"
             exit 1
           fi
-          # An empty override is no override: the render derives v<VERSION>.
-          [ -n "${TEBAKO_RELEASE_TAG:-}" ] || unset TEBAKO_RELEASE_TAG
-          ./tools/registry_update.rb
+
+      # The registry mirror (spec 04 §2): rendered from each shard tag's
+      # own per-package shards — the write-once per-leg metadata units,
+      # ground truth — never from a job's local knowledge. One tebako
+      # version per coordinator run (the VERSION file; registry_only
+      # names it explicitly). A sharded catalog renders per line tag,
+      # each render accumulating onto the previous one (REGISTRY_BASE_PATH)
+      # so the per-tag bot PRs are supersets and merge in any order.
+      - name: Render the registry entries (per shard tag)
+        if: ${{ always() && !cancelled() && !inputs.audit }}
+        env:
+          SHARDS: ${{ needs.plan.outputs.shards }}
+          REGISTRY_VERSION_INPUT: ${{ inputs.registry_version }}
+          RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          version="${REGISTRY_VERSION_INPUT:-}"
+          version="${version:-$(cat VERSION 2>/dev/null || true)}"
+          if [ -z "$version" ]; then
+            echo "::error::registry_only needs registry_version (e.g. 0.16.27) — none given and no VERSION file"
+            exit 1
+          fi
+          shards="${SHARDS:-}"
+          [ -n "$shards" ] || shards="[{\"release_tag\":\"${RELEASE_TAG_INPUT:-}\"}]"
+          echo "$shards" | jq -r '.[].release_tag' | while read -r shard_tag; do
+            ref="${shard_tag:-v${version}}"
+            out="$RUNNER_TEMP/registry-${ref}.yaml"
+            if [ -n "$shard_tag" ]; then export TEBAKO_RELEASE_TAG="$shard_tag"; else unset TEBAKO_RELEASE_TAG || true; fi
+            # The accumulated base: the previous shard's render, so each
+            # per-tag PR is a superset of the previous one.
+            if [ -f "$RUNNER_TEMP/registry-accumulated.yaml" ]; then
+              export REGISTRY_BASE_PATH="$RUNNER_TEMP/registry-accumulated.yaml"
+            fi
+            TEBAKO_VERSION="$version" REGISTRY_PATH="$out" ./tools/registry_update.rb
+            cp "$out" "$RUNNER_TEMP/registry-accumulated.yaml"
+            echo "rendered ${ref}"
+          done
 
       # main is branch-protected: the registry lands by bot PR +
-      # auto-merge, never by direct push. Idempotent across re-runs of the
-      # same version (an unchanged registry exits before the branch).
-      - name: Publish the registry via pull request
+      # auto-merge, never by direct push. One PR per shard tag (the
+      # branch names already shard by tag); each render is a superset of
+      # the previous, so the PRs merge conflict-free in any order.
+      # Idempotent across re-runs (an unchanged registry skips the branch).
+      - name: Publish the registry via pull request (per shard tag)
         if: ${{ always() && !cancelled() && !inputs.audit }}
         env:
           GH_TOKEN: ${{ secrets.TEBAKO_CI_PAT_TOKEN || secrets.GITHUB_TOKEN }}
-          TEBAKO_VERSION: ${{ inputs.registry_only && inputs.registry_version || (needs.windows.outputs.tebako-version || needs.linux-gnu.outputs.tebako-version || needs.linux-musl.outputs.tebako-version || needs.macos.outputs.tebako-version) }}
-          TEBAKO_RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
-          [ -f tpkg-registry.yaml ] || { echo "::error::no rendered registry to publish (the render step did not run)"; exit 1; }
-          cp tpkg-registry.yaml "$RUNNER_TEMP/registry.yaml"
-          # main can move the registry mid-publish (a mirror PR landing
-          # while the matrix builds): the in-tree render would abort the
-          # branch checkout below. The temp copy is the payload — discard
-          # the dirty tree before branching, restore after.
-          git checkout -- tpkg-registry.yaml
+          shopt -s nullglob
+          files=("$RUNNER_TEMP"/registry-v*.yaml)
+          [ ${#files[@]} -gt 0 ] || { echo "::error::no rendered registry to publish (the render step did not run)"; exit 1; }
           git config user.name "tebako-ci"
           git config user.email "tebako@ribose.com"
           git fetch origin main
-          # A sharded catalog publish (TEBAKO_RELEASE_TAG set) branches per
-          # shard tag: the line shards' renders must never force-push each
-          # other's bot branch.
-          ref="${TEBAKO_RELEASE_TAG:-v${TEBAKO_VERSION}}"
-          branch="publish/${ref}-registry"
-          git checkout -b "$branch" origin/main
-          cp "$RUNNER_TEMP/registry.yaml" tpkg-registry.yaml
-          if git diff --quiet origin/main -- tpkg-registry.yaml; then
-            echo "registry unchanged (or the entries already landed on main)"
-            exit 0
-          fi
-          git add tpkg-registry.yaml
-          git commit -m "publish ${ref}: registry entries"
-          # force-with-lease on the bot branch: a re-publish re-creates it.
-          # The checkout is shallow, so the lease has no expectation for a
-          # branch a DIED run left behind — fetch it first or the push is
-          # rejected and the mirror never lands (the v0.16.27 hand-render
-          # hit exactly that). With the tracking ref in place the lease
-          # still refuses a concurrent FOREIGN push, as designed.
-          git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch" 2>/dev/null || true
-          git push --force-with-lease origin "$branch"
-          if ! gh pr view "$branch" >/dev/null 2>&1; then
-            body="$RUNNER_TEMP/registry-pr-body.md"
-            cat > "$body" <<EOF
+          for file in "${files[@]}"; do
+            ref="$(basename "$file" .yaml)"; ref="${ref#registry-}"
+            branch="publish/${ref}-registry"
+            echo "=== $ref → $branch"
+            git checkout -b "$branch" origin/main 2>/dev/null || git checkout "$branch"
+            cp "$file" tpkg-registry.yaml
+            if git diff --quiet origin/main -- tpkg-registry.yaml; then
+              echo "registry unchanged for $ref (or the entries already landed on main)"
+              git checkout -- tpkg-registry.yaml
+              continue
+            fi
+            git add tpkg-registry.yaml
+            git commit -m "publish ${ref}: registry entries"
+            # force-with-lease on the bot branch: a re-publish re-creates
+            # it. The checkout is shallow, so the lease has no expectation
+            # for a branch a DIED run left behind — fetch it first or the
+            # push is rejected and the mirror never lands (the v0.16.27
+            # hand-render hit exactly that). With the tracking ref in place
+            # the lease still refuses a concurrent FOREIGN push, as
+            # designed.
+            git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch" 2>/dev/null || true
+            git push --force-with-lease origin "$branch"
+            if ! gh pr view "$branch" >/dev/null 2>&1; then
+              body="$RUNNER_TEMP/registry-pr-body-${ref}.md"
+              cat > "$body" <<EOF
           Automated registry entries for ${ref} — rendered from the
           release's per-package .manifest.json shards by tools/registry_update.rb
           (spec 13 §2a's audit+registry job; spec 04 §2's mirror). main is
           protected, so the registry lands by PR.
           EOF
-            gh pr create --base main --head "$branch" \
-              --title "publish ${ref}: registry entries" \
-              --body-file "$body"
-          fi
-          gh pr merge --auto --squash "$branch" || gh pr merge --squash "$branch"
+              gh pr create --base main --head "$branch" \
+                --title "publish ${ref}: registry entries" \
+                --body-file "$body"
+            fi
+            gh pr merge --auto --squash "$branch" || gh pr merge --squash "$branch"
+            # The next shard branches from a clean origin/main tree.
+            git checkout -- tpkg-registry.yaml 2>/dev/null || true
+          done
 
       - name: Ping the versions catalog
         if: ${{ always() && success() }}

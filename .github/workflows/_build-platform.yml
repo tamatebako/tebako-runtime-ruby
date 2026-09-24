@@ -1865,6 +1865,45 @@ jobs:
           [ -n "${TEBAKO_RELEASE_TAG:-}" ] || unset TEBAKO_RELEASE_TAG
           bundle exec tebako-release sign
 
+  # The release audit (spec 13 §2a's completeness gate), at the tail of
+  # THIS platform's run — spec 36 §6: the duty is per-(platform × shard)
+  # by construction, and this run owns the matrix truth (its own compute
+  # outputs — never a recomputation, never a cross-run stale read). The
+  # coordinator's release job keeps only the registry renders. always():
+  # a red publish leg must not skip the audit — the audit is what NAMES
+  # the missing assets (an audit that only ran on green would hide the
+  # gap it exists to report).
+  audit:
+    name: Audit the release (${{ inputs.platform }})
+    needs: [compute, publish]
+    if: ${{ always() && !cancelled() && needs.compute.outputs.run == 'true' && (inputs.publish || inputs.audit) && github.event_name != 'push' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Ruby (the release tooling)
+        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+
+      - name: Audit the release against this run's expected matrix
+        env:
+          AUDIT_ONLY: "true"
+          GITHUB_TOKEN: ${{ secrets.TEBAKO_CI_PAT_TOKEN || secrets.GITHUB_TOKEN }}
+          TEBAKO_VERSION: ${{ needs.compute.outputs.tebako-version }}
+          EXPECTED_ENV_MATRIX: ${{ needs.compute.outputs.env-matrix }}
+          EXPECTED_RUBY_MATRIX: ${{ needs.compute.outputs.ruby-matrix }}
+          TEBAKO_RELEASE_SIGNING_ENABLED: ${{ vars.TEBAKO_RELEASE_SIGNING_ENABLED }}
+          TEBAKO_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          # An empty override is no override: the gem derives v<VERSION>.
+          [ -n "${TEBAKO_RELEASE_TAG:-}" ] || unset TEBAKO_RELEASE_TAG
+          bundle exec tebako-release upload
+
   # Spec 22 C3 — the windows dogfood: the spec22-gems gem-level acceptance
   # (tamatebako/ruby's ci/spec22-gems/run-msys.sh) against THIS run's fresh
   # windows artifacts. Real sinatra + sassc, jailed, gemless, on the last
