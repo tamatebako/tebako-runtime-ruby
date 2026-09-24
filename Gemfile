@@ -8,12 +8,12 @@ require "yaml"
 gem "json_schemer", "~> 2.4"
 
 # The release machinery — the legs' publish/sign jobs and the publish.yml
-# coordinator's audit. tamatebako/tebako-release-tooling is the single
+# coordinator's audit. tamatebako/tebako-release is the single
 # owner (ecosystem invariant 10); the pin lives in contract.yml's
 # release_tooling so the bump is one contract edit, never a second
 # hand-written copy of the machinery.
 gem "tebako-release",
-    git: "https://github.com/tamatebako/tebako-release-tooling.git",
+    git: "https://github.com/tamatebako/tebako-release.git",
     tag: YAML.load_file(File.expand_path("contract.yml", __dir__)).fetch("release_tooling")
 
 # The registry render (tools/registry_update.rb — the coordinator's

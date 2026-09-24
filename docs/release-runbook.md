@@ -12,7 +12,7 @@ How a runtime release ships under the multi-staged hierarchy. Written after the
 - `_build-platform.yml` — the one per-platform unit: compute → build → publish.
 - `publish.yml` — the coordinator (era baselines, audits, slice dispatches).
 - `scripts/release_adapter.rb` — this factory's declaration for the
-  tebako-release gem (tamatebako/tebako-release-tooling, pinned at
+  tebako-release gem (tamatebako/tebako-release, pinned at
   `contract.yml`'s `release_tooling`): the per-leg publish jobs' upload +
   sign and the coordinator's audit run the gem's `tebako-release` exe —
   write-once per-leg asset upload, content skip, convergence loop,

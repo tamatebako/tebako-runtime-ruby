@@ -153,7 +153,7 @@ container_version: "0.16.2"
 # Contract unchanged (2).
 link_unit_release: "v2.8.16"
 
-# The release machinery pin: the tamatebako/tebako-release-tooling tag
+# The release machinery pin: the tamatebako/tebako-release tag
 # the Gemfile resolves (the legs' publish/sign jobs + the coordinator's
 # audit consume the gem's tebako-release exe). The gem is the machinery's
 # single owner (ecosystem invariant 10) — this factory declares its

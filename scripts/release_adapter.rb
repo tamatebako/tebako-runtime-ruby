@@ -26,7 +26,7 @@
 # POSSIBILITY OF SUCH DAMAGE.
 
 # This factory's tebako-release declaration (ecosystem invariant 10: the
-# release machinery's single owner is tamatebako/tebako-release-tooling —
+# release machinery's single owner is tamatebako/tebako-release —
 # the gem the Gemfile pins at contract.yml's release_tooling tag). This
 # file declares THIS factory's identity + policy through the gem's
 # adapter seam; the machinery itself is never copied here. The
