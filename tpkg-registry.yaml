@@ -186,7 +186,7 @@ payloads:
         sha256: 0c661cc211e40456eca6efbf983bafc812d6d14d63a0435725e523275415ebc2
       x86_64-windows-ucrt:
         artifact: tebako-runtime-0.16.29-3.1.6-windows-ucrt64.tar.gz
-        sha256: 7b12e76f54207f7e29c8b75557222be465148c349bc9c5bc4194957299c5a1f8
+        sha256: 3738a20b28bf7874d9ddc8ef07f5174d18b054aff87c091cdcfd956cbac21e5d
     release:
       ref: tfs:github:tamatebako/tebako-runtime-ruby:v0.16.29
   - version: 3.2.4-0.16.28
