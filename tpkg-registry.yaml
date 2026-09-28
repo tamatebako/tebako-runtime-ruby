@@ -706,6 +706,9 @@ payloads:
       x86_64-linux-musl:
         artifact: tebako-runtime-0.16.30-3.3.4-linux-musl-x86_64.tar.gz
         sha256: c7c775f2321d61d950b5ab9c664e5b13e7f057d8a5fc8ddc2a4a1674d27622a9
+      x86_64-macos:
+        artifact: tebako-runtime-0.16.30-3.3.4-macos-x86_64.tar.gz
+        sha256: 128d9c9f9627bf0e795c16ded95d29aa1a6503a2f038a141aceaf6886cdaace7
       x86_64-windows-ucrt:
         artifact: tebako-runtime-0.16.30-3.3.4-windows-ucrt64.tar.gz
         sha256: '028e918bb1adbf28697d89e82c7319033de2a29a59bf2384cf877bcdcfe2ae7c'
@@ -753,6 +756,9 @@ payloads:
       x86_64-linux-musl:
         artifact: tebako-runtime-0.16.30-3.3.5-linux-musl-x86_64.tar.gz
         sha256: 3af4131a3842f0ba66230d7d7396d464361b7a4a298e3df1f26012caf3237c2b
+      x86_64-macos:
+        artifact: tebako-runtime-0.16.30-3.3.5-macos-x86_64.tar.gz
+        sha256: c00b743b0570a132a71f3058e8a493d4d7e6cf2df2a440cd2563e7babbbc0d65
       x86_64-windows-ucrt:
         artifact: tebako-runtime-0.16.30-3.3.5-windows-ucrt64.tar.gz
         sha256: ab2b366f5fa0fe36ea167677c0039c62d99433133a01393332a81b6e2d4c6ed8
@@ -850,6 +856,9 @@ payloads:
       x86_64-linux-musl:
         artifact: tebako-runtime-0.16.30-3.3.7-linux-musl-x86_64.tar.gz
         sha256: 9b3a33cdc81ef7bc47fce64d5ce370aeea1909a5e567252822d2ca7744025c17
+      x86_64-macos:
+        artifact: tebako-runtime-0.16.30-3.3.7-macos-x86_64.tar.gz
+        sha256: b3bec13fa5a3ef0ec620ed62f39f10953fc83c3c78acb338c0bec94d78229a15
       x86_64-windows-ucrt:
         artifact: tebako-runtime-0.16.30-3.3.7-windows-ucrt64.tar.gz
         sha256: f6786f60651f97a3390659ba7a6a62c948becf646884be0900e9c6a7ff797db5
