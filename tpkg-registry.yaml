@@ -1043,27 +1043,27 @@ payloads:
     platforms:
       aarch64-linux-gnu:
         artifact: tebako-runtime-0.16.30-3.3.12-linux-gnu-arm64.tar.gz
-        sha256: 859fe4421f26918120a87c072830e0888477707cf19f47efb5e9dd1639b36348
+        sha256: 83c13c978a8066afa48c298a97d790ef1f9d5e095d12440b8f9b11e987c6edd7
       aarch64-linux-musl:
         artifact: tebako-runtime-0.16.30-3.3.12-linux-musl-arm64.tar.gz
-        sha256: 755e6bcf9f70a24c7e25c563ccf93a660f7e29f982ed876084faac4441591241
+        sha256: a2bd121bc497ddf7f4166dab88f0440a5b125dd413cdbfc77990d32a92be9c03
       aarch64-macos:
         artifact: tebako-runtime-0.16.30-3.3.12-macos-arm64.tar.gz
-        sha256: 53df26b940916ea36902a9d1283ae73fdb16a0df3eba99248170d37c1b7ed10b
+        sha256: 4b9aa7d59907cde2519c2cd006b39069041636cd3b13ae752805f354c6c45f6f
       x86_64-linux-gnu:
         artifact: tebako-runtime-0.16.30-3.3.12-linux-gnu-x86_64.tar.gz
-        sha256: bcbca84b40ea14a5f0b507d3bff18b891ffdc957df2306e02c7ed2aa99123961
+        sha256: b64ffb1303cea4b93e969d36117578cf174b32459f08357ffed5f17886b98341
       x86_64-linux-musl:
         artifact: tebako-runtime-0.16.30-3.3.12-linux-musl-x86_64.tar.gz
-        sha256: 959a1d4726563411187753c0bea863c5b3fba12169ccd75144a83040d260848d
+        sha256: ac65f1fb22b2924022445d38298783635d20b5980e5b957d74daa406ec192bec
       x86_64-macos:
         artifact: tebako-runtime-0.16.30-3.3.12-macos-x86_64.tar.gz
-        sha256: 28033c1dd45f842de8e671044059993ea632b7e01853c3b52f4c60e9b313c946
+        sha256: 1815b274cd2dcf530c512978940764b67fb2a80971c95de31a3dcc092a616f64
       x86_64-windows-ucrt:
         artifact: tebako-runtime-0.16.30-3.3.12-windows-ucrt64.tar.gz
-        sha256: 63ef5c8bcf54baf7a372c10ccd10238cf538045d43937249d15795f5267c05e0
+        sha256: f5af40fa9e2f3945eed72374be58d4305f647c3bd24a7b8eeacd60556bc8b91f
     release:
-      ref: tfs:github:tamatebako/tebako-runtime-ruby:v0.16.30-ruby3.3
+      ref: tfs:github:tamatebako/tebako-runtime-ruby:v0.16.30
   - version: 3.4.1-0.16.28
     platforms:
       aarch64-linux-gnu:
@@ -1914,30 +1914,30 @@ payloads:
     platforms:
       aarch64-linux-gnu:
         artifact: tebako-runtime-0.16.30-4.0.6-linux-gnu-arm64.tar.gz
-        sha256: b8059e43132ec53dc162148c09ecc56d6aa46f68d7bc187f71bf25d19a8f32a5
+        sha256: c2a35bc07a238d66b01963d50cc5b52d899cdac7fbf4b2643c733ea17877a0fa
       aarch64-linux-musl:
         artifact: tebako-runtime-0.16.30-4.0.6-linux-musl-arm64.tar.gz
-        sha256: 597dc5cff4db40f057940893a54930914cfaff84c8210740fb4944e73d623587
+        sha256: cc9b4184bea7c74cc3ee70b941d741e4227698c02a5415edcdff105bd83288d2
       aarch64-macos:
         artifact: tebako-runtime-0.16.30-4.0.6-macos-arm64.tar.gz
-        sha256: 389b9eabeea244e914e6c980a2bc219ae9476e4606940ffbfbbf7742c0d8f3b9
+        sha256: 4348f38392dd61d3cef10be375be16cc9defbecfe577f161c186acafa17ac3c5
       aarch64-windows-ucrt:
         artifact: tebako-runtime-0.16.30-4.0.6-windows-ucrt-arm64.tar.gz
-        sha256: b84e75de968c6f53377dafd23e44d0d8616868f5bc18e3cb07931aecb8d4f37f
+        sha256: 3ba53ea16d011752243f173bee7f3bd6cf34489c4451fc05ab80366f2b48e622
       x86_64-linux-gnu:
         artifact: tebako-runtime-0.16.30-4.0.6-linux-gnu-x86_64.tar.gz
-        sha256: 39f12be00bb784312c56a14894505115d005b9e619378a5c9a7891fe963de6ba
+        sha256: ee8a464fd97f7d9cf181bae9ff946c21c4a71c4e17d125d14b6c9d0d042c63f8
       x86_64-linux-musl:
         artifact: tebako-runtime-0.16.30-4.0.6-linux-musl-x86_64.tar.gz
-        sha256: aa0d8e15241209757b11af29b989f8bf376be0bd11ba51c242976edaac8caf78
+        sha256: d54353c50dc640cfbd39c3eda2f999345b2026e8a57f2d1f236ddee1434a31a2
       x86_64-macos:
         artifact: tebako-runtime-0.16.30-4.0.6-macos-x86_64.tar.gz
-        sha256: d760cab23354d281bad58862db074a82905f85d7a885dc9bea7412e78a20f059
+        sha256: 47ad97230e587f9c1777a8754041b0f1ca6e896aad65d9aba2c0a19a88959fed
       x86_64-windows-ucrt:
         artifact: tebako-runtime-0.16.30-4.0.6-windows-ucrt64.tar.gz
-        sha256: f6ff837ac2ec310da95fe43b6b1c5a7a1d18fc68324f2dff4f5227daf12d848d
+        sha256: ea107947968ed45bd5583bae92b0e2a4e2596762e401e19753e17d850c14722b
     release:
-      ref: tfs:github:tamatebako/tebako-runtime-ruby:v0.16.30-ruby4.0
+      ref: tfs:github:tamatebako/tebako-runtime-ruby:v0.16.30
   - version: 4.0.7-0.16.28
     platforms:
       aarch64-linux-gnu:
