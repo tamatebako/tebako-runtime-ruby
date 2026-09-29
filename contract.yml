@@ -155,7 +155,17 @@ container_version: "0.16.2"
 # ceiling to 64 MiB, so large-metadata payload images (the metanorma
 # class: ~8 MiB / 38k entries) mount inlined instead of demanding the
 # externalized sidecar. Contract unchanged (2).
-link_unit_release: "v2.8.21"
+# v2.8.23 (tebako#692/#693): the driver routes spawn arguments by HELD
+# mounts, not lexical coverage — absolute host paths under a
+# root-mounted payload pass through to the child untouched (the
+# metanorma-docker xml2rfc spawn class: "spawn plan failed without a
+# message", metanorma/metanorma-docker#244) — and a failing spawn plan
+# always names its error (the errno wire NUL no longer blanks the FFI
+# message). Plus the tpkg trailer locator's PE arm (tebako#689): an
+# Authenticode-signed stitched exe boots. v2.8.22 (press support for
+# ruby 4.0.7) touched tebako-cli, not the driver, so the pin skips it.
+# Contract unchanged (2).
+link_unit_release: "v2.8.23"
 
 # The release machinery pin: the tamatebako/tebako-release tag
 # the Gemfile resolves (the legs' publish/sign jobs + the coordinator's
