@@ -1693,6 +1693,74 @@ jobs:
           bundle install --jobs 4 --retry 3
           bundle exec rspec --tag boot_smoke --format documentation
 
+      # The spawn-edge acceptance (#211): the per-leg gate for the
+      # executable-edge spawn surface — a consumer payload array-spawning
+      # an exposed provider command through the driver's spawn plan, the
+      # child asserting its exact argv (the tamatebako/ruby#121 +
+      # tebako#691 bug class, which shipped green through every lighter
+      # gate and surfaced days later in a full metanorma compile). The
+      # harness lives in tamatebako/ruby (ci/spawn-edge) and rides
+      # inputs.harness_ref exactly like the windows dogfood (default
+      # main; a probe round points it at a ruby PR branch so the harness
+      # iterates unmerged). It presses its two fixture payloads with the
+      # leg's own pin-verified tfs CLI (the TfsTool cache the image-pack
+      # step populated) and runs against the leg's runtime-packages — a
+      # red gate skips the leg-complete marker below, so nothing
+      # publishes.
+      - name: Checkout the spawn-edge harness (tamatebako/ruby)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: tamatebako/ruby
+          ref: ${{ inputs.harness_ref || 'main' }}
+          path: ruby-harness
+
+      - name: Spawn-edge acceptance (POSIX legs)
+        if: matrix.env.os != 'windows' && matrix.env.os != 'linux-musl'
+        shell: bash
+        env:
+          RUNTIME_PKG_DIR: runtime-packages
+          RUBY_VERSION: ${{ matrix.ruby.version }}
+          TEBAKO_VERSION: ${{ needs.compute.outputs.tebako-version }}
+        run: |
+          set -euo pipefail
+          tfs="$(find .build/downloads/tfs -mindepth 2 -maxdepth 2 -name 'tfs-*' -type f 2>/dev/null | head -1)"
+          [ -n "$tfs" ] || { echo "::error::no pin-verified tfs CLI under .build/downloads/tfs — the leg packs its env image with it before this gate"; exit 1; }
+          echo "spawn-edge harness: tamatebako/ruby@$(git -C ruby-harness rev-parse HEAD)"
+          TFS_CLI="$tfs" bash ruby-harness/ci/spawn-edge/run.sh
+
+      # The musl runtime is dynamic-musl and its tfs CLI is the musl
+      # asset — the gate runs inside the same alpine userland as the musl
+      # boot smoke (see that step's comment for the loader/symbol floor).
+      - name: Spawn-edge acceptance (musl legs, in alpine)
+        if: matrix.env.os == 'linux-musl'
+        run: |
+          set -euo pipefail
+          echo "spawn-edge harness: tamatebako/ruby@$(git -C ruby-harness rev-parse HEAD)"
+          docker run --rm -v ${{ github.workspace }}:/mnt/w -w /mnt/w \
+            -e RUNTIME_PKG_DIR=runtime-packages \
+            -e RUBY_VERSION=${{ matrix.ruby.version }} \
+            -e TEBAKO_VERSION=${{ needs.compute.outputs.tebako-version }} \
+            alpine:3.21 sh -c '
+              set -e
+              apk add --no-cache bash >/dev/null
+              tfs="$(find .build/downloads/tfs -mindepth 2 -maxdepth 2 -name 'tfs-*' -type f | head -1)"
+              [ -n "$tfs" ] || { echo "::error::no pin-verified tfs CLI under .build/downloads/tfs"; exit 1; }
+              TFS_CLI="$tfs" bash ruby-harness/ci/spawn-edge/run.sh'
+
+      - name: Spawn-edge acceptance (windows)
+        if: matrix.env.os == 'windows'
+        shell: msys2 {0}
+        env:
+          RUNTIME_PKG_DIR: runtime-packages
+          RUBY_VERSION: ${{ matrix.ruby.version }}
+          TEBAKO_VERSION: ${{ needs.compute.outputs.tebako-version }}
+        run: |
+          set -euo pipefail
+          tfs="$(find .build/downloads/tfs -mindepth 2 -maxdepth 2 -name 'tfs-*.exe' -type f 2>/dev/null | head -1)"
+          [ -n "$tfs" ] || { echo "::error::no pin-verified tfs CLI under .build/downloads/tfs — the leg packs its env image with it before this gate"; exit 1; }
+          echo "spawn-edge harness: tamatebako/ruby@$(git -C ruby-harness rev-parse HEAD)"
+          TFS_CLI="$tfs" bash ruby-harness/ci/spawn-edge/run-msys.sh
+
       # The leg-complete marker (#190): written only when every gate
       # above passed — a failed step stops the job before this point
       # (default step gating), so a red leg ships NO artifact at all

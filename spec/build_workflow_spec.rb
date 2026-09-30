@@ -286,6 +286,41 @@ RSpec.describe "build-platform reusable workflow" do
       expect(step.dig("env", "TEBAKO_SMOKE_EXPECT_OPENSSL")).to(satisfy { |value| %w[ok fail].include?(value) })
     end
   end
+
+  # The spawn-edge acceptance (#211) is the per-leg gate for the
+  # executable-edge spawn surface (the tamatebako/ruby#121 + tebako#691
+  # bug class): every leg runs it AFTER the boot smoke (the gate rides the
+  # leg's built artifacts and its pin-verified tfs CLI) and BEFORE the
+  # leg-complete marker, so a red gate publishes nothing. One arm per
+  # platform class (POSIX host, musl-in-alpine, windows-msys), each fed
+  # the leg's ruby/tebako versions. The harness checkout rides
+  # inputs.harness_ref like the windows dogfood, never a hardcoded branch.
+  # Locked structurally so a workflow edit can never silently un-gate the
+  # marker.
+  it "gates the leg-complete marker behind a spawn-edge acceptance arm per platform class" do
+    steps = workflow.fetch("jobs").fetch("build").fetch("steps")
+    names = steps.map { |step| step["name"].to_s }
+    smoke_indexes = names.each_index.select { |i| names[i].start_with?("Boot-smoke the fresh runtime") }
+    gate_indexes = names.each_index.select { |i| names[i].start_with?("Spawn-edge acceptance") }
+    checkout_index = names.index("Checkout the spawn-edge harness (tamatebako/ruby)")
+    marker_index = names.index("Mark the leg complete")
+    upload_index = names.index("Upload runtime package")
+    expect(smoke_indexes).not_to be_empty
+    expect(gate_indexes.length).to be >= 3
+    expect(checkout_index).not_to be_nil
+    expect(marker_index).not_to be_nil
+    expect(gate_indexes.min).to be > smoke_indexes.max
+    expect(gate_indexes.min).to be > checkout_index
+    expect(gate_indexes.max).to be < marker_index
+    expect(marker_index).to be < upload_index
+    gate_indexes.map { |i| steps[i] }.each do |step|
+      fed = step.dig("env", "RUBY_VERSION") == "${{ matrix.ruby.version }}" ||
+            step["run"].to_s.include?("RUBY_VERSION=${{ matrix.ruby.version }}")
+      expect(fed).to be(true), "spawn-edge arm '#{step["name"]}' is not fed the leg's ruby version"
+    end
+    checkout = steps[checkout_index]
+    expect(checkout.dig("with", "ref")).to eq("${{ inputs.harness_ref || 'main' }}")
+  end
 end
 
 # The coordinator after spec 13 §2a's de-rendezvous (roadmap 85) and spec

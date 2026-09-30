@@ -46,6 +46,10 @@ on:
         description: 'Arch slice: "all" or an arch (e.g. "x86_64")'
         type: string
         default: 'all'
+      harness_ref:
+        description: 'Acceptance-harness ref in tamatebako/ruby (default main). Point at a ruby PR branch to iterate the harness WITHOUT merging it.'
+        type: string
+        default: 'main'
 
 jobs:
   macos:
@@ -64,4 +68,5 @@ jobs:
       platform: macos
       ruby_filter: ${{ inputs.ruby_filter || '' }}
       arch_filter: ${{ inputs.arch_filter || '' }}
+      harness_ref: ${{ inputs.harness_ref || 'main' }}
     secrets: inherit
