@@ -325,7 +325,22 @@ RSpec.describe "build-platform reusable workflow" do
                     step["run"].to_s.include?("-e RUNTIME_PKG_DIR=/mnt/w/")
       expect(absolutized).to be(true),
                              "spawn-edge arm '#{step["name"]}' does not absolutize RUNTIME_PKG_DIR"
+      # Under pipefail a missing tfs cache dir makes find exit 1; an
+      # unguarded assignment dies silently BEFORE the ::error:: guard
+      # (the linux-gnu legs failed exactly so). The || true must ride
+      # inside the command substitution.
+      guarded = step["run"].to_s.match?(%r{-name 'tfs-\*(\.exe)?' -type f 2>/dev/null \| head -1 \|\| true\)})
+      expect(guarded).to be(true),
+                         "spawn-edge arm '#{step["name"]}' can die silently on a missing tfs cache dir"
     end
+    # Container legs (linux-gnu, linux-musl) build with a container-local
+    # prefix: the pin-verified tfs CLI that packs the env image lives at
+    # /root/.build/downloads/tfs inside the container and must be copied
+    # OUT to the host-visible .build/downloads/tfs or the gate's find has
+    # nothing to resolve.
+    container_build = steps.find { |step| step["name"].to_s == "Build runtime using ci container" }
+    expect(container_build).not_to be_nil
+    expect(container_build["run"].to_s).to include("cp -a /root/.build/downloads/tfs/. /mnt/w/.build/downloads/tfs/")
     checkout = steps[checkout_index]
     expect(checkout.dig("with", "ref")).to eq("${{ inputs.harness_ref || 'main' }}")
   end

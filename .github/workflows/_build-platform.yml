@@ -916,6 +916,12 @@ jobs:
           # copied out to the host-visible .build/smoke-{headers,tools}
           # (host legs read the stash in place; a mkdwarfs miss is not
           # fatal — the fixture falls back to tfs when one resolves).
+          # The pin-verified tfs CLI cache (downloads/tfs/<sha>/tfs-*)
+          # is copied out too — the spawn-edge acceptance gate below runs
+          # on the HOST (or in a fresh alpine for musl) and presses its
+          # fixture payloads with exactly the CLI that packed the env
+          # image; a miss here is fatal (the gate has nothing to press
+          # with).
           cid="leg-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ matrix.ruby.version }}-${{ matrix.env.arch }}"
           # RUSTUP_HOME/CARGO_HOME: the rustup proxies that
           # ci/prepare-rust-toolchain.sh lands in /opt/cargo/bin resolve
@@ -949,8 +955,9 @@ jobs:
             PATH="/opt/cargo/bin:$PATH" /mnt/w/tools/build_runtime --ruby "${{ matrix.ruby.version }}" --output "/mnt/w/runtime-packages/$runtime" \
             --prefix /root/.build --src-mirror file:///mnt/w/.build/spec22-src-roll --src-release spec22-chain \
             ${{ matrix.env.os == 'linux-gnu' && '--patchelf' || '' }} && \
-            mkdir -p /mnt/w/.build/smoke-headers /mnt/w/.build/smoke-tools && \
+            mkdir -p /mnt/w/.build/smoke-headers /mnt/w/.build/smoke-tools /mnt/w/.build/downloads/tfs && \
             cp -a /root/.build/deps/stash_*/include/. /mnt/w/.build/smoke-headers/ && \
+            cp -a /root/.build/downloads/tfs/. /mnt/w/.build/downloads/tfs/ && \
             { cp -a /root/.build/deps/bin/mkdwarfs /mnt/w/.build/smoke-tools/ 2>/dev/null || true; }'; then
             echo "::warning::build failed — dumping ext extconf probe logs"
             docker commit "$cid" "tebako-failed-leg:$cid" >/dev/null 2>&1 && \
@@ -1704,9 +1711,10 @@ jobs:
       # main; a probe round points it at a ruby PR branch so the harness
       # iterates unmerged). It presses its two fixture payloads with the
       # leg's own pin-verified tfs CLI (the TfsTool cache the image-pack
-      # step populated) and runs against the leg's runtime-packages — a
-      # red gate skips the leg-complete marker below, so nothing
-      # publishes.
+      # step populated; container legs copy it out to the host-visible
+      # .build/downloads/tfs in the build step's trailing chain) and runs
+      # against the leg's runtime-packages — a red gate skips the
+      # leg-complete marker below, so nothing publishes.
       - name: Checkout the spawn-edge harness (tamatebako/ruby)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1727,7 +1735,10 @@ jobs:
           # it an ABSOLUTE package dir, or the boot dies 127 after the cd.
           RUNTIME_PKG_DIR="$(cd "$RUNTIME_PKG_DIR" && pwd)"
           export RUNTIME_PKG_DIR
-          tfs="$(find .build/downloads/tfs -mindepth 2 -maxdepth 2 -name 'tfs-*' -type f 2>/dev/null | head -1)"
+          # The || true rides INSIDE the substitution: with pipefail a
+          # missing cache dir makes find exit 1, and an unguarded
+          # assignment would die silently before the ::error:: below.
+          tfs="$(find .build/downloads/tfs -mindepth 2 -maxdepth 2 -name 'tfs-*' -type f 2>/dev/null | head -1 || true)"
           [ -n "$tfs" ] || { echo "::error::no pin-verified tfs CLI under .build/downloads/tfs — the leg packs its env image with it before this gate"; exit 1; }
           echo "spawn-edge harness: tamatebako/ruby@$(git -C ruby-harness rev-parse HEAD)"
           TFS_CLI="$tfs" bash ruby-harness/ci/spawn-edge/run.sh
@@ -1747,7 +1758,7 @@ jobs:
             alpine:3.21 sh -c '
               set -e
               apk add --no-cache bash >/dev/null
-              tfs="$(find .build/downloads/tfs -mindepth 2 -maxdepth 2 -name 'tfs-*' -type f | head -1)"
+              tfs="$(find .build/downloads/tfs -mindepth 2 -maxdepth 2 -name 'tfs-*' -type f 2>/dev/null | head -1 || true)"
               [ -n "$tfs" ] || { echo "::error::no pin-verified tfs CLI under .build/downloads/tfs"; exit 1; }
               TFS_CLI="$tfs" bash ruby-harness/ci/spawn-edge/run.sh'
 
@@ -1765,7 +1776,10 @@ jobs:
           # 127 after the cd.
           RUNTIME_PKG_DIR="$(cd "$RUNTIME_PKG_DIR" && pwd)"
           export RUNTIME_PKG_DIR
-          tfs="$(find .build/downloads/tfs -mindepth 2 -maxdepth 2 -name 'tfs-*.exe' -type f 2>/dev/null | head -1)"
+          # The || true rides INSIDE the substitution: with pipefail a
+          # missing cache dir makes find exit 1, and an unguarded
+          # assignment would die silently before the ::error:: below.
+          tfs="$(find .build/downloads/tfs -mindepth 2 -maxdepth 2 -name 'tfs-*.exe' -type f 2>/dev/null | head -1 || true)"
           [ -n "$tfs" ] || { echo "::error::no pin-verified tfs CLI under .build/downloads/tfs — the leg packs its env image with it before this gate"; exit 1; }
           echo "spawn-edge harness: tamatebako/ruby@$(git -C ruby-harness rev-parse HEAD)"
           TFS_CLI="$tfs" bash ruby-harness/ci/spawn-edge/run-msys.sh
