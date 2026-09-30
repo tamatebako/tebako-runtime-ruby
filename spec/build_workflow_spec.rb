@@ -317,6 +317,14 @@ RSpec.describe "build-platform reusable workflow" do
       fed = step.dig("env", "RUBY_VERSION") == "${{ matrix.ruby.version }}" ||
             step["run"].to_s.include?("RUBY_VERSION=${{ matrix.ruby.version }}")
       expect(fed).to be(true), "spawn-edge arm '#{step["name"]}' is not fed the leg's ruby version"
+      # The harness cd's into its scratch dir for the proof run: a
+      # relative RUNTIME_PKG_DIR dies 127 after the cd (the first gate
+      # round failed exactly so on every POSIX leg). Each arm must
+      # absolutize the package dir before invoking the harness.
+      absolutized = step["run"].to_s.include?('RUNTIME_PKG_DIR="$(cd "$RUNTIME_PKG_DIR" && pwd)"') ||
+                    step["run"].to_s.include?("-e RUNTIME_PKG_DIR=/mnt/w/")
+      expect(absolutized).to be(true),
+                             "spawn-edge arm '#{step["name"]}' does not absolutize RUNTIME_PKG_DIR"
     end
     checkout = steps[checkout_index]
     expect(checkout.dig("with", "ref")).to eq("${{ inputs.harness_ref || 'main' }}")

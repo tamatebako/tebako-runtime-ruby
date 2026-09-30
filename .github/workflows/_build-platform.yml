@@ -1723,6 +1723,10 @@ jobs:
           TEBAKO_VERSION: ${{ needs.compute.outputs.tebako-version }}
         run: |
           set -euo pipefail
+          # The harness cd's into its scratch dir for the proof run — hand
+          # it an ABSOLUTE package dir, or the boot dies 127 after the cd.
+          RUNTIME_PKG_DIR="$(cd "$RUNTIME_PKG_DIR" && pwd)"
+          export RUNTIME_PKG_DIR
           tfs="$(find .build/downloads/tfs -mindepth 2 -maxdepth 2 -name 'tfs-*' -type f 2>/dev/null | head -1)"
           [ -n "$tfs" ] || { echo "::error::no pin-verified tfs CLI under .build/downloads/tfs — the leg packs its env image with it before this gate"; exit 1; }
           echo "spawn-edge harness: tamatebako/ruby@$(git -C ruby-harness rev-parse HEAD)"
@@ -1737,7 +1741,7 @@ jobs:
           set -euo pipefail
           echo "spawn-edge harness: tamatebako/ruby@$(git -C ruby-harness rev-parse HEAD)"
           docker run --rm -v ${{ github.workspace }}:/mnt/w -w /mnt/w \
-            -e RUNTIME_PKG_DIR=runtime-packages \
+            -e RUNTIME_PKG_DIR=/mnt/w/runtime-packages \
             -e RUBY_VERSION=${{ matrix.ruby.version }} \
             -e TEBAKO_VERSION=${{ needs.compute.outputs.tebako-version }} \
             alpine:3.21 sh -c '
@@ -1756,6 +1760,11 @@ jobs:
           TEBAKO_VERSION: ${{ needs.compute.outputs.tebako-version }}
         run: |
           set -euo pipefail
+          # The harness cd's into its scratch dir for the proof run — hand
+          # it an ABSOLUTE package dir (msys spelling), or the boot dies
+          # 127 after the cd.
+          RUNTIME_PKG_DIR="$(cd "$RUNTIME_PKG_DIR" && pwd)"
+          export RUNTIME_PKG_DIR
           tfs="$(find .build/downloads/tfs -mindepth 2 -maxdepth 2 -name 'tfs-*.exe' -type f 2>/dev/null | head -1)"
           [ -n "$tfs" ] || { echo "::error::no pin-verified tfs CLI under .build/downloads/tfs — the leg packs its env image with it before this gate"; exit 1; }
           echo "spawn-edge harness: tamatebako/ruby@$(git -C ruby-harness rev-parse HEAD)"
