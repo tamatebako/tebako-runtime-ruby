@@ -64,6 +64,11 @@ jobs:
       contents: write
       packages: write
       id-token: write
+      # attestations: the called workflow's publish job closes with the
+      # SLSA L3 provenance arm — the grant flows from here (a reusable
+      # workflow never elevates past the caller's grant; omitting this
+      # fails every caller at startup).
+      attestations: write
     with:
       platform: windows
       ruby_filter: ${{ inputs.ruby_filter || '' }}

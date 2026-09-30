@@ -1873,6 +1873,14 @@ jobs:
     # failed ships no artifact; its publish leg fails named at the
     # guards below.
     if: ${{ always() && !cancelled() && needs.compute.outputs.run == 'true' && inputs.publish && !inputs.audit }}
+    # attestations/id-token: the SLSA L3 provenance arm at the leg tail
+    # (gated with the publish — the job's own if — so build/audit runs
+    # never attest). The callers in publish.yml grant both down (a
+    # reusable workflow never elevates past the caller's grant).
+    permissions:
+      contents: write
+      attestations: write
+      id-token: write
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
@@ -1955,6 +1963,18 @@ jobs:
           # An empty override is no override: the gem derives v<VERSION>.
           [ -n "${TEBAKO_RELEASE_TAG:-}" ] || unset TEBAKO_RELEASE_TAG
           bundle exec tebako-release sign
+
+      # SLSA L3 provenance over the exact bytes this leg ships — the staged
+      # runtime package + its .sha256 sidecars + the .manifest.json shard
+      # (plus the detached .asc set when the signing arm ran: the signer
+      # converges them into this same dir). The .leg-complete marker is
+      # dot-hidden and the non-shipped *-ucrt-ruby*.dll copies are rm'd by
+      # the publish step, so the glob names neither. Gated with the
+      # publish above (the job's own if) — build/audit runs never attest.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: runtime-packages/*
 
   # The release audit (spec 13 §2a's completeness gate), at the tail of
   # THIS platform's run — spec 36 §6: the duty is per-(platform × shard)

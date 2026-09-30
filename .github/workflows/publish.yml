@@ -199,6 +199,10 @@ jobs:
       contents: write
       packages: write
       id-token: write
+      # attestations: the called workflow's publish job closes with the
+      # SLSA L3 provenance arm — the grant flows from here, same as
+      # id-token above.
+      attestations: write
     with:
       platform: windows
       ruby_filter: ${{ matrix.shard.ruby_filter }}
@@ -226,6 +230,10 @@ jobs:
       contents: write
       packages: write
       id-token: write
+      # attestations: the called workflow's publish job closes with the
+      # SLSA L3 provenance arm — the grant flows from here, same as
+      # id-token above.
+      attestations: write
     with:
       platform: linux-gnu
       ruby_filter: ${{ matrix.shard.ruby_filter }}
@@ -253,6 +261,10 @@ jobs:
       contents: write
       packages: write
       id-token: write
+      # attestations: the called workflow's publish job closes with the
+      # SLSA L3 provenance arm — the grant flows from here, same as
+      # id-token above.
+      attestations: write
     with:
       platform: linux-musl
       ruby_filter: ${{ matrix.shard.ruby_filter }}
@@ -280,6 +292,10 @@ jobs:
       contents: write
       packages: write
       id-token: write
+      # attestations: the called workflow's publish job closes with the
+      # SLSA L3 provenance arm — the grant flows from here, same as
+      # id-token above.
+      attestations: write
     with:
       platform: macos
       ruby_filter: ${{ matrix.shard.ruby_filter }}
