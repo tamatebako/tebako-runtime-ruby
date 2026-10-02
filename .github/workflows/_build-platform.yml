@@ -49,7 +49,8 @@
 #   artifact handoff. The leg that built a package publishes it (the
 #   tebako-release gem's uploader) and signs its served names (the gem's
 #   signer) — spec 13 §2a's de-rendezvous: write-once names this leg owns
-#   alone (payload + .sha256 sidecars + .manifest.json shard + every
+#   alone (payload + .sha256 sidecars + .manifest.json shard + the derived
+#   .blksum.json sidecar (spec 39 §3) + every
 #   .asc), so N legs publish concurrently with zero rendezvous and no
 #   shared mutable file exists (the monolithic manifest.json /
 #   SHA256SUMS.txt are gone — each shard IS its release-index entry, the
@@ -1848,7 +1849,9 @@ jobs:
 
   # Spec 13 §2a (the de-rendezvous) as its OWN job (#190): the leg that
   # built a package publishes it — payload assets + .sha256 sidecars +
-  # the .manifest.json shard, write-once names this leg owns alone — and
+  # the .manifest.json shard + the derived .blksum.json sidecar (spec 39
+  # §3, staged beside the env image by the uploader at entry-build time),
+  # write-once names this leg owns alone — and
   # then signs every served name (spec 09 §5's no-fold rule). No shared
   # file exists, so N legs publish concurrently with zero rendezvous.
   # The split is the recovery story: GitHub's re-run granularity is the
@@ -1965,7 +1968,9 @@ jobs:
           bundle exec tebako-release sign
 
       # SLSA L3 provenance over the exact bytes this leg ships — the staged
-      # runtime package + its .sha256 sidecars + the .manifest.json shard
+      # runtime package + its .sha256 sidecars + the .manifest.json shard +
+      # the derived .blksum.json sidecar (spec 39 §3, a trust anchor — the
+      # publish step staged it into this same dir)
       # (plus the detached .asc set when the signing arm ran: the signer
       # converges them into this same dir). The .leg-complete marker is
       # dot-hidden and the non-shipped *-ucrt-ruby*.dll copies are rm'd by

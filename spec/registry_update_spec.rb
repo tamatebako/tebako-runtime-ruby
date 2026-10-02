@@ -54,17 +54,23 @@ RSpec.describe RegistryUpdate do
   let(:version) { "9.9.9" }
   let(:release) { RegistrySpecRelease.new("https://api.test/releases/1", "v#{version}") }
 
-  def shard(ruby:, platform:, filename: nil, sha256: nil, tebako_version: version, bundle: nil) # rubocop:disable Metrics/ParameterLists
+  def shard(ruby:, platform:, filename: nil, sha256: nil, tebako_version: version, bundle: nil, blksum: nil) # rubocop:disable Metrics/ParameterLists
     suffix = platform.start_with?("windows") ? ".exe" : ""
     filename ||= "tebako-runtime-#{tebako_version}-#{ruby}-#{platform}#{suffix}"
     sha256 ||= Digest::SHA256.hexdigest("BYTES-#{filename}")
     card = { "tebako_version" => tebako_version, "ruby_version" => ruby,
              "platform" => platform, "filename" => filename, "sha256" => sha256 }
     card["bundle"] = bundle if bundle
-    body = JSON.generate(card)
+    card["image"] = image_card(filename, blksum) if blksum
     asset = RegistrySpecAsset.new("#{filename}.manifest.json", "https://download.test/#{filename}.manifest.json")
-    @bodies[asset] = body
+    @bodies[asset] = JSON.generate(card)
     asset
+  end
+
+  def image_card(filename, blksum)
+    image = "#{filename.sub(/\.exe\z/, "")}.tfs"
+    { "filename" => image, "sha256" => Digest::SHA256.hexdigest("BYTES-#{image}"),
+      "size_bytes" => 100, "blksum" => blksum }
   end
 
   def render(shards, registry: nil)
@@ -127,6 +133,43 @@ RSpec.describe RegistryUpdate do
                          .fetch("versions").find { |v| v["version"] == "3.4.10-9.9.9" }
                          .fetch("platforms").fetch("aarch64-macos")
     expect(row).to eq("artifact" => "#{stem}.tar.gz", "sha256" => bundle_sha)
+  end
+
+  # Spec 39 §3 MINOR 4: the shard's `image.blksum` pin mirrors into the
+  # platform row verbatim — the registry is the loader's resolution-level
+  # source for the lazy arm's sidecar fetch.
+  it "mirrors the shard's image.blksum pin into the platform row (per-file era)" do
+    pin = { "filename" => "tebako-runtime-9.9.9-3.4.10-macos-arm64.tfs.blksum.json",
+            "sha256" => "c" * 64 }
+    doc = YAML.safe_load(render(shards_of({ ruby: "3.4.10", platform: "macos-arm64", blksum: pin })))
+
+    row = doc["payloads"].find { |p| p["name"] == "ruby" }
+                         .fetch("versions").find { |v| v["version"] == "3.4.10-9.9.9" }
+                         .fetch("platforms").fetch("aarch64-macos")
+    expect(row["blksum"]).to eq(pin)
+  end
+
+  it "mirrors the image.blksum pin on bundle-era rows too" do
+    stem = "tebako-runtime-9.9.9-3.4.10-macos-arm64"
+    pin = { "filename" => "#{stem}.tfs.blksum.json", "sha256" => "d" * 64 }
+    shards = shards_of({ ruby: "3.4.10", platform: "macos-arm64", blksum: pin,
+                         bundle: { "filename" => "#{stem}.tar.gz", "sha256" => "b" * 64,
+                                   "size_bytes" => 46_012_377 } })
+    doc = YAML.safe_load(render(shards))
+
+    row = doc["payloads"].find { |p| p["name"] == "ruby" }
+                         .fetch("versions").find { |v| v["version"] == "3.4.10-9.9.9" }
+                         .fetch("platforms").fetch("aarch64-macos")
+    expect(row).to eq("artifact" => "#{stem}.tar.gz", "sha256" => "b" * 64, "blksum" => pin)
+  end
+
+  it "renders no blksum key for a pre-blksum shard (the additive-key compat rule)" do
+    doc = YAML.safe_load(render(shards_of({ ruby: "3.4.10", platform: "macos-arm64" })))
+
+    row = doc["payloads"].find { |p| p["name"] == "ruby" }
+                         .fetch("versions").find { |v| v["version"] == "3.4.10-9.9.9" }
+                         .fetch("platforms").fetch("aarch64-macos")
+    expect(row).not_to have_key("blksum")
   end
 
   it "upserts into an existing registry, preserving other payloads and withdrawn marks" do

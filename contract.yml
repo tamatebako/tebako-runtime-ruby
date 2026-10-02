@@ -177,4 +177,8 @@ link_unit_release: "v2.8.23"
 # image + DLL + in-bundle SHA256SUMS) instead of the per-file asset
 # enumeration; 3 assets unsigned / 5 signing-enabled per leg, so the
 # 23-version catalog fits under the 1,000-asset ceiling again.
-release_tooling: "v0.2.0"
+# v0.3.0: the spec 39 §3 blksum facet — the uploader derives each env
+# image's block-group digest sidecar (<image>.blksum.json) in-process at
+# entry-build time, pins it in the shard (image.blksum {filename,
+# sha256}), and serves it as a standalone asset in both eras.
+release_tooling: "v0.3.0"
