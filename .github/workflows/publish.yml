@@ -38,8 +38,10 @@
 # Every leg fans out to _build-platform.yml to BUILD, and — spec 13 §2a's
 # de-rendezvous — to PUBLISH and SIGN from each leg's own publish job
 # (#190's split): the leg that built a package uploads its write-once
-# names (payload + .sha256 sidecars + .manifest.json shard + the derived
-# .blksum.json sidecar, spec 39 §3) and signs
+# names (the <stem>.tar.gz bundle + .sha256 sidecars + .manifest.json
+# shard + the derived .blksum.json sidecar, spec 39 §3 + the co-published
+# per-file members — bare exe, bare env image, windows DLL — spec 36 §3's
+# co-publish mode, gem v0.4.0) and signs
 # every served name, publishing the bytes the build job handed off as an
 # immutable in-run artifact. No shared mutable file exists anymore (the
 # monolithic manifest.json / SHA256SUMS.txt are gone — each shard IS its

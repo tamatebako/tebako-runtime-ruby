@@ -54,17 +54,23 @@ RSpec.describe RegistryUpdate do
   let(:version) { "9.9.9" }
   let(:release) { RegistrySpecRelease.new("https://api.test/releases/1", "v#{version}") }
 
-  def shard(ruby:, platform:, filename: nil, sha256: nil, tebako_version: version, bundle: nil, blksum: nil) # rubocop:disable Metrics/ParameterLists
+  def shard(ruby:, platform:, filename: nil, sha256: nil, tebako_version: version, bundle: nil, blksum: nil, # rubocop:disable Metrics/ParameterLists
+            per_file_assets: false)
     suffix = platform.start_with?("windows") ? ".exe" : ""
     filename ||= "tebako-runtime-#{tebako_version}-#{ruby}-#{platform}#{suffix}"
     sha256 ||= Digest::SHA256.hexdigest("BYTES-#{filename}")
     card = { "tebako_version" => tebako_version, "ruby_version" => ruby,
              "platform" => platform, "filename" => filename, "sha256" => sha256 }
-    card["bundle"] = bundle if bundle
-    card["image"] = image_card(filename, blksum) if blksum
+    add_facets(card, filename, bundle, blksum, per_file_assets)
     asset = RegistrySpecAsset.new("#{filename}.manifest.json", "https://download.test/#{filename}.manifest.json")
     @bodies[asset] = JSON.generate(card)
     asset
+  end
+
+  def add_facets(card, filename, bundle, blksum, per_file_assets)
+    card["bundle"] = bundle if bundle
+    card["image"] = image_card(filename, blksum) if blksum
+    card["per_file_assets"] = true if per_file_assets
   end
 
   def image_card(filename, blksum)
@@ -161,6 +167,27 @@ RSpec.describe RegistryUpdate do
                          .fetch("versions").find { |v| v["version"] == "3.4.10-9.9.9" }
                          .fetch("platforms").fetch("aarch64-macos")
     expect(row).to eq("artifact" => "#{stem}.tar.gz", "sha256" => "b" * 64, "blksum" => pin)
+  end
+
+  # Spec 36 §3's co-publish shape + §5's amendment: a co-published
+  # bundle-era shard (bundle + the "per_file_assets" witness + the
+  # image.blksum pin) renders the SAME platform row — the bundle stays
+  # the artifact, the blksum pin mirrors, and the witness itself is NOT
+  # mirrored (the registry grammar is unchanged: the row already
+  # co-expresses everything the lazy arm resolves).
+  it "renders a co-published bundle-era shard identically (the witness is not mirrored)" do
+    stem = "tebako-runtime-9.9.9-3.4.10-macos-arm64"
+    pin = { "filename" => "#{stem}.tfs.blksum.json", "sha256" => "e" * 64 }
+    shards = shards_of({ ruby: "3.4.10", platform: "macos-arm64", blksum: pin,
+                         per_file_assets: true,
+                         bundle: { "filename" => "#{stem}.tar.gz", "sha256" => "f" * 64,
+                                   "size_bytes" => 46_012_377 } })
+    doc = YAML.safe_load(render(shards))
+
+    row = doc["payloads"].find { |p| p["name"] == "ruby" }
+                         .fetch("versions").find { |v| v["version"] == "3.4.10-9.9.9" }
+                         .fetch("platforms").fetch("aarch64-macos")
+    expect(row).to eq("artifact" => "#{stem}.tar.gz", "sha256" => "f" * 64, "blksum" => pin)
   end
 
   it "renders no blksum key for a pre-blksum shard (the additive-key compat rule)" do

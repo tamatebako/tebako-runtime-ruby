@@ -181,4 +181,9 @@ link_unit_release: "v2.8.23"
 # image's block-group digest sidecar (<image>.blksum.json) in-process at
 # entry-build time, pins it in the shard (image.blksum {filename,
 # sha256}), and serves it as a standalone asset in both eras.
-release_tooling: "v0.3.0"
+# v0.4.0: spec 36 §3's co-publish mode — the per-file assets (bare exe,
+# bare env image, .blksum.json sidecar, windows DLL) upload alongside
+# the bundle; the shard carries the "per_file_assets" witness
+# (runtime-manifest MINOR 2) that spec 39 §7's lazy gate requires on
+# bundle-declaring shards. The bundle stays the registry-row artifact.
+release_tooling: "v0.4.0"

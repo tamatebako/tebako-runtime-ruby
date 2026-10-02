@@ -182,10 +182,23 @@ version → semantics changelog table is spec 06's.
 The release's asset listing IS the package index. A build leg publishes and
 signs IN-LEG (spec 13 §2a's de-rendezvous): the leg that built a package
 uploads ONLY the write-once names it owns — its payload assets plus, for
-each package:
+each package, the metadata set enumerated below.
 
-- **`<asset>.sha256`** — the checksum sidecar next to every payload asset
-  (exe, `.tfs`, windows `.dll`), in the tebako store's own trust-anchor
+Spec 36's bundle era: the headline payload asset is one **`<stem>.tar.gz`**
+per package (exe + env image + windows DLL + in-bundle SHA256SUMS — the
+compat-window path old loaders resolve). Alongside it, spec 36 §3's
+co-publish mode (gem v0.4.0) serves the per-file members again — the bare
+exe, the bare env `.tfs` image, and the windows `.dll` — witnessing spec 39
+§7's lazy arm: a bundle-era loader serves block-group fetches straight off
+the release page without fetching the bundle. The bundle stays the
+registry-row artifact; the shard declares the additive **`per_file_assets`**
+witness (runtime-manifest MINOR 2) so the loaders' lazy gate fails closed on
+shards that never co-published, and the compat window keeps closing on
+co-published lines.
+
+- **`<asset>.sha256`** — the checksum sidecar next to every served asset
+  (bundle, exe, `.tfs`, `.tfs.blksum.json`, windows `.dll`), in the tebako
+  store's own trust-anchor
   shape (`"<sha256>  <filename>\n"`, spec 00 §8). This is the authority a
   resolver verifies a download against.
 - **`<package>.manifest.json`** — the package's shard: exactly its manifest
@@ -196,7 +209,10 @@ each package:
   the image sibling, the contract version) live here and nowhere else. On
   signing-enabled lines the entry also declares its `signature` block
   (`{keyid, asc}` — the exact `.asc` asset name within the release, spec 09
-  §5), at the entry and facet levels.
+  §5), at the entry and facet levels. A co-published shard additionally
+  carries `"per_file_assets": true` — the witness that the per-file member
+  set was served alongside the bundle (spec 39 §7's lazy gate requires it
+  on bundle-declaring shards).
 - **`<image>.blksum.json`** — the env image's block-group digest sidecar
   (spec 39 §3: one sha256 per 4 MiB group of image bytes plus the
   whole-image sha256 — the lazy mount's range-GET trust anchor). The
