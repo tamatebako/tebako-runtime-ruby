@@ -420,6 +420,12 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
       expect(described_class.filter_drectve_exports(contents)).to eq("-defaultlib:ucrt -entry:mainCRTStartup")
     end
 
+    it "strips the bare (unquoted) clang spelling too -- the aarch64 unit's jent member" do
+      contents = " -export:aws_lc_0_45_0_jent_version -export:aws_lc_0_45_0_jent_read_entropy " \
+                 "-exclude-symbols:aws_lc_0_45_0_jent_ "
+      expect(described_class.filter_drectve_exports(contents)).to eq("-exclude-symbols:aws_lc_0_45_0_jent_")
+    end
+
     it "strips the MSVC-spelling /EXPORT: directives too" do
       contents = " /EXPORT:aws_lc_0_45_0_jent_version /EXPORT:aws_lc_0_45_0_jent_init=data -defaultlib:ucrt "
       expect(described_class.filter_drectve_exports(contents)).to eq("-defaultlib:ucrt")

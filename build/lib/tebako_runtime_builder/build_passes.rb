@@ -165,8 +165,13 @@ module TebakoRuntimeBuilder
     # fragment) was never involved. A scoped symbol is internal by
     # construction, so no legitimate export directive can name one: strip
     # every -export directive from the scoped archives at prepare time.
-    MSYS_SCOPED_EXPORT_MARKERS = ["-export:\"", "/EXPORT:"].freeze
-    MSYS_SCOPED_EXPORT_DIRECTIVE = %r{\s*(?:-export:"[^"]*"|/EXPORT:\S+)}
+    # The one regex is BOTH the member byte-scan and the section filter
+    # (a scan/filter pair that can drift is a second bug on arrival): the
+    # quoted gcc spelling (-export:"name", the x86_64 unit), the bare
+    # clang spelling (-export:name, the aarch64 unit's jent member), the
+    # MSVC spelling (/EXPORT:name), any casing. Sibling directives
+    # (-exclude-symbols:, -defaultlib:) never match -- they ride through.
+    MSYS_SCOPED_EXPORT_DIRECTIVE = %r{\s*(?:-export:(?:"[^"]*"|\S+)|/EXPORT:\S+)}i
 
     # The ar container format the dllexport strip walks (pure Ruby -- the
     # merged unit's duplicate member names defeat `ar x`): the 8-byte
@@ -658,7 +663,7 @@ module TebakoRuntimeBuilder
       end
 
       # Strip the vendored dllexport .drectve directives from the scoped
-      # link-unit archives (MSYS_SCOPED_EXPORT_MARKERS above): the same
+      # link-unit archives (MSYS_SCOPED_EXPORT_DIRECTIVE above): the same
       # archive set the fragment derives from, which is exactly the
       # arscope-scoped set -- the hazard surface of renamed symbols with
       # stale directive strings. Idempotent: a clean archive scans clean
@@ -681,11 +686,11 @@ module TebakoRuntimeBuilder
       # either. No COFF tool is probed for a clean archive (the dev
       # platforms have none, and the pass-2 overlay re-run is exactly
       # that case).
-      def strip_archive_dll_exports!(archive) # rubocop:disable Metrics/AbcSize
+      def strip_archive_dll_exports!(archive)
         Dir.mktmpdir do |dir|
           members = extract_archive_members(archive, dir)
           offenders = members.select do |member|
-            MSYS_SCOPED_EXPORT_MARKERS.any? { |marker| File.binread(member[:file]).include?(marker) }
+            File.binread(member[:file]).match?(MSYS_SCOPED_EXPORT_DIRECTIVE)
           end
           next 0 if offenders.empty?
 
