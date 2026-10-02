@@ -442,6 +442,84 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
     end
   end
 
+  describe ".finalize msys shared build (issue 40)" do
+    # The finalize-time strip: a cache-restored tree skips prepare (the
+    # strip's other home), yet the finalize relink still consumes the
+    # staged link-unit archives — a pristine (re)staging there is the
+    # aws-lc jent DLL-link failure (the v2.8.24 windows legs). The strip
+    # must fire at the consumption point. Same fixture shape as the
+    # prepare-time rebuild example (marker bytes + duplicate member
+    # names, the shim objcopy standing in for the COFF-less dev
+    # toolchain): the observable is the lossless rebuild (dup~2.o),
+    # which only the finalize-time strip can have driven.
+    it "strips the staged link-unit archives before the relink (the warm-cache path)" do
+      write_msys_source_fixtures(ruby_src)
+      write_libtfs_fixture(deps_lib_dir)
+      File.write(File.join(ruby_src, "rbconfig.rb"),
+                 "  CONFIG[\"prefix\"] = (TOPDIR || DESTDIR + \"/pkg\")\n  " \
+                 "CONFIG[\"RUBY_EXEC_PREFIX\"] = \"/pkg\"\n")
+      platform = TebakoRuntimeBuilder::Platform.new("x64-mingw-ucrt")
+      dll_name = TebakoRuntimeBuilder::RubyVersion.new("3.3.7").msys_dll_name(platform.host_id)
+      FileUtils.touch(File.join(ruby_src, dll_name))
+      FileUtils.touch(File.join(ruby_src, "ruby.exe"))
+
+      Dir.mktmpdir do |link_unit|
+        FileUtils.cp(File.join(deps_lib_dir, "libtfs.a"), File.join(link_unit, "libtfs.a"))
+        Dir.mktmpdir do |objs|
+          File.write(File.join(objs, "marker.c"), "char fixture_hint[] = \"-export:\\\"fixture_marker\\\"\";\n")
+          File.write(File.join(objs, "dup.c"), "int dup_one(void) { return 1; }\n")
+          File.write(File.join(objs, "dup2.c"), "int dup_two(void) { return 2; }\n")
+          TebakoRuntimeBuilder::BuildHelpers.run_with_capture(
+            ["cc", "-c", File.join(objs, "marker.c"), "-o", File.join(objs, "marker.o")]
+          )
+          TebakoRuntimeBuilder::BuildHelpers.run_with_capture(
+            ["cc", "-c", File.join(objs, "dup.c"), "-o", File.join(objs, "dup.o")]
+          )
+          FileUtils.mkdir_p(File.join(objs, "second"))
+          TebakoRuntimeBuilder::BuildHelpers.run_with_capture(
+            ["cc", "-c", File.join(objs, "dup2.c"), "-o", File.join(objs, "second", "dup.o")]
+          )
+          TebakoRuntimeBuilder::BuildHelpers.run_with_capture(
+            ["ar", "q", File.join(link_unit, "libtfs.a"), File.join(objs, "marker.o"),
+             File.join(objs, "dup.o"), File.join(objs, "second", "dup.o")]
+          )
+          TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["ranlib", File.join(link_unit, "libtfs.a")])
+        end
+        src = File.join(link_unit, "driver.c")
+        File.write(src, "int tebako_driver_boot(void) { return 0; }\n")
+        TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["cc", "-c", src, "-o", File.join(link_unit, "driver.o")])
+        TebakoRuntimeBuilder::BuildHelpers.run_with_capture(
+          ["ar", "rcs", File.join(link_unit, "libtebako_driver.a"), File.join(link_unit, "driver.o")]
+        )
+        shim_dir = File.join(link_unit, "shim")
+        FileUtils.mkdir_p(shim_dir)
+        File.write(File.join(shim_dir, "llvm-objcopy"), "#!/bin/sh\nexit 1\n")
+        File.write(File.join(shim_dir, "make"), "#!/bin/sh\nexit 0\n")
+        File.write(File.join(shim_dir, "strip"), "#!/bin/sh\nexit 0\n")
+        FileUtils.chmod(0o755, [File.join(shim_dir, "llvm-objcopy"), File.join(shim_dir, "make"),
+                                File.join(shim_dir, "strip")])
+        prev_libdir = ENV.fetch("TEBAKO_RUST_LIBDIR", nil)
+        prev_path = ENV.fetch("PATH")
+        ENV["TEBAKO_RUST_LIBDIR"] = link_unit
+        ENV["PATH"] = "#{shim_dir}:#{prev_path}"
+        begin
+          described_class.finalize("x64-mingw-ucrt", ruby_src, File.join(root, "out", "runtime.exe"),
+                                   "3.3.7", deps_lib_dir)
+        ensure
+          prev_libdir.nil? ? ENV.delete("TEBAKO_RUST_LIBDIR") : ENV["TEBAKO_RUST_LIBDIR"] = prev_libdir
+          ENV["PATH"] = prev_path
+        end
+        listing, = Open3.capture2e("ar", "t", File.join(link_unit, "libtfs.a"))
+        members = listing.lines.map(&:strip).reject { |name| name.start_with?("__.SYMDEF") }
+        expect(members).to include("dup.o", "dup~2.o")
+        symbols, = Open3.capture2e("nm", "-g", File.join(link_unit, "libtfs.a"))
+        expect(symbols).to include("tebako_fs_mount")
+        expect(symbols).to include("dup_one")
+        expect(symbols).to include("dup_two")
+      end
+    end
+  end
+
   describe ".prepare msys dir.c glob_opendir guard" do
     let(:dir_c) { File.join(ruby_src, "dir.c") }
     let(:anchor) { "        if ((capacity = dirp->nfiles) > 0) {" }
