@@ -166,14 +166,29 @@ jobs:
           set -euo pipefail
           # Every shard tag's object is recreated (a sharded catalog's
           # republication recreates each line's object); the single-shard
-          # case is exactly the old behavior.
-          echo "${SHARDS:-[{\"release_tag\":\"\"}]}" | jq -r '.[].release_tag' | while read -r shard_tag; do
+          # case is exactly the old behavior. The default rides jq: a
+          # JSON literal inside ${SHARDS:-...} is a brace trap — bash
+          # closes the expansion at the JSON's first `}` and the
+          # remainder rides the value (the 0.16.32 force_rebuild died
+          # on jq's exit 5 with the delete already done).
+          echo "${SHARDS:-null}" | jq -r '. // [{"release_tag":""}] | .[].release_tag' | while read -r shard_tag; do
             tag="${shard_tag:-v$(cat VERSION)}"
             # Idempotent: a missing object is already the recreated state
             # (a re-run after a mid-air death). --cleanup-tag=false (the
-            # default, spelled out) keeps the tag on its commit.
-            gh release delete "$tag" --yes --cleanup-tag=false 2>/dev/null || \
+            # default, spelled out) keeps the tag on its commit. The
+            # delete must be SEEN: a silently dropped delete (the
+            # credential-class wedge — tebako-release#12) must not read
+            # as "already recreated".
+            if gh release view "$tag" --json id >/dev/null 2>&1; then
+              gh release delete "$tag" --yes --cleanup-tag=false
+              sleep 5
+              gh release view "$tag" --json id >/dev/null 2>&1 && {
+                echo "::error::release object for $tag survived the delete — the credential cannot delete (tebako-release#12)"
+                exit 1
+              }
+            else
               echo "no release object for $tag — already the recreated state"
+            fi
             echo "release object for $tag recreated (tag kept) — every leg's publish is a pure create"
           done
 
