@@ -1564,7 +1564,10 @@ payloads:
         sha256: c30784d324e975242e52b36eb826037e69cf9054cd3b9138d96b157e1410c172
       aarch64-macos:
         artifact: tebako-runtime-0.16.32-3.4.10-macos-arm64.tar.gz
-        sha256: 713623b2ceba97a604c44a9170e842fd1a28957c945a6c6e76871960d248dfb3
+        sha256: 73de313b0711a7f61a5b69da697dd75c7d1c827efab84cefac44a14428ee5b7f
+        blksum:
+          filename: tebako-runtime-0.16.32-3.4.10-macos-arm64.tfs.blksum.json
+          sha256: 5b0f90884706d33ef12ed56c520f0688ebcf24681cc1d0787d89677a678882ab
       aarch64-windows-ucrt:
         artifact: tebako-runtime-0.16.32-3.4.10-windows-ucrt-arm64.tar.gz
         sha256: 336181503625b865bd66d63bbfbcc7451cc9d772c5fae92189d188d128945327
@@ -1576,7 +1579,10 @@ payloads:
         sha256: d1c04e39249617298523f622f1054e8e129c167077c092f00f7d8d83ac68f0f6
       x86_64-macos:
         artifact: tebako-runtime-0.16.32-3.4.10-macos-x86_64.tar.gz
-        sha256: '0518113da2f7a201148379931ab7b0e4b6a794bba7c7ae214b169ca9ff7ab4fb'
+        sha256: d9a85bdd71cd77eb6bf3124843e7713200eea890345d69e51953cc6081b786f9
+        blksum:
+          filename: tebako-runtime-0.16.32-3.4.10-macos-x86_64.tfs.blksum.json
+          sha256: 8259e5bbdad20f5920c62808944127c7b9501192efe0c63669223fd957664b64
       x86_64-windows-ucrt:
         artifact: tebako-runtime-0.16.32-3.4.10-windows-ucrt64.tar.gz
         sha256: 2e82b3acbdd22452662ce10bc4c46f30a4b7e244f73b5ce59540f0c8b2d3400b
