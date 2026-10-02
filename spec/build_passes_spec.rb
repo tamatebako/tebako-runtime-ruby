@@ -223,16 +223,6 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
       expect(gnu_makefile_in).to include("cat tebako-dll-exports.def >> $@ # tebako patched (issue 40)")
     end
 
-    it "filters the unreferenced aws-lc jent class out of the generated .def before the fragment appends" do
-      gnu_makefile_in = File.read(File.join(ruby_src, "cygwin", "GNUmakefile.in"))
-      mkexports = TebakoRuntimeBuilder::BuildPasses::MSYS_DLL_EXPORTS_ANCHOR
-      jent_filter = "grep -v '_jent_' $@ > $@.filtered && mv $@.filtered $@ # tebako patched (aws-lc jent class)"
-      fragment_cat = "cat tebako-dll-exports.def >> $@"
-      expect(gnu_makefile_in).to include(jent_filter)
-      expect(gnu_makefile_in.index(mkexports.strip)).to be < gnu_makefile_in.index(jent_filter)
-      expect(gnu_makefile_in.index(jent_filter)).to be < gnu_makefile_in.index(fragment_cat)
-    end
-
     it "moves LIBRUBYARG inside the exe link's --start-group (the fs TU binds the driver exports)" do
       gnu_makefile_in = File.read(File.join(ruby_src, "cygwin", "GNUmakefile.in"))
       expect(gnu_makefile_in).to include("-Wl,--start-group $(LIBRUBYARG) $(MAINLIBS) -Wl,--end-group")
@@ -346,6 +336,29 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
         expect(symbols).not_to include("tebako_is_running_miniruby")
         expect(symbols).not_to include("tebako_mount_point")
       end
+    end
+  end
+
+  describe ".filter_drectve_exports" do
+    it "strips every -export directive and preserves the other .drectve directives" do
+      contents = ' -export:"aws_lc_0_45_0_jent_version" -defaultlib:ucrt ' \
+                 '-export:"aws_lc_0_45_0_jent_entropy_init" -entry:mainCRTStartup '
+      expect(described_class.filter_drectve_exports(contents)).to eq("-defaultlib:ucrt -entry:mainCRTStartup")
+    end
+
+    it "strips the MSVC-spelling /EXPORT: directives too" do
+      contents = " /EXPORT:aws_lc_0_45_0_jent_version /EXPORT:aws_lc_0_45_0_jent_init=data -defaultlib:ucrt "
+      expect(described_class.filter_drectve_exports(contents)).to eq("-defaultlib:ucrt")
+    end
+
+    it "reduces a pure-dllexport section to empty (the sanitizer removes the section then)" do
+      contents = ' -export:"aws_lc_0_45_0_jent_version" -export:"aws_lc_0_45_0_jent_read_entropy" '
+      expect(described_class.filter_drectve_exports(contents)).to eq("")
+    end
+
+    it "leaves a section with no export directives untouched" do
+      expect(described_class.filter_drectve_exports(" -defaultlib:ucrt -entry:mainCRTStartup "))
+        .to eq("-defaultlib:ucrt -entry:mainCRTStartup")
     end
   end
 

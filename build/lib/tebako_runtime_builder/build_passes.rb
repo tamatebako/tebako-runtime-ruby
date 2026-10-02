@@ -27,6 +27,7 @@
 
 require "digest"
 require "fileutils"
+require "tmpdir"
 
 module TebakoRuntimeBuilder
   # The build passes invoked from the CMake project (build/CMakeLists.txt)
@@ -143,22 +144,29 @@ module TebakoRuntimeBuilder
     # libtfs.a (nm) at prepare time -- never a hand-maintained symbol list.
     MSYS_DLL_EXPORTS_FRAGMENT = "tebako-dll-exports.def"
     MSYS_DLL_EXPORTS_ANCHOR = "\t$(Q) $(BOOTSTRAPRUBY_COMMAND) $(srcdir)/win32/mkexports.rb -output=$@ $(LIBRUBY_A)\n"
-    # The aws-lc FIPS jitter-entropy class: the v2.8.24 link unit's
-    # driver archive carries the vendored crypto's scoped jent globals
-    # (__tebako_internal_aws_lc_0_45_0_jent_*, 9 public spellings +
-    # internal variants) where v2.8.23's carried none. The generated
-    # .def lists the unscoped spellings, but nothing in the DLL's
-    # reference set pulls the jent members, so ld drops them and the
-    # explicit export demand fails the link ("cannot export
-    # aws_lc_0_45_0_jent_entropy_init: symbol not found" — the 2.8.24
-    # pin's windows legs). A symbol no linked object defines is never a
-    # public export: filter the class out of the .def before the tebako
-    # fragment appends.
-    MSYS_DLL_EXPORTS_JENT_FILTER =
-      "\t$(Q) grep -v '_jent_' $@ > $@.filtered && mv $@.filtered $@ # tebako patched (aws-lc jent class)\n"
     MSYS_DLL_EXPORTS_PATCHED =
-      "#{MSYS_DLL_EXPORTS_ANCHOR}#{MSYS_DLL_EXPORTS_JENT_FILTER}" \
-      "\t$(Q) cat #{MSYS_DLL_EXPORTS_FRAGMENT} >> $@ # tebako patched (issue 40)\n".freeze
+      "#{MSYS_DLL_EXPORTS_ANCHOR}\t$(Q) cat #{MSYS_DLL_EXPORTS_FRAGMENT} >> $@ # tebako patched (issue 40)\n".freeze
+
+    # The scoped link unit's dllexport trap (issue #40, the v2.8.24 pin's
+    # windows legs) -------------------------------------------------------
+    #
+    # The vendored crypto the v2.8.24 link unit added (aws-lc, via the rnp
+    # chain) compiles its public jent API with dllexport: the
+    # jitterentropy objects carry a COFF .drectve section of
+    # `-export:"aws_lc_0_45_0_jent_*"` directives. tebako-arscope renames
+    # the vendored SYMBOLS (__tebako_internal_aws_lc_0_45_0_jent_*) but a
+    # symbol-table rewrite cannot touch the directive STRINGS, so the
+    # staged archives demand exports of names no object defines anymore.
+    # Every image that pulls a jent member then fails its link:
+    # miniruby.exe has no .def at all, yet GNU ld reports "cannot export
+    # aws_lc_0_45_0_jent_entropy_init: symbol not found" and ld.lld
+    # "<root>: undefined symbol" (the DLL leg alike) -- the directives
+    # ride the objects, the generated .def (LIBRUBY_A + the tebako
+    # fragment) was never involved. A scoped symbol is internal by
+    # construction, so no legitimate export directive can name one: strip
+    # every -export directive from the scoped archives at prepare time.
+    MSYS_SCOPED_EXPORT_MARKERS = ["-export:\"", "/EXPORT:"].freeze
+    MSYS_SCOPED_EXPORT_DIRECTIVE = %r{\s*(?:-export:"[^"]*"|/EXPORT:\S+)}
 
     # The ruby.exe link rule (msys shared build): the fs TU (libtebako-fs.a,
     # in MAINLIBS) calls the driver's tebako_driver_boot /
@@ -439,6 +447,15 @@ module TebakoRuntimeBuilder
         stage_ruby_dll(rv, ruby_source_dir, output, platform.host_id) if platform.msys?
       end
 
+      # Remove the dllexport directives (MSYS_SCOPED_EXPORT_DIRECTIVE)
+      # from COFF .drectve section contents, preserving every other
+      # directive (-defaultlib:, -entry:, ...). Public so the spec can pin
+      # the filter directly: the objcopy orchestration around it is
+      # toolchain-bound (no COFF objcopy on the dev platforms).
+      def filter_drectve_exports(contents)
+        contents.gsub(MSYS_SCOPED_EXPORT_DIRECTIVE, "").strip
+      end
+
       private
 
       # The one substitution the pre-patched tree cannot carry: the static
@@ -471,8 +488,9 @@ module TebakoRuntimeBuilder
       end
 
       # The msys hot-patch set the prepare pass applies (the constants
-      # above): the shared-build set (issue #40) -- the DLL export
-      # fragment, the mkexports rule appending it, the mkexports
+      # above): the shared-build set (issue #40) -- the scoped archives'
+      # dllexport .drectve strip, the DLL export fragment, the mkexports
+      # rule appending it, the mkexports
       # pipe-string rewrite for the ruby-4 baseruby, and miniruby's static
       # library set in template/Makefile.in -- plus the two ruby-C-source
       # guards still awaiting source-side absorption (the dir.c
@@ -486,9 +504,10 @@ module TebakoRuntimeBuilder
       # the tebako@main link unit (tebako#414). A ruby-source fix lands in
       # tamatebako/ruby and flows via a source release (iterate unmerged
       # via harness_ref) -- the remaining two guards retire the same way.
-      def hotfix_msys!(platform, ruby_source_dir, deps_lib_dir, ruby_ver) # rubocop:disable Metrics/AbcSize
+      def hotfix_msys!(platform, ruby_source_dir, deps_lib_dir, ruby_ver) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
         hotfix_msys_glob_opendir!(File.join(ruby_source_dir, "dir.c"))
         hotfix_msys_fd_is_text!(File.join(ruby_source_dir, "io.c"))
+        strip_scoped_archive_dll_exports!(deps_lib_dir)
         write_dll_exports_fragment!(ruby_source_dir, deps_lib_dir)
         hotfix_msys_dll_exports!(File.join(ruby_source_dir, "cygwin", "GNUmakefile.in"))
         # The ruby.exe link rule lives in BOTH template/Makefile.in (the one
@@ -628,6 +647,91 @@ module TebakoRuntimeBuilder
         end
 
         candidates
+      end
+
+      # Strip the vendored dllexport .drectve directives from the scoped
+      # link-unit archives (MSYS_SCOPED_EXPORT_MARKERS above): the same
+      # archive set the fragment derives from, which is exactly the
+      # arscope-scoped set -- the hazard surface of renamed symbols with
+      # stale directive strings. Idempotent: a clean archive scans clean
+      # (the pass-2 overlay re-runs prepare).
+      def strip_scoped_archive_dll_exports!(deps_lib_dir)
+        stripped = dll_export_source_archives(deps_lib_dir).sum do |archive|
+          strip_archive_dll_exports!(archive)
+        end
+        puts "   ... stripping vendored dllexport .drectve directives (#{stripped} member(s) sanitized)"
+      end
+
+      # Byte-scan every member for the export-directive markers
+      # (toolchain-free); rewrite only offenders. llvm-objcopy is
+      # preferred over GNU objcopy: the aarch64 COFF the clangarm64
+      # toolchain consumes is beyond the ucrt64 binutils build, and the
+      # arm64 legs carry llvm-objcopy/llvm-ar. Probed lazily -- a clean
+      # archive needs no COFF tools at all (the dev platforms have none).
+      def strip_archive_dll_exports!(archive) # rubocop:disable Metrics/MethodLength
+        ar = coff_tool(%w[ar llvm-ar])
+        unless ar
+          raise TebakoRuntimeBuilder::Error.new(
+            "#{archive}: no ar/llvm-ar on PATH to inspect the scoped archive's members", 112
+          )
+        end
+        Dir.mktmpdir do |dir|
+          TebakoRuntimeBuilder::BuildHelpers.run_with_capture([ar, "x", File.expand_path(archive)], chdir: dir)
+          Dir.children(dir).count do |member|
+            object = File.join(dir, member)
+            MSYS_SCOPED_EXPORT_MARKERS.any? { |marker| File.binread(object).include?(marker) } &&
+              strip_member_dll_exports?(object, archive)
+          end
+        end
+      end
+
+      # Rewrite one offending member: drop every export directive from its
+      # .drectve (the section reduces to nothing for the pure-dllexport
+      # members -- remove it then), then replace the member in the
+      # archive (ar stores the basename; verified GNU and BSD alike). The
+      # ar flavor follows the objcopy one so the rewritten archive's
+      # symbol index matches the member COFF dialect. Returns false when
+      # the byte-scan hit was outside a real .drectve (a debug-string
+      # lookalike): nothing to rewrite.
+      def strip_member_dll_exports?(object, archive) # rubocop:disable Metrics/MethodLength
+        objcopy = coff_tool(%w[llvm-objcopy objcopy])
+        unless objcopy
+          raise TebakoRuntimeBuilder::Error.new(
+            "#{archive}: a member carries dllexport .drectve directives but no llvm-objcopy/objcopy is on PATH " \
+            "to strip them -- the scoped link unit cannot link (issue 40, the aws-lc jent class)", 112
+          )
+        end
+        ar = coff_tool(objcopy.start_with?("llvm-") ? %w[llvm-ar ar] : %w[ar llvm-ar])
+
+        drectve = "#{object}.drectve"
+        begin
+          TebakoRuntimeBuilder::BuildHelpers.run_with_capture(
+            [objcopy, "--dump-section", ".drectve=#{drectve}", object]
+          )
+        rescue TebakoRuntimeBuilder::Error
+          return false
+        end
+        filtered = filter_drectve_exports(File.binread(drectve))
+        if filtered.empty?
+          TebakoRuntimeBuilder::BuildHelpers.run_with_capture([objcopy, "--remove-section", ".drectve", object])
+        else
+          File.binwrite(drectve, filtered)
+          TebakoRuntimeBuilder::BuildHelpers.run_with_capture(
+            [objcopy, "--update-section", ".drectve=#{drectve}", object]
+          )
+        end
+        TebakoRuntimeBuilder::BuildHelpers.run_with_capture([ar, "r", archive, object])
+        true
+      end
+
+      # The first candidate on PATH (bare command name), nil when none.
+      # Probes the filesystem -- ar has no portable --version.
+      def coff_tool(candidates)
+        candidates.find do |tool|
+          ENV.fetch("PATH").split(File::PATH_SEPARATOR).any? do |dir|
+            ["", ".exe"].any? { |ext| File.executable?(File.join(dir, "#{tool}#{ext}")) }
+          end
+        end
       end
 
       # Append the fragment to the mkexports .def generation rule in
