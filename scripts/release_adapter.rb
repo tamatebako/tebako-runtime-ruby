@@ -78,6 +78,20 @@ class RubyReleaseAdapter < TebakoRelease::Adapter
   def bundle_publish?
     true
   end
+
+  # Spec 36 §3's co-publish shape: the per-file assets (bare exe, bare
+  # env image, the image's .blksum.json sidecar, the windows DLL) return
+  # ALONGSIDE the bundle — the bundle stays the registry-row artifact
+  # and the compat-window path; the per-file set witnesses the spec 39
+  # §7 lazy arm (a bundle-era loader serves block-group fetches straight
+  # off the release page without fetching the bundle). The shard
+  # declares the "per_file_assets" witness (runtime-manifest MINOR 2)
+  # so the loaders' lazy gate can fail closed on shards that never
+  # co-published, and the compat window keeps closing on co-published
+  # lines: old loaders keep taking the bundle.
+  def per_file_alongside_bundle?
+    true
+  end
 end
 
 TebakoRelease.configure(
