@@ -143,8 +143,22 @@ module TebakoRuntimeBuilder
     # libtfs.a (nm) at prepare time -- never a hand-maintained symbol list.
     MSYS_DLL_EXPORTS_FRAGMENT = "tebako-dll-exports.def"
     MSYS_DLL_EXPORTS_ANCHOR = "\t$(Q) $(BOOTSTRAPRUBY_COMMAND) $(srcdir)/win32/mkexports.rb -output=$@ $(LIBRUBY_A)\n"
+    # The aws-lc FIPS jitter-entropy class: the v2.8.24 link unit's
+    # driver archive carries the vendored crypto's scoped jent globals
+    # (__tebako_internal_aws_lc_0_45_0_jent_*, 9 public spellings +
+    # internal variants) where v2.8.23's carried none. The generated
+    # .def lists the unscoped spellings, but nothing in the DLL's
+    # reference set pulls the jent members, so ld drops them and the
+    # explicit export demand fails the link ("cannot export
+    # aws_lc_0_45_0_jent_entropy_init: symbol not found" — the 2.8.24
+    # pin's windows legs). A symbol no linked object defines is never a
+    # public export: filter the class out of the .def before the tebako
+    # fragment appends.
+    MSYS_DLL_EXPORTS_JENT_FILTER =
+      "\t$(Q) grep -v '_jent_' $@ > $@.filtered && mv $@.filtered $@ # tebako patched (aws-lc jent class)\n"
     MSYS_DLL_EXPORTS_PATCHED =
-      "#{MSYS_DLL_EXPORTS_ANCHOR}\t$(Q) cat #{MSYS_DLL_EXPORTS_FRAGMENT} >> $@ # tebako patched (issue 40)\n".freeze
+      "#{MSYS_DLL_EXPORTS_ANCHOR}#{MSYS_DLL_EXPORTS_JENT_FILTER}" \
+      "\t$(Q) cat #{MSYS_DLL_EXPORTS_FRAGMENT} >> $@ # tebako patched (issue 40)\n".freeze
 
     # The ruby.exe link rule (msys shared build): the fs TU (libtebako-fs.a,
     # in MAINLIBS) calls the driver's tebako_driver_boot /

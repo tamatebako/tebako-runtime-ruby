@@ -223,6 +223,16 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
       expect(gnu_makefile_in).to include("cat tebako-dll-exports.def >> $@ # tebako patched (issue 40)")
     end
 
+    it "filters the unreferenced aws-lc jent class out of the generated .def before the fragment appends" do
+      gnu_makefile_in = File.read(File.join(ruby_src, "cygwin", "GNUmakefile.in"))
+      mkexports = TebakoRuntimeBuilder::BuildPasses::MSYS_DLL_EXPORTS_ANCHOR
+      jent_filter = "grep -v '_jent_' $@ > $@.filtered && mv $@.filtered $@ # tebako patched (aws-lc jent class)"
+      fragment_cat = "cat tebako-dll-exports.def >> $@"
+      expect(gnu_makefile_in).to include(jent_filter)
+      expect(gnu_makefile_in.index(mkexports.strip)).to be < gnu_makefile_in.index(jent_filter)
+      expect(gnu_makefile_in.index(jent_filter)).to be < gnu_makefile_in.index(fragment_cat)
+    end
+
     it "moves LIBRUBYARG inside the exe link's --start-group (the fs TU binds the driver exports)" do
       gnu_makefile_in = File.read(File.join(ruby_src, "cygwin", "GNUmakefile.in"))
       expect(gnu_makefile_in).to include("-Wl,--start-group $(LIBRUBYARG) $(MAINLIBS) -Wl,--end-group")
