@@ -27,6 +27,7 @@
 
 require "digest"
 require "fileutils"
+require "tmpdir"
 
 module TebakoRuntimeBuilder
   # The build passes invoked from the CMake project (build/CMakeLists.txt)
@@ -145,6 +146,40 @@ module TebakoRuntimeBuilder
     MSYS_DLL_EXPORTS_ANCHOR = "\t$(Q) $(BOOTSTRAPRUBY_COMMAND) $(srcdir)/win32/mkexports.rb -output=$@ $(LIBRUBY_A)\n"
     MSYS_DLL_EXPORTS_PATCHED =
       "#{MSYS_DLL_EXPORTS_ANCHOR}\t$(Q) cat #{MSYS_DLL_EXPORTS_FRAGMENT} >> $@ # tebako patched (issue 40)\n".freeze
+
+    # The scoped link unit's dllexport trap (issue #40, the v2.8.24 pin's
+    # windows legs) -------------------------------------------------------
+    #
+    # The vendored crypto the v2.8.24 link unit added (aws-lc, via the rnp
+    # chain) compiles its public jent API with dllexport: the
+    # jitterentropy objects carry a COFF .drectve section of
+    # `-export:"aws_lc_0_45_0_jent_*"` directives. tebako-arscope renames
+    # the vendored SYMBOLS (__tebako_internal_aws_lc_0_45_0_jent_*) but a
+    # symbol-table rewrite cannot touch the directive STRINGS, so the
+    # staged archives demand exports of names no object defines anymore.
+    # Every image that pulls a jent member then fails its link:
+    # miniruby.exe has no .def at all, yet GNU ld reports "cannot export
+    # aws_lc_0_45_0_jent_entropy_init: symbol not found" and ld.lld
+    # "<root>: undefined symbol" (the DLL leg alike) -- the directives
+    # ride the objects, the generated .def (LIBRUBY_A + the tebako
+    # fragment) was never involved. A scoped symbol is internal by
+    # construction, so no legitimate export directive can name one: strip
+    # every -export directive from the scoped archives at prepare time.
+    # The one regex is BOTH the member byte-scan and the section filter
+    # (a scan/filter pair that can drift is a second bug on arrival): the
+    # quoted gcc spelling (-export:"name", the x86_64 unit), the bare
+    # clang spelling (-export:name, the aarch64 unit's jent member), the
+    # MSVC spelling (/EXPORT:name), any casing. Sibling directives
+    # (-exclude-symbols:, -defaultlib:) never match -- they ride through.
+    MSYS_SCOPED_EXPORT_DIRECTIVE = %r{\s*(?:-export:(?:"[^"]*"|\S+)|/EXPORT:\S+)}i
+
+    # The ar container format the dllexport strip walks (pure Ruby -- the
+    # merged unit's duplicate member names defeat `ar x`): the 8-byte
+    # magic, then 60-byte member headers each closed by the two-byte
+    # trailer.
+    AR_MAGIC = "!<arch>\n"
+    AR_HEADER_SIZE = 60
+    AR_HEADER_TRAILER = "`\n"
 
     # The ruby.exe link rule (msys shared build): the fs TU (libtebako-fs.a,
     # in MAINLIBS) calls the driver's tebako_driver_boot /
@@ -425,6 +460,15 @@ module TebakoRuntimeBuilder
         stage_ruby_dll(rv, ruby_source_dir, output, platform.host_id) if platform.msys?
       end
 
+      # Remove the dllexport directives (MSYS_SCOPED_EXPORT_DIRECTIVE)
+      # from COFF .drectve section contents, preserving every other
+      # directive (-defaultlib:, -entry:, ...). Public so the spec can pin
+      # the filter directly: the objcopy orchestration around it is
+      # toolchain-bound (no COFF objcopy on the dev platforms).
+      def filter_drectve_exports(contents)
+        contents.gsub(MSYS_SCOPED_EXPORT_DIRECTIVE, "").strip
+      end
+
       private
 
       # The one substitution the pre-patched tree cannot carry: the static
@@ -457,8 +501,9 @@ module TebakoRuntimeBuilder
       end
 
       # The msys hot-patch set the prepare pass applies (the constants
-      # above): the shared-build set (issue #40) -- the DLL export
-      # fragment, the mkexports rule appending it, the mkexports
+      # above): the shared-build set (issue #40) -- the scoped archives'
+      # dllexport .drectve strip, the DLL export fragment, the mkexports
+      # rule appending it, the mkexports
       # pipe-string rewrite for the ruby-4 baseruby, and miniruby's static
       # library set in template/Makefile.in -- plus the two ruby-C-source
       # guards still awaiting source-side absorption (the dir.c
@@ -472,9 +517,10 @@ module TebakoRuntimeBuilder
       # the tebako@main link unit (tebako#414). A ruby-source fix lands in
       # tamatebako/ruby and flows via a source release (iterate unmerged
       # via harness_ref) -- the remaining two guards retire the same way.
-      def hotfix_msys!(platform, ruby_source_dir, deps_lib_dir, ruby_ver) # rubocop:disable Metrics/AbcSize
+      def hotfix_msys!(platform, ruby_source_dir, deps_lib_dir, ruby_ver) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
         hotfix_msys_glob_opendir!(File.join(ruby_source_dir, "dir.c"))
         hotfix_msys_fd_is_text!(File.join(ruby_source_dir, "io.c"))
+        strip_scoped_archive_dll_exports!(deps_lib_dir)
         write_dll_exports_fragment!(ruby_source_dir, deps_lib_dir)
         hotfix_msys_dll_exports!(File.join(ruby_source_dir, "cygwin", "GNUmakefile.in"))
         # The ruby.exe link rule lives in BOTH template/Makefile.in (the one
@@ -614,6 +660,217 @@ module TebakoRuntimeBuilder
         end
 
         candidates
+      end
+
+      # Strip the vendored dllexport .drectve directives from the scoped
+      # link-unit archives (MSYS_SCOPED_EXPORT_DIRECTIVE above): the same
+      # archive set the fragment derives from, which is exactly the
+      # arscope-scoped set -- the hazard surface of renamed symbols with
+      # stale directive strings. Idempotent: a clean archive scans clean
+      # (the pass-2 overlay re-runs prepare).
+      def strip_scoped_archive_dll_exports!(deps_lib_dir)
+        stripped = dll_export_source_archives(deps_lib_dir).sum do |archive|
+          strip_archive_dll_exports!(archive)
+        end
+        puts "   ... stripping vendored dllexport .drectve directives (#{stripped} member(s) stripped)"
+      end
+
+      # Byte-scan every member for the export-directive markers and
+      # objcopy-strip only the offenders, then RE-BUILD the archive from
+      # the member set when any fired. The member walk is a pure-Ruby ar
+      # parse, not `ar t`/`ar x`: the merged unit carries DUPLICATE member
+      # names (the vendored deps converge on error.cpp.obj, xxhash.c.obj,
+      # ...), which `ar x` silently overwrites onto one another; and GNU
+      # ar's in-place replace rejects the arscope index flavor ("ar: ...
+      # malformed archive" -- the v2.8.24 windows legs), so no `ar r`
+      # either. No COFF tool is probed for a clean archive (the dev
+      # platforms have none, and the pass-2 overlay re-run is exactly
+      # that case).
+      def strip_archive_dll_exports!(archive)
+        Dir.mktmpdir do |dir|
+          members = extract_archive_members(archive, dir)
+          offenders = members.select do |member|
+            File.binread(member[:file]).match?(MSYS_SCOPED_EXPORT_DIRECTIVE)
+          end
+          next 0 if offenders.empty?
+
+          offenders.each { |member| strip_member_dll_exports!(member[:file]) }
+          rebuild_archive!(archive, dir, members.map { |member| File.basename(member[:file]) })
+          offenders.length
+        end
+      end
+
+      # The ar format, walked by offset ("!<arch>\n" + 60-byte headers):
+      # both long-name flavors (BSD "#1/<len>" prefixing the data, the
+      # GNU "//" string table referenced as "/<offset>") and both index
+      # spellings ("/", "__.SYMDEF*"), the pseudo-members skipped -- the
+      # rebuild's ranlib writes a fresh index. Duplicate member names are
+      # uniquified on disk (name~2.obj): the archive member name is
+      # cosmetic to ld (the index resolves symbols), so the rename is
+      # lossless for the link. Loud on a truncated/corrupt staged unit.
+      def extract_archive_members(archive, dir) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
+        data = File.binread(archive)
+        unless data.start_with?(AR_MAGIC)
+          raise TebakoRuntimeBuilder::Error.new(
+            "#{archive}: not an ar archive -- the staged link unit is truncated or corrupt", 112
+          )
+        end
+        members = []
+        seen = {}
+        long_names = +""
+        spans = []
+        offset = AR_MAGIC.bytesize
+        while offset + AR_HEADER_SIZE <= data.bytesize
+          header = data.byteslice(offset, AR_HEADER_SIZE)
+          unless header.byteslice(58, 2) == AR_HEADER_TRAILER
+            raise TebakoRuntimeBuilder::Error.new(
+              "#{archive}: malformed archive (bad member header at offset #{offset}) -- " \
+              "the staged link unit is truncated or corrupt", 112
+            )
+          end
+          raw_name = header.byteslice(0, 16).strip
+          size = header.byteslice(48, 10).strip.to_i
+          payload = offset + AR_HEADER_SIZE
+          if raw_name == "//"
+            long_names = data.byteslice(payload, size)
+          else
+            # spans first, resolution second: a producer may lay the
+            # long-name table down AFTER the members that reference it
+            spans << [raw_name, payload, size]
+          end
+          offset = payload + size + (size.odd? ? 1 : 0)
+        end
+        unless data.byteslice(offset..).to_s.delete("\n").empty?
+          raise TebakoRuntimeBuilder::Error.new(
+            "#{archive}: malformed archive (trailing garbage at offset #{offset}) -- " \
+            "the staged link unit is truncated or corrupt", 112
+          )
+        end
+        spans.each do |raw_name, payload, size|
+          next if raw_name == "/" # the GNU index: skipped, ranlib rewrites it on rebuild
+
+          name, file_offset, file_size = member_name_and_span(raw_name, data, payload, size, long_names, archive)
+          # BSD spells EVERY member #1/<len> (index included) and
+          # null-pads the embedded name, so the pseudo-member check
+          # runs on the resolved name
+          name = name.delete("\0").strip
+          next if name.empty? || name.start_with?("__.SYMDEF")
+
+          file = File.join(dir, unique_member_name(name, seen))
+          File.binwrite(file, data.byteslice(file_offset, file_size))
+          members << { name: name, file: file }
+        end
+        members
+      end
+
+      # One member's real name and data span, resolving the long-name
+      # flavors against the string table walked so far.
+      def member_name_and_span(raw_name, data, payload, size, long_names, archive) # rubocop:disable Metrics/MethodLength, Metrics/ParameterLists, Metrics/AbcSize
+        if raw_name.start_with?("#1/")
+          name_length = raw_name[3..].to_i
+          [data.byteslice(payload, name_length), payload + name_length, size - name_length]
+        elsif raw_name.start_with?("/")
+          entry = raw_name[1..].to_i
+          # the entry terminator follows the archive flavor: GNU writes
+          # "name/\n", the COFF flavor (llvm-ar against COFF objects,
+          # every dlltool import library) writes NUL
+          stop = [long_names.index("/", entry), long_names.index("\0", entry)].compact.min
+          unless stop
+            raise TebakoRuntimeBuilder::Error.new(
+              "#{archive}: malformed archive (long-name table offset #{entry} out of range) -- " \
+              "the staged link unit is truncated or corrupt", 112
+            )
+          end
+          [long_names.byteslice(entry...stop), payload, size]
+        else
+          [raw_name.chomp("/"), payload, size]
+        end
+      end
+
+      # The on-disk name for one extracted member: path-safe ("/" cannot
+      # ride a real member name), unique within the archive (the merged
+      # unit's duplicates get ~2, ~3, ... before the extension).
+      def unique_member_name(name, seen)
+        sanitized = name.tr("/", "_")
+        candidate = sanitized
+        count = 2
+        while seen.key?(candidate)
+          base = sanitized.sub(/(\.[^.]+)\z/, "")
+          candidate = "#{base}~#{count}#{sanitized[base.length..]}"
+          count += 1
+        end
+        seen[candidate] = true
+        candidate
+      end
+
+      # Rewrite one offending member in place: drop every export
+      # directive from its .drectve (the section reduces to nothing for
+      # the pure-dllexport members -- remove it then). llvm-objcopy is
+      # preferred over GNU objcopy: the aarch64 COFF the clangarm64
+      # toolchain consumes is beyond the ucrt64 binutils build.
+      def strip_member_dll_exports!(object) # rubocop:disable Metrics/MethodLength
+        objcopy = coff_tool(%w[llvm-objcopy objcopy])
+        unless objcopy
+          raise TebakoRuntimeBuilder::Error.new(
+            "#{object}: dllexport .drectve directives but no llvm-objcopy/objcopy on PATH to strip them -- " \
+            "the scoped link unit cannot link (issue 40, the aws-lc jent class)", 112
+          )
+        end
+        drectve = "#{object}.drectve"
+        begin
+          TebakoRuntimeBuilder::BuildHelpers.run_with_capture(
+            [objcopy, "--dump-section", ".drectve=#{drectve}", object]
+          )
+        rescue TebakoRuntimeBuilder::Error
+          return # the byte-scan hit rode a debug-string lookalike, not a .drectve
+        end
+        filtered = filter_drectve_exports(File.binread(drectve))
+        if filtered.empty?
+          TebakoRuntimeBuilder::BuildHelpers.run_with_capture([objcopy, "--remove-section", ".drectve", object])
+        else
+          File.binwrite(drectve, filtered)
+          TebakoRuntimeBuilder::BuildHelpers.run_with_capture(
+            [objcopy, "--update-section", ".drectve=#{drectve}", object]
+          )
+        end
+        FileUtils.rm_f(drectve)
+      end
+
+      # Re-create the archive from the (stripped) member set: batched
+      # quick-appends (the CreateProcess 32k command-line ceiling), one
+      # ranlib for the index, the fresh archive moved over the staged
+      # one. The tool flavor prefers llvm (clangarm64's aarch64 COFF is
+      # beyond the ucrt64 binutils build); ld consumes either index
+      # dialect.
+      def rebuild_archive!(archive, dir, member_names) # rubocop:disable Metrics/MethodLength, Metrics/AbcSize
+        archiver = coff_tool(%w[llvm-ar ar])
+        ranlib = coff_tool(archiver&.start_with?("llvm-") ? %w[llvm-ranlib ranlib] : %w[ranlib llvm-ranlib])
+        unless archiver && ranlib
+          raise TebakoRuntimeBuilder::Error.new(
+            "#{archive}: dllexport directives stripped but no llvm-ar/ar + ranlib on PATH to rebuild " \
+            "the archive -- the scoped link unit cannot link (issue 40, the aws-lc jent class)", 112
+          )
+        end
+        fresh = "__tebako_rebuilt.a"
+        member_names.each_slice(200) do |batch|
+          # rc, not q: every extracted name is unique post-uniquification,
+          # so replace never fires, and llvm-ar's q leaves a stale index
+          # member per batch behind (the double-index layout)
+          TebakoRuntimeBuilder::BuildHelpers.run_with_capture([archiver, "rc", fresh] + batch, chdir: dir)
+        end
+        TebakoRuntimeBuilder::BuildHelpers.run_with_capture([ranlib, File.join(dir, fresh)])
+        FileUtils.chmod(File.stat(archive).mode, File.join(dir, fresh))
+        FileUtils.mv(File.join(dir, fresh), File.expand_path(archive))
+      end
+
+      # The first candidate on PATH (bare command name), nil when none.
+      # Probes the filesystem -- ar has no portable --version.
+      def coff_tool(candidates)
+        candidates.find do |tool|
+          ENV.fetch("PATH").split(File::PATH_SEPARATOR).any? do |dir|
+            ["", ".exe"].any? { |ext| File.executable?(File.join(dir, "#{tool}#{ext}")) }
+          end
+        end
       end
 
       # Append the fragment to the mkexports .def generation rule in

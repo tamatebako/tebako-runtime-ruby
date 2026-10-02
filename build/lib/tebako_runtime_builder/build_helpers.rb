@@ -62,10 +62,12 @@ module TebakoRuntimeBuilder
         JSON.parse(response.body).fetch("assets", []).map { |asset| asset.fetch("name") }
       end
 
-      def run_with_capture(args, env: {})
+      def run_with_capture(args, env: {}, chdir: nil)
         args = args.compact
         puts "   ... @ #{args.join(" ")}"
-        out, st = Open3.capture2e(env, *args)
+        opts = {}
+        opts[:chdir] = chdir if chdir
+        out, st = Open3.capture2e(env, *args, **opts)
         if st.signaled? || !st.exitstatus.zero?
           raise TebakoRuntimeBuilder::Error, "Failed to run #{args.join(" ")} (#{st}):\n #{out}"
         end

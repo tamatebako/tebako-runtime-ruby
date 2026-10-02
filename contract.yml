@@ -165,7 +165,14 @@ container_version: "0.16.2"
 # Authenticode-signed stitched exe boots. v2.8.22 (press support for
 # ruby 4.0.7) touched tebako-cli, not the driver, so the pin skips it.
 # Contract unchanged (2).
-link_unit_release: "v2.8.23"
+# v2.8.24 (tebako#699-#705, spec 38/39): the driver gains the lazy
+# range-mount arm — an env image installed with a blksum descriptor
+# mounts via HTTP Range reads against the release asset and seals in
+# background (spec 39 §4), instead of demanding the whole image up
+# front. The unit also carries the OCI pull path (spec 38) and the
+# windows Range-read deadlock fix (tebako#700). Contract unchanged (2).
+# Full-catalog re-cut: the runtime exe embeds the unit.
+link_unit_release: "v2.8.24"
 
 # The release machinery pin: the tamatebako/tebako-release tag
 # the Gemfile resolves (the legs' publish/sign jobs + the coordinator's

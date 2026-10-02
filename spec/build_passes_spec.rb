@@ -337,6 +337,109 @@ RSpec.describe TebakoRuntimeBuilder::BuildPasses do
         expect(symbols).not_to include("tebako_mount_point")
       end
     end
+
+    it "rebuilds a marker-carrying archive losslessly across DUPLICATE member names (the v2.8.24 unit)" do
+      # The arscope-merged unit converges vendored deps onto the same
+      # member names (error.cpp.obj, xxhash.c.obj, ...) -- `ar x` would
+      # silently overwrite them onto one another, so the strip walks the
+      # ar format itself. Fixture: one tebako_* member (the fragment
+      # keeps deriving), one member carrying export-marker bytes (a
+      # .drectve lookalike in a C string -- the objcopy dump then fails
+      # and the member is left untouched), and two members sharing one
+      # name. The shim objcopy stands in for a COFF-less toolchain.
+      Dir.mktmpdir do |link_unit|
+        FileUtils.mkdir_p(File.join(link_unit, "closure"))
+        FileUtils.touch(File.join(link_unit, "closure", "libfmt.a"))
+        FileUtils.cp(File.join(deps_lib_dir, "libtfs.a"), File.join(link_unit, "libtfs.a"))
+        Dir.mktmpdir do |objs|
+          marker_src = File.join(objs, "marker.c")
+          File.write(marker_src, "char fixture_hint[] = \"-export:\\\"fixture_marker\\\"\";\n")
+          dup_src = File.join(objs, "dup.c")
+          File.write(dup_src, "int dup_one(void) { return 1; }\n")
+          dup2_src = File.join(objs, "dup2.c")
+          File.write(dup2_src, "int dup_two(void) { return 2; }\n")
+          TebakoRuntimeBuilder::BuildHelpers.run_with_capture(
+            ["cc", "-c", marker_src, "-o", File.join(objs, "marker.o")]
+          )
+          TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["cc", "-c", dup_src, "-o", File.join(objs, "dup.o")])
+          FileUtils.mkdir_p(File.join(objs, "second"))
+          TebakoRuntimeBuilder::BuildHelpers.run_with_capture(
+            ["cc", "-c", dup2_src, "-o", File.join(objs, "second", "dup.o")]
+          )
+          TebakoRuntimeBuilder::BuildHelpers.run_with_capture(
+            ["ar", "rcs", File.join(link_unit, "libtfs.a"), File.join(objs, "marker.o")]
+          )
+          # quick-append: `ar r` would replace the first dup.o with the
+          # second (name-keyed); q appends without the duplicate check,
+          # the arscope-merged unit's duplicate-member shape
+          TebakoRuntimeBuilder::BuildHelpers.run_with_capture(
+            ["ar", "q", File.join(link_unit, "libtfs.a"), File.join(objs, "dup.o"),
+             File.join(objs, "second", "dup.o")]
+          )
+          TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["ranlib", File.join(link_unit, "libtfs.a")])
+        end
+        src = File.join(link_unit, "driver.c")
+        obj = File.join(link_unit, "driver.o")
+        File.write(src, "int tebako_driver_boot(void) { return 0; }\nint tebako_main(void) { return 0; }\n")
+        TebakoRuntimeBuilder::BuildHelpers.run_with_capture(["cc", "-c", src, "-o", obj])
+        TebakoRuntimeBuilder::BuildHelpers.run_with_capture(
+          ["ar", "rcs", File.join(link_unit, "libtebako_driver.a"), obj]
+        )
+        shim_dir = File.join(link_unit, "shim")
+        FileUtils.mkdir_p(shim_dir)
+        File.write(File.join(shim_dir, "llvm-objcopy"), "#!/bin/sh\nexit 1\n")
+        FileUtils.chmod(0o755, File.join(shim_dir, "llvm-objcopy"))
+        prev_libdir = ENV.fetch("TEBAKO_RUST_LIBDIR", nil)
+        prev_path = ENV.fetch("PATH")
+        ENV["TEBAKO_RUST_LIBDIR"] = link_unit
+        ENV["PATH"] = "#{shim_dir}:#{prev_path}"
+        begin
+          described_class.prepare("x64-mingw-ucrt", ruby_src, deps_lib_dir, "3.3.7", "A:/t", "cc")
+        ensure
+          prev_libdir.nil? ? ENV.delete("TEBAKO_RUST_LIBDIR") : ENV["TEBAKO_RUST_LIBDIR"] = prev_libdir
+          ENV["PATH"] = prev_path
+        end
+        listing, = Open3.capture2e("ar", "t", File.join(link_unit, "libtfs.a"))
+        members = listing.lines.map(&:strip).reject { |name| name.start_with?("__.SYMDEF") }
+        expect(members.length).to eq(4)
+        expect(members).to include("dup.o", "dup~2.o")
+        symbols, = Open3.capture2e("nm", "-g", File.join(link_unit, "libtfs.a"))
+        expect(symbols).to include("tebako_fs_mount")
+        expect(symbols).to include("dup_one")
+        expect(symbols).to include("dup_two")
+        names = File.read(File.join(ruby_src, "tebako-dll-exports.def")).lines.map(&:strip)
+        expect(names).to include("tebako_fs_mount")
+      end
+    end
+  end
+
+  describe ".filter_drectve_exports" do
+    it "strips every -export directive and preserves the other .drectve directives" do
+      contents = ' -export:"aws_lc_0_45_0_jent_version" -defaultlib:ucrt ' \
+                 '-export:"aws_lc_0_45_0_jent_entropy_init" -entry:mainCRTStartup '
+      expect(described_class.filter_drectve_exports(contents)).to eq("-defaultlib:ucrt -entry:mainCRTStartup")
+    end
+
+    it "strips the bare (unquoted) clang spelling too -- the aarch64 unit's jent member" do
+      contents = " -export:aws_lc_0_45_0_jent_version -export:aws_lc_0_45_0_jent_read_entropy " \
+                 "-exclude-symbols:aws_lc_0_45_0_jent_ "
+      expect(described_class.filter_drectve_exports(contents)).to eq("-exclude-symbols:aws_lc_0_45_0_jent_")
+    end
+
+    it "strips the MSVC-spelling /EXPORT: directives too" do
+      contents = " /EXPORT:aws_lc_0_45_0_jent_version /EXPORT:aws_lc_0_45_0_jent_init=data -defaultlib:ucrt "
+      expect(described_class.filter_drectve_exports(contents)).to eq("-defaultlib:ucrt")
+    end
+
+    it "reduces a pure-dllexport section to empty (the sanitizer removes the section then)" do
+      contents = ' -export:"aws_lc_0_45_0_jent_version" -export:"aws_lc_0_45_0_jent_read_entropy" '
+      expect(described_class.filter_drectve_exports(contents)).to eq("")
+    end
+
+    it "leaves a section with no export directives untouched" do
+      expect(described_class.filter_drectve_exports(" -defaultlib:ucrt -entry:mainCRTStartup "))
+        .to eq("-defaultlib:ucrt -entry:mainCRTStartup")
+    end
   end
 
   describe ".prepare msys dir.c glob_opendir guard" do
