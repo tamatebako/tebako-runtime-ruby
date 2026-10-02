@@ -417,6 +417,13 @@ module TebakoRuntimeBuilder
         platform = TebakoRuntimeBuilder::Platform.new(ostype)
         rv = TebakoRuntimeBuilder::RubyVersion.new(ruby_ver)
         rbconfig = File.join(ruby_source_dir, "rbconfig.rb")
+        # A cache-restored tree skips prepare (the cmake stamps hold), but
+        # the DLL relink below still consumes the staged link-unit archives
+        # — a pristine (re)staging would demand exports of the
+        # arscope-renamed jent symbols (the aws-lc .drectve class). Re-apply
+        # the strip at the consumption point; idempotent on clean archives
+        # (byte-scan only, no COFF tool probed).
+        strip_scoped_archive_dll_exports!(deps_lib_dir) if platform.msys?
         # Drop the stub driver (the toolchain pass removed it already
         # everywhere except msys): the relink must resolve -ltebako-fs to the
         # real library in the CMake binary dir
@@ -1139,7 +1146,7 @@ module TebakoRuntimeBuilder
         args = ["tar", "-xzf", msys_tar_path(pass2_tarball), "-C", msys_tar_path(overlay_src)]
         TebakoRuntimeBuilder::BuildHelpers.run_with_capture(args)
         root = Dir.children(overlay_src).map { |child| File.join(overlay_src, child) }
-                                        .find { |path| File.directory?(path) }
+                  .find { |path| File.directory?(path) }
         raise TebakoRuntimeBuilder::Error.new("overlay tarball carries no source tree", 130) if root.nil?
 
         root
