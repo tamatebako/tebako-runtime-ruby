@@ -172,6 +172,10 @@ class RegistryUpdate # rubocop:disable Metrics/ClassLength
   # stay member pins (they name nothing served). A per-file-era shard's
   # row names the exe, as always — the registry mirrors what the pinned
   # release serves, era by era.
+  # Spec 39 §3 MINOR 4: a shard declaring `image.blksum` (the lazy mount's
+  # block-group digest sidecar pin) gets the pin mirrored into the row
+  # verbatim — either era; a pre-blksum shard declares nothing and the row
+  # carries no key (the additive-key compat rule).
   def platform_row(asset_name, entry)
     host_id = entry.fetch("platform")
     triplet = TebakoRuntimeBuilder::Platform::TPKG_TRIPLETS[host_id]
@@ -181,10 +185,20 @@ class RegistryUpdate # rubocop:disable Metrics/ClassLength
             "no spec 03 §3 triplet mapping for it"
     end
 
-    bundle = entry["bundle"]
-    return [triplet, { "artifact" => bundle.fetch("filename"), "sha256" => bundle.fetch("sha256") }] if bundle
+    [triplet, artifact_row(entry)]
+  end
 
-    [triplet, { "artifact" => entry.fetch("filename"), "sha256" => entry.fetch("sha256") }]
+  # The row's served-artifact half, era by era — the bundle's name/sha on
+  # bundle-era shards, the exe's otherwise (spec 36 §5) — plus the additive
+  # blksum pin (spec 39 §3 MINOR 4) mirrored verbatim from the shard's
+  # image.blksum declaration when present.
+  def artifact_row(entry)
+    source = entry["bundle"] || entry
+    row = { "artifact" => source.fetch("filename"), "sha256" => source.fetch("sha256") }
+    if (blksum = entry.dig("image", "blksum"))
+      row["blksum"] = { "filename" => blksum.fetch("filename"), "sha256" => blksum.fetch("sha256") }
+    end
+    row
   end
 
   # The current registry the render merges into: main's published state

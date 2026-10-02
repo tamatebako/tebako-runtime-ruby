@@ -197,6 +197,17 @@ each package:
   signing-enabled lines the entry also declares its `signature` block
   (`{keyid, asc}` — the exact `.asc` asset name within the release, spec 09
   §5), at the entry and facet levels.
+- **`<image>.blksum.json`** — the env image's block-group digest sidecar
+  (spec 39 §3: one sha256 per 4 MiB group of image bytes plus the
+  whole-image sha256 — the lazy mount's range-GET trust anchor). The
+  uploader derives it in-leg from the staged image bytes (derivable
+  metadata, the same class as the checksum sidecars), uploads it BEFORE
+  the shard that pins it, and pins it in the shard's additive
+  `image.blksum` key (`{filename, sha256}` — consumers that predate the
+  key ignore it; a pre-blksum release declares nothing). The render is
+  byte-exact with `tpkg::lazy::Blksum::render`, golden-pinned in the
+  tebako-release gem's suite. Its registry row mirror (spec 03 §4's
+  tier-3 rule) lands as `blksum` on the version's platform entry.
 - **`<asset>.asc`** — on signing-enabled lines, every served name (payload,
   sidecar, shard, contract card) carries its own detached OpenPGP
   signature, made in-leg from the fresh bytes (spec 09 §5's no-fold rule:
