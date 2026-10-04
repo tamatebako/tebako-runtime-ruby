@@ -203,4 +203,4 @@ link_unit_release: "v2.8.24"
 # (this factory's adapter era-gates the hook on the run's tebako version;
 # the gem's parser reads both spellings forever, so the immutable
 # <= 0.16.32 lines stay publishable and auditable as-is).
-release_tooling: "v0.5.0"
+release_tooling: "v0.5.1"
