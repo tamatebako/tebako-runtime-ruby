@@ -4,6 +4,21 @@ Builds and publishes the prebuilt tebako Ruby runtime packages
 (`tebako-runtime-<tebako-version>-<ruby-version>-<platform>`) that the
 tebako gem resolves at press/run time.
 
+The package-name spelling is era-gated
+([tebako#716](https://github.com/tamatebako/tebako/issues/716)): tebako
+lines **>= 0.17.0** compose
+`tebako-runtime-<tebako-version>-ruby-<ruby-version>-<platform>` — a `ruby`
+language segment joins the name — while the **<= 0.16.32** lines are
+immutable (sha256-pinned in the live registries) and keep the lang-less
+spelling forever. The gate keys on the tebako version of the run at hand,
+never on a repo-wide flag: the build workflow computes a `lang-infix`
+output from that version and every compose site threads it, and the
+release adapter's `lang_name` hook reads the same run version off
+`TEBAKO_VERSION`, so a catalog or mop-up re-run of an old line keeps
+composing old-era names even after the flip lands. Tooling that parses
+artifact names (the boot smoke's artifact model, the release gem) accepts
+both spellings.
+
 ## How a runtime is built
 
 The build input is the **pre-patched ruby source** published by

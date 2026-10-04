@@ -188,6 +188,15 @@ RSpec.describe TebakoRuntimeBuilder::Builder do
   it "derives the default image name from the default package name" do
     b = builder(nil)
     expect(b.image_output).to eq("#{b.default_output.sub(/\.exe\z/, "")}.tfs")
-    expect(File.basename(b.image_output)).to match(/\Atebako-runtime-9\.9\.9-3\.3\.7-.+\.tfs\z/)
+    # tebako#716: 9.9.9 is a post-flip line, so the default name carries
+    # the language segment (PackageName owns the era gate).
+    expect(File.basename(b.image_output)).to match(/\Atebako-runtime-9\.9\.9-ruby-3\.3\.7-.+\.tfs\z/)
+  end
+
+  it "composes the lang-less default name for a pre-0.17.0 tebako line (tebako#716's era gate)" do
+    b = described_class.new(repo_root: REPO_ROOT, ruby_version: "3.3.7", tebako_version: "0.16.32",
+                            prefix: File.join(Dir.pwd, ".build"), output: nil)
+    expect(File.basename(b.default_output)).to match(/\Atebako-runtime-0\.16\.32-3\.3\.7-.+(\.exe)?\z/)
+    expect(File.basename(b.default_output)).not_to include("ruby-3.3.7")
   end
 end
