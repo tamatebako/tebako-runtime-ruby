@@ -42,8 +42,23 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
       expect(artifact.ruby_major).to eq(3)
     end
 
+    it "parses the post-tebako#716 artifact name (the language segment is transparent to the parse)" do
+      artifact = described_class::Artifact.new("tebako-runtime-0.17.0-ruby-4.0.7-macos-arm64")
+      expect(artifact.tebako_version).to eq("0.17.0")
+      expect(artifact.ruby_version).to eq("4.0.7")
+      expect(artifact.platform_id).to eq("macos-arm64")
+      expect(artifact.ruby_major).to eq(4)
+    end
+
     it "parses a windows .exe artifact name" do
       artifact = described_class::Artifact.new("tebako-runtime-0.15.9-3.3.7-windows-ucrt64.exe")
+      expect(artifact.platform_id).to eq("windows-ucrt64")
+    end
+
+    it "parses a post-tebako#716 windows .exe artifact name" do
+      artifact = described_class::Artifact.new("tebako-runtime-0.17.0-ruby-3.4.10-windows-ucrt64.exe")
+      expect(artifact.tebako_version).to eq("0.17.0")
+      expect(artifact.ruby_version).to eq("3.4.10")
       expect(artifact.platform_id).to eq("windows-ucrt64")
     end
 

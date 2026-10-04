@@ -30,7 +30,9 @@ require "fileutils"
 module TebakoRuntimeBuilder
   # Packs the assembled runtime layout tree (the deploy pass's DATA_SRC_DIR)
   # into the standalone image published next to the runtime executable:
-  # tebako-runtime-<tebako>-<ruby>-<platform>.tfs. The lean flow's driver
+  # tebako-runtime-<tebako>-[<lang>-]<ruby>-<platform>.tfs (both name eras —
+  # tebako#716; the image name derives from the executable's own name, so
+  # the era follows the package's). The lean flow's driver
   # mounts this image directly instead of extracting a runtime layout.
   #
   # The image is limnifs on EVERY host (spec 20 §6: the only first-class

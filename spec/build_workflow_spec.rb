@@ -22,6 +22,27 @@ RSpec.describe "build-platform reusable workflow" do
     )
   end
 
+  # tebako#716's era gate (spec 05 §2's era law): the language segment of
+  # the package name is a COMPUTED output of the compute job, keyed on the
+  # run's own tebako version (never a repo-wide constant) so a mop-up rerun
+  # of a <= 0.16.32 line keeps composing old-era names. Every compose site
+  # of the package name in the workflow threads that output — a site that
+  # drops the infix composes a name the gem's era-gated uploader/audit
+  # never expects, and vice versa. Locked here so a drift fails loudly.
+  it "gates the package-name language segment on the run's tebako version (tebako#716)" do
+    compute = workflow.fetch("jobs").fetch("compute")
+    expect(compute.dig("outputs", "lang-infix")).to eq("${{ steps.get-version.outputs.lang-infix }}")
+    step = compute.fetch("steps").find { |s| s["id"] == "get-version" }
+    expect(step.fetch("run")).to include("cat VERSION", "0.17.0", "lang-infix=ruby-")
+    text = File.read(workflow_path)
+    compose = text.scan(/tebako-runtime-\$\{\{ needs\.compute\.outputs\.tebako-version \}\}-(.{0,60})/)
+    expect(compose).not_to be_empty
+    compose.flatten.each do |tail|
+      expect(tail).to start_with("${{ needs.compute.outputs.lang-infix }}"),
+                      "a tebako-runtime-<ver>- compose site does not thread the lang-infix output"
+    end
+  end
+
   it "consumes the object-shaped ruby matrix rows everywhere (no bare matrix.ruby left)" do
     expect(File.read(workflow_path)).not_to include("${{ matrix.ruby }}")
   end
@@ -239,7 +260,8 @@ RSpec.describe "build-platform reusable workflow" do
     expect(publish.fetch("env")).not_to have_key("FORCE_REBUILD")
     expect(sign.fetch("run")).to include("bundle exec tebako-release sign")
     expect(sign.dig("env", "SIGN_ONLY_STEMS")).to eq(
-      "tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
+      "tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ needs.compute.outputs.lang-infix }}" \
+      "${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
     )
     expect(sign.dig("env", "TEBAKO_RELEASE_SIGNING_KEY")).to eq("${{ secrets.TEBAKO_RELEASE_SIGNING_KEY }}")
     # The verify gate depends on the publish legs on publish runs.

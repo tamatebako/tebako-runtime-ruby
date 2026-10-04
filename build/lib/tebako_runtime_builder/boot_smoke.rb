@@ -39,7 +39,8 @@ module TebakoRuntimeBuilder
   # statx/fcntl/flock drift class at build time, per runtime, in seconds.
   #
   # The runtime root (ENV TEBAKO_RUNTIME_ROOT) is the directory holding
-  # exactly one tebako-runtime-<tebako>-<ruby>-<platform> executable -- a
+  # exactly one tebako-runtime-<tebako>-[<lang>-]<ruby>-<platform> executable
+  # (both name eras — tebako#716; Artifact owns the dual-era parse) -- a
   # build leg's runtime-packages/, a tebako-home runtime cache dir -- or
   # the executable path itself. A bare layout tree or a mounted filesystem
   # image carries no interpreter, so it is never a valid root.
@@ -213,7 +214,7 @@ module TebakoRuntimeBuilder
       if root.empty? || !File.exist?(root)
         raise TebakoRuntimeBuilder::Error.new(
           "TEBAKO_RUNTIME_ROOT (#{@runtime_root.inspect}) does not point at a runtime root: set it to a directory " \
-          "holding one tebako-runtime-<tebako>-<ruby>-<platform> executable, or to the executable itself", 141
+          "holding one tebako-runtime-<tebako>-[<lang>-]<ruby>-<platform> executable, or to the executable itself", 141
         )
       end
       return File.expand_path(root) if File.file?(root)

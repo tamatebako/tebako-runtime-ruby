@@ -27,19 +27,23 @@
 
 module TebakoRuntimeBuilder
   class BootSmoke
-    # Name model of a runtime package artifact:
-    # tebako-runtime-<tebako x.y.z>-<ruby x.y.z>-<platform id>[.exe] -- the
-    # platform id itself carries dashes (linux-gnu-x86_64), so the versions
-    # anchor the parse from the front.
+    # Name model of a runtime package artifact, dual-era (tebako#716):
+    # tebako-runtime-<tebako x.y.z>-[ruby-]<ruby x.y.z>-<platform id>[.exe]
+    # — the language segment rides only >= 0.17.0 lines (PackageName owns
+    # the gate); the parser accepts both spellings forever, exactly like
+    # the tebako-release gem's dual-era parser. The platform id itself
+    # carries dashes (linux-gnu-x86_64), so the versions anchor the parse
+    # from the front.
     class Artifact
-      NAME_RE = /\Atebako-runtime-(?<tebako>\d+\.\d+\.\d+)-(?<ruby>\d+\.\d+\.\d+)-(?<platform>.+?)(?:\.exe)?\z/
+      NAME_RE = /\Atebako-runtime-(?<tebako>\d+\.\d+\.\d+)-(?:(?<lang>[a-z0-9]+)-)?(?<ruby>\d+\.\d+\.\d+)-
+                  (?<platform>.+?)(?:\.exe)?\z/x
 
       def initialize(basename)
         match = NAME_RE.match(basename)
         unless match
           raise TebakoRuntimeBuilder::Error.new(
             "'#{basename}' is not a tebako runtime artifact name " \
-            "(tebako-runtime-<tebako>-<ruby>-<platform>[.exe])", 142
+            "(tebako-runtime-<tebako>-[<lang>-]<ruby>-<platform>[.exe])", 142
           )
         end
 

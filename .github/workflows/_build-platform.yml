@@ -284,6 +284,10 @@ jobs:
       # platform-arch, never per ruby (the native closure is ruby-free).
       link-unit-matrix: ${{ steps.matrix.outputs.link-unit-matrix }}
       tebako-version: ${{ steps.get-version.outputs.version }}
+      # tebako#716's language infix of the runtime asset name: "ruby-" on
+      # tebako lines >= 0.17.0, empty on the immutable <= 0.16.32 era —
+      # keyed on THIS run's tebako version (the step's own comment).
+      lang-infix: ${{ steps.get-version.outputs.lang-infix }}
       container-version: ${{ steps.get-container-version.outputs.version }}
       source-pin: ${{ steps.get-source-pin.outputs.pin }}
       link-unit-release: ${{ steps.get-link-unit-pin.outputs.release }}
@@ -308,6 +312,21 @@ jobs:
           version=$(cat VERSION)
           echo "Building runtimes for Tebako version $version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          # tebako#716 (spec 05 §2's era law): the runtime asset name gains
+          # a language segment — tebako-runtime-<ver>-ruby-<lv>-<triplet> —
+          # ONLY on tebako lines >= 0.17.0. The <= 0.16.32 lines are
+          # immutable (sha256-pinned in the live registries), so the gate
+          # keys on THIS run's version — a catalog/mop-up rerun of an old
+          # line composes old-era names even after the flip lands. Every
+          # compose site below threads this output; the release machinery's
+          # own gate (scripts/release_adapter.rb's lang_name) reads the same
+          # run version off TEBAKO_VERSION, so leg and uploader never
+          # disagree.
+          if [ "$(printf '%s\n%s\n' "0.17.0" "$version" | sort -V | head -1)" = "0.17.0" ]; then
+            echo "lang-infix=ruby-" >> "$GITHUB_OUTPUT"
+          else
+            echo "lang-infix=" >> "$GITHUB_OUTPUT"
+          fi
 
       # The toolchain container line — an axis INDEPENDENT of the
       # artifact version (contract.yml owns it; the preflight job fails
@@ -903,7 +922,7 @@ jobs:
           esac
           container="ghcr.io/tamatebako/tebako-${{ matrix.env.container }}:${{ needs.compute.outputs.container-version }}-${arch_suffix}"
           echo "Building runtime for Ruby ${{ matrix.ruby.version }} on ${{ matrix.env.os }}/${{ matrix.env.arch }}"
-          runtime="tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
+          runtime="tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ needs.compute.outputs.lang-infix }}${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
           # TEBAKO_RUST_LIBDIR: the staged v2 link unit (downloaded from
           # the link-unit job above) — the builder's rust_driver? switch
           # then links the scoped Rust staticlibs instead of the C++ driver.
@@ -1047,7 +1066,7 @@ jobs:
           TEBAKO_RUST_LIBDIR: ${{ github.workspace }}/.build/link-unit
         run: |
           echo "Building runtime for Ruby ${{ matrix.ruby.version }} on ${{ matrix.env.os }}/${{ matrix.env.arch }}"
-          runtime="tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
+          runtime="tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ needs.compute.outputs.lang-infix }}${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
           tools/build_runtime --ruby "${{ matrix.ruby.version }}" --output "runtime-packages/$runtime" --prefix .build \
             --src-mirror "file://${{ github.workspace }}/.build/spec22-src-roll" --src-release spec22-chain
 
@@ -1063,7 +1082,7 @@ jobs:
         run: |
           git config --global core.longpaths true
           echo "Building runtime for Ruby ${{ matrix.ruby.version }} on ${{ matrix.env.os }}/${{ matrix.env.arch }}"
-          runtime="tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
+          runtime="tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ needs.compute.outputs.lang-infix }}${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
           # The src-mirror's file:// URL rides the drive-letter path (the
           # fetcher is the built ucrt ruby — an msys /c/... path is
           # unreadable to it).
@@ -1218,7 +1237,7 @@ jobs:
           # is materialized by the boot smoke, not present here), and this
           # step must never fail the leg on it.
           set +e
-          runtime="tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
+          runtime="tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ needs.compute.outputs.lang-infix }}${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
           exe="runtime-packages/$runtime"
           [ -s "$exe" ] || exe="$exe.exe"
           probe="$PWD/build/lib/tebako_runtime_builder/boot_smoke/probe.rb"
@@ -1274,7 +1293,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          runtime="tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
+          runtime="tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ needs.compute.outputs.lang-infix }}${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
           exe="runtime-packages/$runtime"
           # The windows artifact name (.exe suffix or not) is still settling
           # (no windows assets shipped yet) -- accept either spelling.
@@ -1308,7 +1327,7 @@ jobs:
           APPLE_ASC_ISSUER_ID: ${{ secrets.APPLE_ASC_ISSUER_ID }}
         run: |
           set -euo pipefail
-          runtime="tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
+          runtime="tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ needs.compute.outputs.lang-infix }}${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
           bash ci/macos-sign-notarize-runtime.sh "runtime-packages/$runtime"
 
       # Issue 40: the shared-build artifact set -- the exe must import the
@@ -1320,7 +1339,7 @@ jobs:
         shell: msys2 {0}
         run: |
           set -euo pipefail
-          runtime="tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
+          runtime="tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ needs.compute.outputs.lang-infix }}${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
           exe="runtime-packages/$runtime"
           [ -s "$exe" ] || exe="$exe.exe"
           dll="runtime-packages/$runtime.dll"
@@ -1415,7 +1434,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          runtime="tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
+          runtime="tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ needs.compute.outputs.lang-infix }}${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
           exe="runtime-packages/$runtime"
           [ -s "$exe" ] || exe="$exe.exe"
           test -s "$exe" || { echo "::error::spec 34 §7.3: no runtime executable at runtime-packages/$runtime[.exe] — nothing to sign"; exit 1; }
@@ -1491,7 +1510,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $runtime = "tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
+          $runtime = "tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ needs.compute.outputs.lang-infix }}${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
           # §7.3: enumerate the SIGNED set by EXTENSION at the staging dir,
           # never a name list — both artifact kinds this leg ships (the
           # runtime exe + the ruby DLL; the boot diagnostics may already
@@ -1603,7 +1622,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          runtime="tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
+          runtime="tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ needs.compute.outputs.lang-infix }}${{ matrix.ruby.version }}-${{ matrix.env.host_id }}"
           args=(--exe "runtime-packages/$runtime")
           if [ "${{ matrix.env.container == null }}" = "true" ]; then
             args+=(--stub-archive .build/deps/lib/libtebako-fs.a --real-archive .build/o/libtebako-fs.a)
@@ -1967,7 +1986,7 @@ jobs:
           TEBAKO_VERSION: ${{ needs.compute.outputs.tebako-version }}
           TEBAKO_RELEASE_SIGNING_ENABLED: ${{ vars.TEBAKO_RELEASE_SIGNING_ENABLED }}
           TEBAKO_RELEASE_SIGNING_KEY: ${{ secrets.TEBAKO_RELEASE_SIGNING_KEY }}
-          SIGN_ONLY_STEMS: tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ matrix.ruby.version }}-${{ matrix.env.host_id }}
+          SIGN_ONLY_STEMS: tebako-runtime-${{ needs.compute.outputs.tebako-version }}-${{ needs.compute.outputs.lang-infix }}${{ matrix.ruby.version }}-${{ matrix.env.host_id }}
           TEBAKO_RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
