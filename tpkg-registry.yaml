@@ -3191,6 +3191,12 @@ payloads:
         blksum:
           filename: tebako-runtime-0.17.0-ruby-4.0.1-linux-musl-x86_64.tfs.blksum.json
           sha256: f659d637ca8ccd32476bd16a6b0805a9e00f640ccc9c52bc34b68281daa763fa
+      x86_64-macos:
+        artifact: tebako-runtime-0.17.0-ruby-4.0.1-macos-x86_64
+        sha256: 0eb0bf227d25bdbfe4b127af87aeb55137db9162c2ee9905ef1b5ad2fe30ae6b
+        blksum:
+          filename: tebako-runtime-0.17.0-ruby-4.0.1-macos-x86_64.tfs.blksum.json
+          sha256: 7d8346eba36aece63d32b89de99a568a60da956abc5173e05baaf02b9ea5249d
       x86_64-windows-ucrt:
         artifact: tebako-runtime-0.17.0-ruby-4.0.1-windows-ucrt64
         sha256: ce59d7fba6a5071b83409e1476302ecfbbd29ef178e576aab8f8616f41af31a0
