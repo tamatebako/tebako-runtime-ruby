@@ -86,13 +86,17 @@ class RubyReleaseAdapter < TebakoRelease::Adapter
     TebakoRuntimeBuilder::RubyVersion.new(version).msys_dll_name(host_id)
   end
 
-  # Spec 36: this factory publishes the bundle era — one <stem>.tar.gz
-  # per leg (exe + env image + DLL + in-bundle SHA256SUMS) instead of
-  # the per-file enumeration. Opt-in is deliberate and factory-scoped:
-  # the bundle-era resolver ships downstream first (spec 36 §4's compat
-  # window), and pre-bundle releases stay installable forever.
+  # Spec 36's compat window covered the 0.16 era; from the 0.17 era this
+  # factory publishes the per-file shape only (exe + env image + DLL +
+  # blksum sidecar + shard — the 0.17-era essential set). One release
+  # object caps at 1000 assets: the bundle shape's ~15 files per package
+  # wedges a growing line (v0.17.0-ruby4.0 hit the cap and its tar.gz
+  # set had to be trimmed — a trimmed tag's shards must never declare
+  # assets the tag no longer serves). Pre-0.17 lines keep the bundle +
+  # co-publish shape their tags already serve: old loaders keep taking
+  # the bundle, and every era's shards stay truthful.
   def bundle_publish?
-    true
+    Gem::Version.new(ENV.fetch("TEBAKO_VERSION")) < Gem::Version.new("0.17.0")
   end
 
   # Spec 36 §3's co-publish shape: the per-file assets (bare exe, bare
