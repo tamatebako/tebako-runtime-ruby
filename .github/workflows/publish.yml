@@ -58,11 +58,15 @@
 # namespace — the per-asset delete→re-upload wedge never gets triggered.
 #
 # Spec 36 §6's topology: a CATALOG publish (ruby_filter=catalog, no
-# release_tag override) derives its per-line shard tags itself —
-# v<VERSION>-ruby<line> per ruby line in .github/matrix.json's catalog
-# vocabulary, no operator input. The plan job emits the shard list; the
-# platform callers matrix over it; the release job renders one registry
-# bot PR per shard tag. The release_tag input remains as the override.
+# release_tag override) derives its per-(line x platform) shard tags
+# itself — v<VERSION>-ruby<line>-<platform> per ruby line in
+# .github/matrix.json's catalog vocabulary x platform, no operator
+# input (a release object caps at 1000 assets; a long line's full
+# platform fan-out exceeds it, proven by the 0.16.32 catalog's wedged
+# 4.0 line). The plan job emits the combined shard list plus one
+# per-platform list per caller; the platform callers matrix over their
+# own list; the release job renders one registry bot PR per shard tag.
+# The release_tag input remains as the override.
 name: publish
 
 on:
@@ -101,7 +105,7 @@ on:
         type: string
         default: ''
       release_tag:
-        description: 'Host the release under this tag instead of v<VERSION> — a release object caps at 1000 assets, so a catalog publish shards per ruby line (v0.16.28-ruby4.0, …). Artifact names stay version-branded; only the tag moves. Empty = v<VERSION>.'
+        description: 'Host the release under this tag instead of v<VERSION> — a release object caps at 1000 assets, so a catalog publish shards per ruby line x platform (v0.17.1-ruby4.0-macos, …). Artifact names stay version-branded; only the tag moves. Empty = v<VERSION>.'
         type: string
         default: ''
   repository_dispatch:
@@ -120,6 +124,10 @@ jobs:
     if: ${{ !inputs.registry_only }}
     outputs:
       shards: ${{ steps.plan.outputs.shards }}
+      shards_windows: ${{ steps.plan.outputs.shards_windows }}
+      shards_linux_gnu: ${{ steps.plan.outputs.shards_linux_gnu }}
+      shards_linux_musl: ${{ steps.plan.outputs.shards_linux_musl }}
+      shards_macos: ${{ steps.plan.outputs.shards_macos }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: plan
@@ -132,14 +140,37 @@ jobs:
             ruby -rjson -e '
               catalog = JSON.parse(File.read(".github/matrix.json")).fetch("ruby").fetch("catalog")
               version = File.read("VERSION").strip
-              shards = catalog.group_by { |v| v.split(".").first(2).join(".") }.map do |line, rubies|
-                { "ruby_filter" => rubies.join(","), "release_tag" => "v#{version}-ruby#{line}" }
+              # A release object caps at 1000 assets; one ruby line can
+              # exceed it (the 8-version 4.0 line wants ~1300 across ~20
+              # per-package files x 8 triplets — the 0.16.32 catalog
+              # wedged exactly there). Shard per (line x platform): every
+              # shard keeps ~650 assets of headroom and no line can wedge
+              # a sibling platform''s publish legs.
+              platforms = %w[windows linux-gnu linux-musl macos]
+              combined = []
+              per_platform = platforms.to_h { |p| [p, []] }
+              catalog.group_by { |v| v.split(".").first(2).join(".") }.each do |line, rubies|
+                platforms.each do |platform|
+                  shard = { "ruby_filter" => rubies.join(","),
+                            "release_tag" => "v#{version}-ruby#{line}-#{platform}",
+                            "platform" => platform }
+                  combined << shard
+                  per_platform[platform] << shard
+                end
               end
-              puts "catalog publish derives #{shards.size} line shards: #{shards.map { |s| s["release_tag"] }.join(", ")}"
-              File.open(ENV.fetch("GITHUB_OUTPUT"), "a") { |f| f.puts "shards=#{JSON.generate(shards)}" }
+              puts "catalog publish derives #{combined.size} line-by-platform shards: #{combined.map { |s| s["release_tag"] }.join(", ")}"
+              File.open(ENV.fetch("GITHUB_OUTPUT"), "a") do |f|
+                f.puts "shards=#{JSON.generate(combined)}"
+                per_platform.each do |platform, shards|
+                  f.puts "shards_#{platform.tr("-", "_")}=#{JSON.generate(shards)}"
+                end
+              end
             '
           else
-            echo "shards=[{\"ruby_filter\":\"${RUBY_FILTER:-}\",\"release_tag\":\"${RELEASE_TAG:-}\"}]" >> "$GITHUB_OUTPUT"
+            single="[{\"ruby_filter\":\"${RUBY_FILTER:-}\",\"release_tag\":\"${RELEASE_TAG:-}\"}]"
+            for out in shards shards_windows shards_linux_gnu shards_linux_musl shards_macos; do
+              echo "$out=$single" >> "$GITHUB_OUTPUT"
+            done
           fi
 
   # #189: a force_rebuild republication never deletes individual assets —
@@ -196,13 +227,15 @@ jobs:
     # repository_dispatch always fans to every platform (a source tarball
     # change reaches every scenario of the changed versions).
     needs: [prepare-release, plan]
-    # Spec 36 §6: a catalog publish runs one caller per derived line shard
-    # (fail-fast: false — one line's failure never blocks another line);
-    # any other run is a single shard carrying the inputs verbatim.
+    # Spec 36 §6: a catalog publish runs one caller per derived
+    # (line x platform) shard (fail-fast: false — one line's failure
+    # never blocks another line); any other run is a single shard
+    # carrying the inputs verbatim. Each platform caller matrices over
+    # its own per-platform shard list.
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(needs.plan.outputs.shards || '[{"ruby_filter":"","release_tag":""}]') }}
+        shard: ${{ fromJSON(needs.plan.outputs.shards_windows || '[{"ruby_filter":"","release_tag":""}]') }}
     # always() + !cancelled(): a SKIPPED prepare-release (the ordinary
     # non-forced publish) must not skip the platform fan-out.
     if: ${{ always() && !cancelled() && !inputs.registry_only && (github.event_name == 'repository_dispatch' || inputs.platform == 'all' || inputs.platform == 'windows') }}
@@ -235,7 +268,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(needs.plan.outputs.shards || '[{"ruby_filter":"","release_tag":""}]') }}
+        shard: ${{ fromJSON(needs.plan.outputs.shards_linux_gnu || '[{"ruby_filter":"","release_tag":""}]') }}
     if: ${{ always() && !cancelled() && !inputs.registry_only && (github.event_name == 'repository_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux-gnu') }}
     uses: ./.github/workflows/_build-platform.yml
     # Spec 34 §3/§8.2: the called workflow's build job declares
@@ -266,7 +299,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(needs.plan.outputs.shards || '[{"ruby_filter":"","release_tag":""}]') }}
+        shard: ${{ fromJSON(needs.plan.outputs.shards_linux_musl || '[{"ruby_filter":"","release_tag":""}]') }}
     if: ${{ always() && !cancelled() && !inputs.registry_only && (github.event_name == 'repository_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux-musl') }}
     uses: ./.github/workflows/_build-platform.yml
     # Spec 34 §3/§8.2: the called workflow's build job declares
@@ -297,7 +330,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(needs.plan.outputs.shards || '[{"ruby_filter":"","release_tag":""}]') }}
+        shard: ${{ fromJSON(needs.plan.outputs.shards_macos || '[{"ruby_filter":"","release_tag":""}]') }}
     if: ${{ always() && !cancelled() && !inputs.registry_only && (github.event_name == 'repository_dispatch' || inputs.platform == 'all' || inputs.platform == 'macos') }}
     uses: ./.github/workflows/_build-platform.yml
     # Spec 34 §3/§8.2: the called workflow's build job declares
