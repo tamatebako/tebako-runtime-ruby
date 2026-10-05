@@ -198,4 +198,4 @@ link_unit_release: "v2.8.24"
 # members out of the settled bundle itself (its members ARE the previous
 # entry's pins), the blksum derives from the served image bytes, and the
 # shard gains the witness byte-truthfully. Found by the 0.16.32 smoke.
-release_tooling: "v0.4.1"
+release_tooling: "v0.5.1"
