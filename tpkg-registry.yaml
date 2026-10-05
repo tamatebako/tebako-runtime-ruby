@@ -285,6 +285,52 @@ payloads:
           sha256: cc6b4a680d683ef84843d6ec845e0e014d15707971b66160f664345803408430
     release:
       ref: tfs:github:tamatebako/tebako-runtime-ruby:v0.16.32-ruby3.1
+  - version: 3.1.6-0.17.0
+    platforms:
+      aarch64-linux-gnu:
+        artifact: tebako-runtime-0.17.0-ruby-3.1.6-linux-gnu-arm64.tar.gz
+        sha256: 7df7bb8a640b29b348471316a74491d1c3a99986e951aa1c1c905041af169e64
+        blksum:
+          filename: tebako-runtime-0.17.0-ruby-3.1.6-linux-gnu-arm64.tfs.blksum.json
+          sha256: 8b2c9115546cde185dfd39797ad019c661db33ccb8dc020c99e71b4e92b88ceb
+      aarch64-linux-musl:
+        artifact: tebako-runtime-0.17.0-ruby-3.1.6-linux-musl-arm64.tar.gz
+        sha256: 22714ccfe8ccfc730368a7e9b63433f1a5363ecf720f725ef115c7a1abdfbb45
+        blksum:
+          filename: tebako-runtime-0.17.0-ruby-3.1.6-linux-musl-arm64.tfs.blksum.json
+          sha256: c01a6d75fe1886506371ba674c7a0c0c46b513b4ef0c2a32bd2078d8b9374c33
+      aarch64-macos:
+        artifact: tebako-runtime-0.17.0-ruby-3.1.6-macos-arm64.tar.gz
+        sha256: 4ffcf9c640b52835d952259929d0b9b043ea7cd680e99e58dea713add9c80262
+        blksum:
+          filename: tebako-runtime-0.17.0-ruby-3.1.6-macos-arm64.tfs.blksum.json
+          sha256: d671981d7068d766fc61e02296b7e589e6615890c62261caac960b8c88b5bc5b
+      x86_64-linux-gnu:
+        artifact: tebako-runtime-0.17.0-ruby-3.1.6-linux-gnu-x86_64.tar.gz
+        sha256: 0aa2e475d8efb24c0b8efb20a0fd7da0f8426a0ed3f7f817600c71daca2cc1ed
+        blksum:
+          filename: tebako-runtime-0.17.0-ruby-3.1.6-linux-gnu-x86_64.tfs.blksum.json
+          sha256: ee124549d02f22eb8306c0e6876ce6fd6e8cb0a90d60d57aa8dee2b4949d80a1
+      x86_64-linux-musl:
+        artifact: tebako-runtime-0.17.0-ruby-3.1.6-linux-musl-x86_64.tar.gz
+        sha256: 61e0684c37511d2a7362dd4100506ef1e0d4b3006e56dea2639a6932208da3a0
+        blksum:
+          filename: tebako-runtime-0.17.0-ruby-3.1.6-linux-musl-x86_64.tfs.blksum.json
+          sha256: 10e9d27f888672c4f2ff64e8320ae6e7ce013e8a57032a01674e4d6f7080157b
+      x86_64-macos:
+        artifact: tebako-runtime-0.17.0-ruby-3.1.6-macos-x86_64.tar.gz
+        sha256: aa6d0de610dd063659679f013c24a31b5efe4cfa093ab99f8209a37a85eafe7c
+        blksum:
+          filename: tebako-runtime-0.17.0-ruby-3.1.6-macos-x86_64.tfs.blksum.json
+          sha256: f4123dac5d6a2594c7647e975dd43a3cf90898f4ba3b0496c0a8ae9e14250a1a
+      x86_64-windows-ucrt:
+        artifact: tebako-runtime-0.17.0-ruby-3.1.6-windows-ucrt64.tar.gz
+        sha256: 872cb4b2f43d7674e5f87a323ab368314a5d2969c68c563be2f10675d4626699
+        blksum:
+          filename: tebako-runtime-0.17.0-ruby-3.1.6-windows-ucrt64.tfs.blksum.json
+          sha256: 21bd736e180961532556bfdbfc5f326f16583f23484439e82c9bbd86aa7cd18b
+    release:
+      ref: tfs:github:tamatebako/tebako-runtime-ruby:v0.17.0-ruby3.1
   - version: 3.2.4-0.16.28
     platforms:
       aarch64-linux-gnu:
