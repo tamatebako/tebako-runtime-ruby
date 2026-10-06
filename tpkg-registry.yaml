@@ -364,7 +364,7 @@ payloads:
           filename: tebako-runtime-0.17.1-ruby-3.1.6-windows-ucrt64.tfs.blksum.json
           sha256: e4602cec19601826e2942367cf55f0e9d9ad5eb3bea3e283fbc55f1785848b40
     release:
-      ref: tfs:github:tamatebako/tebako-runtime-ruby:v0.17.1-ruby3.1-linux-gnu
+      ref: tfs:github:tamatebako/tebako-runtime-ruby:v0.17.1-ruby3.1-windows
   - version: 3.2.4-0.16.28
     platforms:
       aarch64-linux-gnu:
