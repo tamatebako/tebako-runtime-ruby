@@ -172,7 +172,18 @@ container_version: "0.16.2"
 # front. The unit also carries the OCI pull path (spec 38) and the
 # windows Range-read deadlock fix (tebako#700). Contract unchanged (2).
 # Full-catalog re-cut: the runtime exe embeds the unit.
-link_unit_release: "v2.8.24"
+# v2.8.26 (tebako#720): a live lazy mount survives its own seal commit —
+# the v2.8.24 unit's RemoteByteSource re-fetched the next demanded group
+# into the block directory seal_entry had just retired, so the bench's
+# lazy cold-boot died 100% with EIO (exit 255) whenever the commit won
+# the race; the source now latches the seal and serves from the sealed
+# image. Also the shim's registry line witnesses probe the engine
+# segment when the entry declares an implementation (the managed path
+# kept serving 0.16.32 past the 0.17.0 registry default). Contract
+# unchanged (2). Full-catalog re-cut: the runtime exe embeds the unit.
+# v2.8.25 touched the CLI/bootstrap spellers (tebako#716), not the
+# driver, so the pin skips it.
+link_unit_release: "v2.8.26"
 
 # The release machinery pin: the tamatebako/tebako-release tag
 # the Gemfile resolves (the legs' publish/sign jobs + the coordinator's
