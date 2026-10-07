@@ -417,25 +417,74 @@ RSpec.describe "publish coordinator workflow" do
     expect(step.fetch("run")).not_to include("FINALIZE_ONLY")
   end
 
-  it "renders and publishes the registry only on publish runs (never audit-only), per shard tag" do
+  it "renders the registry only on publish runs (never audit-only), per shard tag" do
     render = release_steps.find { |step| step["name"] == "Render the registry entries (per shard tag)" }
-    publish = release_steps.find { |step| step["name"] == "Publish the registry via pull request (per shard tag)" }
+    publish = release_steps.find { |step| step["name"] == "Publish the registry via pull request" }
     [render, publish].each do |step|
       expect(step).not_to be_nil
       # always(): a flaked upstream leg must not strand the registry on a
       # publish run (the audit reads what shipped, the registry mirrors it).
-      expect(step["if"]).to eq("${{ always() && !cancelled() && !inputs.audit }}")
+      expect(step["if"]).to include("always()", "!cancelled()", "!inputs.audit")
     end
     expect(render.fetch("run")).to include("./tools/registry_update.rb")
-    # The renders accumulate across shards (each per-tag PR is a superset
-    # of the previous, merging conflict-free in any order).
-    expect(render.fetch("run")).to include("REGISTRY_BASE_PATH")
+    # The renders accumulate across shards into the release's complete
+    # mirror (the ONE bot PR's payload).
+    expect(render.fetch("run")).to include("REGISTRY_BASE_PATH", "registry-accumulated.yaml")
     # The registry lands by bot PR against origin/main — git arbitrates.
     expect(publish.fetch("run")).to include("git checkout -b", "origin/main",
                                             "gh pr create", "--body-file", "gh pr merge --auto --squash")
     # The green check precedes the registry work.
     expect(release_step_names.index("Check the selected platforms built green"))
       .to be < release_step_names.index("Render the registry entries (per shard tag)")
+  end
+
+  # #207 (run 36290152760): a JSON literal inside ${SHARDS:-...} closes
+  # the bash expansion at the JSON's first `}` — jq exit 5 in BOTH
+  # branches. The default rides jq now; the trap must never come back.
+  it "keeps the force_rebuild shard default out of the ${SHARDS:-...} brace trap (#207)" do
+    prepare = workflow.fetch("jobs").fetch("prepare-release").fetch("steps")
+                      .find { |step| step["name"] == "Delete the release object(s), keeping the tag(s)" }
+    run = prepare.fetch("run")
+    expect(run).to include("${SHARDS:-null}")
+    expect(File.read(File.join(REPO_ROOT, ".github", "workflows", "publish.yml")))
+      .not_to include('${SHARDS:-[{\"')
+  end
+
+  # #218's second defect class (run 36363960486): the registry_only
+  # render died on a bare v<version> tag that never existed (the release
+  # was sharded), and the publish step's always() then masked it with
+  # "no rendered registry to publish". The render step rediscovers the
+  # shard tags from the release objects, and the publish step is gated
+  # on the render's success so a failed render surfaces its own error.
+  it "rediscovers the shard tags under registry_only and never masks a failed render (#218)" do
+    render = release_steps.find { |step| step["name"] == "Render the registry entries (per shard tag)" }
+    publish = release_steps.find { |step| step["name"] == "Publish the registry via pull request" }
+    expect(render.fetch("id")).to eq("render")
+    run = render.fetch("run")
+    expect(run).to include("/releases?per_page=100", 'startswith($v + "-")')
+    expect(publish.fetch("if")).to include("steps.render.outcome == 'success'")
+  end
+
+  # #218 + #275 (run 37397000495): the per-shard-tag PR fan-out died on
+  # the first shard whose bot PR already existed — gh pr view is
+  # state-blind and a swallowed transport error reads as "no PR" — and
+  # the surviving same-base PRs conflicted once the first merged. ONE
+  # accumulated PR per run, a state-filtered reuse probe whose failure
+  # is a named error, a tolerated duplicate create, and idempotent
+  # arming make the publisher rerun-safe; an unchanged render is a
+  # no-op against both main and the bot branch (convergence).
+  it "lands ONE accumulated registry PR per run, rerun-safe (#218, #275)" do
+    publish = release_steps.find { |step| step["name"] == "Publish the registry via pull request" }
+    run = publish.fetch("run")
+    expect(run).to include('branch="publish/v${version}-registry"')
+    expect(run).to include("registry-accumulated.yaml")
+    # State-filtered reuse probe — never gh pr view (resolves MERGED PRs
+    # too) and never a guess on a probe failure.
+    expect(run).to include('gh pr list --head "$branch" --state open')
+    expect(run).not_to include('gh pr view "$branch" >/dev/null')
+    # The probe→create race's "already exists" is success, and arming an
+    # already-armed (or already-merged) PR is the converged state.
+    expect(run).to include("already exists", "autoMergeRequest")
   end
 
   it "derives the publish topology in the plan job and threads one shard to every platform caller" do

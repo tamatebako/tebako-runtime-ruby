@@ -51,8 +51,10 @@
 # by construction, and the platform run owns the matrix truth — never a
 # recomputation, never a cross-run stale read. What remains here is the
 # ONE release job per coordinator run: the selected-platforms-green check
-# and the tpkg-registry.yaml mirror renders + bot PRs (spec 04 §2), one
-# per shard tag. And a force_rebuild republication passes through the
+# and the tpkg-registry.yaml mirror render + ONE accumulated bot PR per
+# run (spec 04 §2; #275 retired the per-shard-tag PR fan-out — 20
+# same-base branches editing one file conflicted the moment the first
+# merged). And a force_rebuild republication passes through the
 # prepare-release job first (#189): the release OBJECT is recreated under
 # the kept tag, so every publish leg is a pure create on a free
 # namespace — the per-asset delete→re-upload wedge never gets triggered.
@@ -65,8 +67,9 @@
 # platform fan-out exceeds it, proven by the 0.16.32 catalog's wedged
 # 4.0 line). The plan job emits the combined shard list plus one
 # per-platform list per caller; the platform callers matrix over their
-# own list; the release job renders one registry bot PR per shard tag.
-# The release_tag input remains as the override.
+# own list; the release job renders the registry from every shard tag and
+# lands ONE accumulated bot PR per run. The release_tag input remains as
+# the override.
 name: publish
 
 on:
@@ -361,15 +364,15 @@ jobs:
   # release-asset mutation remains), and spec 36 §6 moved the AUDIT to the
   # tail of each (platform × shard) run — the matrix truth lives there,
   # never recomputed here. What serializes here is the
-  # selected-platforms-green check and the registry renders + bot PRs, one
-  # per shard tag (git arbitrates the PRs — the concurrency group is
-  # politeness now, not correctness).
+  # selected-platforms-green check and the registry render + ONE
+  # accumulated bot PR per run (#275: the per-shard-tag fan-out wedged —
+  # 20 same-base PRs editing one file conflicted once the first merged).
   release:
     name: Check the run + publish the registry
     needs: [plan, windows, linux-gnu, linux-musl, macos]
     runs-on: ubuntu-latest
-    # The legs publish; this job only reads the release and pushes one
-    # registry branch per shard. The 2026-08-09 hostage lesson still
+    # The legs publish; this job only reads the release and pushes the
+    # one registry branch. The 2026-08-09 hostage lesson still
     # bounds it — but there is no 2.5 GB download here anymore, so the
     # bound drops from the platform-publish 150 to 30.
     timeout-minutes: 30
@@ -426,15 +429,18 @@ jobs:
       # own per-package shards — the write-once per-leg metadata units,
       # ground truth — never from a job's local knowledge. One tebako
       # version per coordinator run (the VERSION file; registry_only
-      # names it explicitly). A sharded catalog renders per line tag,
+      # names it explicitly). A sharded catalog renders per shard tag,
       # each render accumulating onto the previous one (REGISTRY_BASE_PATH)
-      # so the per-tag bot PRs are supersets and merge in any order.
+      # so the final accumulated file is the release's complete mirror —
+      # what the ONE bot PR below lands (#275).
       - name: Render the registry entries (per shard tag)
+        id: render
         if: ${{ always() && !cancelled() && !inputs.audit }}
         env:
           SHARDS: ${{ needs.plan.outputs.shards }}
           REGISTRY_VERSION_INPUT: ${{ inputs.registry_version }}
           RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
+          GH_TOKEN: ${{ secrets.TEBAKO_CI_PAT_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           version="${REGISTRY_VERSION_INPUT:-}"
@@ -444,13 +450,41 @@ jobs:
             exit 1
           fi
           shards="${SHARDS:-}"
+          if [ -z "$shards" ] && [ -z "${RELEASE_TAG_INPUT:-}" ]; then
+            # registry_only against a sharded catalog: the plan job does
+            # not run under registry_only, so the shard tags are
+            # rediscovered from the release OBJECTS themselves — the bare
+            # v<version> tag of an unsharded release, every
+            # v<version>-ruby<line>-<platform> tag of a sharded one, in
+            # the plan job's own emission order (line-major, then
+            # windows/linux-gnu/linux-musl/macos) so a rediscovered
+            # render is byte-identical with a plan-driven one. The
+            # v0.16.30 registry_only (run 36363960486) died rendering a
+            # bare v0.16.30 tag that never existed (#218).
+            releases_json="$RUNNER_TEMP/releases.json"
+            if ! gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --paginate --slurp > "$releases_json"; then
+              echo "::error::could not list the releases to rediscover the shard tags for v${version} — a transient API failure; rerun the job"
+              exit 1
+            fi
+            shards="$(jq --arg v "v${version}" -c '
+              [ add[] | select(.draft | not) | .tag_name | select(. == $v or startswith($v + "-")) ] as $tags
+              | ["windows", "linux-gnu", "linux-musl", "macos"] as $platforms
+              | [ $tags[] | { tag: ., key: (((capture("-ruby(?<line>[0-9.]+)-(?<platform>windows|linux-gnu|linux-musl|macos)$")?) // null) as $m
+                                | if $m then [($m.line | split(".") | map(tonumber)), ($platforms | index($m.platform))] else [[0], 9] end) } ]
+              | sort_by(.key) | map({release_tag: .tag})' "$releases_json")"
+            [ "$shards" != "[]" ] || {
+              echo "::error::no release found for tag v${version} and no v${version}-* shard tag — nothing to mirror"
+              exit 1
+            }
+            echo "rediscovered $(echo "$shards" | jq length) shard tag(s) for v${version}: $(echo "$shards" | jq -r 'map(.release_tag) | join(", ")')"
+          fi
           [ -n "$shards" ] || shards="[{\"release_tag\":\"${RELEASE_TAG_INPUT:-}\"}]"
           echo "$shards" | jq -r '.[].release_tag' | while read -r shard_tag; do
             ref="${shard_tag:-v${version}}"
             out="$RUNNER_TEMP/registry-${ref}.yaml"
             if [ -n "$shard_tag" ]; then export TEBAKO_RELEASE_TAG="$shard_tag"; else unset TEBAKO_RELEASE_TAG || true; fi
-            # The accumulated base: the previous shard's render, so each
-            # per-tag PR is a superset of the previous one.
+            # The accumulated base: the previous shard's render, so the
+            # loop's last iteration is the release's complete mirror.
             if [ -f "$RUNNER_TEMP/registry-accumulated.yaml" ]; then
               export REGISTRY_BASE_PATH="$RUNNER_TEMP/registry-accumulated.yaml"
             fi
@@ -460,60 +494,126 @@ jobs:
           done
 
       # main is branch-protected: the registry lands by bot PR +
-      # auto-merge, never by direct push. One PR per shard tag (the
-      # branch names already shard by tag); each render is a superset of
-      # the previous, so the PRs merge conflict-free in any order.
-      # Idempotent across re-runs (an unchanged registry skips the branch).
-      - name: Publish the registry via pull request (per shard tag)
-        if: ${{ always() && !cancelled() && !inputs.audit }}
+      # auto-merge, never by direct push. ONE PR per coordinator run
+      # carrying every shard tag's accumulated render (#275: the per-tag
+      # fan-out put 20 same-base branches into the same file region — the
+      # first merge conflicted the rest). Rerun-safe by construction: an
+      # unchanged render is a no-op (against main AND against the bot
+      # branch), an open PR on the branch is reused (the push IS the
+      # update), a duplicate create is success, and an already-armed or
+      # already-merged PR is the converged state, never an error.
+      # Gated on the render step's success: a failed render must surface
+      # its own named error, never the publish step's "nothing rendered"
+      # (run 36363960486's masked failure, #218).
+      - name: Publish the registry via pull request
+        if: ${{ always() && !cancelled() && !inputs.audit && steps.render.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ secrets.TEBAKO_CI_PAT_TOKEN || secrets.GITHUB_TOKEN }}
+          REGISTRY_VERSION_INPUT: ${{ inputs.registry_version }}
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          files=("$RUNNER_TEMP"/registry-v*.yaml)
-          [ ${#files[@]} -gt 0 ] || { echo "::error::no rendered registry to publish (the render step did not run)"; exit 1; }
+          acc="$RUNNER_TEMP/registry-accumulated.yaml"
+          [ -f "$acc" ] || { echo "::error::the render step left no accumulated registry (registry-accumulated.yaml missing)"; exit 1; }
+          version="${REGISTRY_VERSION_INPUT:-}"
+          version="${version:-$(cat VERSION 2>/dev/null || true)}"
+          [ -n "$version" ] || { echo "::error::cannot name the registry PR — no registry_version input and no VERSION file"; exit 1; }
+          branch="publish/v${version}-registry"
           git config user.name "tebako-ci"
           git config user.email "tebako@ribose.com"
           git fetch origin main
-          for file in "${files[@]}"; do
-            ref="$(basename "$file" .yaml)"; ref="${ref#registry-}"
-            branch="publish/${ref}-registry"
-            echo "=== $ref → $branch"
+
+          git show origin/main:tpkg-registry.yaml > "$RUNNER_TEMP/main-registry.yaml"
+          if cmp -s "$acc" "$RUNNER_TEMP/main-registry.yaml"; then
+            echo "main's registry already mirrors the release — nothing to publish"
+            exit 0
+          fi
+
+          # The bot branch carries the render. A re-run whose render is
+          # byte-identical with the branch's is a true no-op — the
+          # convergence property (#275): two successive publisher runs
+          # with no release change push nothing.
+          git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch" 2>/dev/null || true
+          if git rev-parse --verify --quiet "origin/$branch" >/dev/null \
+             && cmp -s "$acc" <(git show "origin/$branch:tpkg-registry.yaml"); then
+            echo "$branch already carries exactly this render — no push"
+          else
             git checkout -b "$branch" origin/main 2>/dev/null || git checkout "$branch"
-            cp "$file" tpkg-registry.yaml
-            if git diff --quiet origin/main -- tpkg-registry.yaml; then
-              echo "registry unchanged for $ref (or the entries already landed on main)"
-              git checkout -- tpkg-registry.yaml
-              continue
-            fi
+            cp "$acc" tpkg-registry.yaml
             git add tpkg-registry.yaml
-            git commit -m "publish ${ref}: registry entries"
+            git commit -m "publish v${version}: registry entries"
             # force-with-lease on the bot branch: a re-publish re-creates
             # it. The checkout is shallow, so the lease has no expectation
-            # for a branch a DIED run left behind — fetch it first or the
-            # push is rejected and the mirror never lands (the v0.16.27
-            # hand-render hit exactly that). With the tracking ref in place
-            # the lease still refuses a concurrent FOREIGN push, as
-            # designed.
-            git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch" 2>/dev/null || true
+            # for a branch a DIED run left behind — the fetch above puts
+            # the tracking ref in place; the lease still refuses a
+            # concurrent FOREIGN push, as designed (the v0.16.27
+            # hand-render hit exactly that).
             git push --force-with-lease origin "$branch"
-            if ! gh pr view "$branch" >/dev/null 2>&1; then
-              body="$RUNNER_TEMP/registry-pr-body-${ref}.md"
-              cat > "$body" <<EOF
-          Automated registry entries for ${ref} — rendered from the
+          fi
+
+          # PR reuse (#218, #275): an OPEN PR on the bot branch is the
+          # delivery channel — the push above is the update, never a
+          # fatal duplicate. gh pr view is the wrong probe here: it has
+          # no state filter (a MERGED PR resolves) and a swallowed
+          # transport error reads as "no PR", falling through to a create
+          # that dies on "already exists" (the v0.17.1 publish's attempts
+          # 2 and 3, run 37397000495). The probe is state-filtered, and a
+          # probe failure is a named error — never a guess.
+          probe() { gh pr list --head "$branch" --state open --json number --jq '.[0].number // empty'; }
+          if ! number="$(probe)"; then
+            echo "::error::could not query the open PRs for $branch — refusing to guess (a wrong guess duplicates the PR or strands the render)"
+            exit 1
+          fi
+          if [ -z "$number" ]; then
+            body="$RUNNER_TEMP/registry-pr-body.md"
+            cat > "$body" <<EOF
+          Automated registry entries for v${version} — rendered from the
           release's per-package .manifest.json shards by tools/registry_update.rb
           (spec 13 §2a's audit+registry job; spec 04 §2's mirror). main is
           protected, so the registry lands by PR.
           EOF
-              gh pr create --base main --head "$branch" \
-                --title "publish ${ref}: registry entries" \
-                --body-file "$body"
+            if ! create_out="$(gh pr create --base main --head "$branch" \
+                                --title "publish v${version}: registry entries" \
+                                --body-file "$body" 2>&1)"; then
+              case "$create_out" in
+                *"already exists"*)
+                  # The probe→create race (a concurrent run opened the PR
+                  # between the two): the push above already delivered the
+                  # render to the branch the PR tracks.
+                  echo "$create_out"
+                  ;;
+                *)
+                  echo "$create_out" >&2
+                  exit 1
+                  ;;
+              esac
             fi
-            gh pr merge --auto --squash "$branch" || gh pr merge --squash "$branch"
-            # The next shard branches from a clean origin/main tree.
-            git checkout -- tpkg-registry.yaml 2>/dev/null || true
-          done
+            number="$(probe)" || true
+            [ -n "${number:-}" ] || { echo "::error::$branch: the PR was created but could not be re-resolved"; exit 1; }
+          fi
+
+          # Idempotent merge arming: already-armed and already-merged are
+          # converged states, never errors; only a fresh arm attempt can
+          # fail, and then the immediate merge stays the fallback.
+          meta="$(gh pr view "$number" --json state,autoMergeRequest \
+                  --jq 'if .state == "OPEN" then (if .autoMergeRequest then "armed" else "open" end) else .state end')" || {
+            echo "::error::could not read PR #${number}'s state"
+            exit 1
+          }
+          case "$meta" in
+            armed)
+              echo "PR #${number}: auto-merge already armed"
+              ;;
+            MERGED)
+              echo "PR #${number}: already merged"
+              ;;
+            open)
+              gh pr merge --auto --squash "$number" || gh pr merge --squash "$number"
+              ;;
+            *)
+              echo "::error::PR #${number} is in an unexpected state: ${meta}"
+              exit 1
+              ;;
+          esac
 
       - name: Ping the versions catalog
         if: ${{ always() && success() }}
