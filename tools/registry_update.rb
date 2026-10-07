@@ -54,11 +54,22 @@ RUNTIME_REPO = "tamatebako/tebako-runtime-ruby" unless defined?(RUNTIME_REPO)
 # line per ruby built by the release, keyed by the composite
 # `<ruby_version>-<tebako_version>`; per-triplet platform rows mirroring
 # the shard's package artifact + sha256; the version's release ref points
-# at the release the shards came from. The merge is additive and
-# write-once-friendly: existing versions keep their rows (new shards win
-# per triplet), `status: withdrawn` marks (the only sanctioned hand-edit —
-# spec 04 §2) survive every render, and `default:` tracks the newest
-# non-withdrawn version.
+# at the release the shards came from, and every platform row ADDITIONALLY
+# names the shard tag it was rendered from in its own `release.ref`
+# (tebako#711 ask 1 — post-tebako-runtime-ruby#235 one version line unions
+# rows from several shard tags, which the version-level ref cannot name;
+# old readers ignore the unknown key per spec 37 §2's leniency rule). The
+# merge is additive and write-once-friendly: existing versions keep their
+# rows (new shards win per triplet), `status: withdrawn` marks (the only
+# sanctioned hand-edit — spec 04 §2) survive every render, and `default:`
+# tracks the newest non-withdrawn version.
+#
+# Before anything merges, every rendered pin is verified against the bytes
+# its tag actually serves (tebako#711 ask 3): each row's artifact and
+# blksum pins are checked against the tag's `<name>.sha256` sidecar
+# assets, and ANY desync (missing sidecar, unreadable sidecar, served
+# digest ≠ pinned digest) fails the render naming every desynced row —
+# the registry must never pin bytes its release does not serve.
 #
 # The workflow calls this in the audit+registry job and lands the result
 # by bot PR against main — git arbitrates, never a force-push.
@@ -99,7 +110,10 @@ class RegistryUpdate # rubocop:disable Metrics/ClassLength
 
   def run
     release = find_release
-    merged = merge(current_registry, version_rows(release))
+    assets = @client.release_assets(release.url)
+    rendered = version_rows(assets)
+    verify_render(assets, rendered)
+    merged = merge(current_registry, rendered)
     path = write_registry(merged)
     puts "#{@tag}: registry rendered to #{path} " \
          "(#{merged.fetch("payloads").size} payload(s))"
@@ -115,8 +129,8 @@ class RegistryUpdate # rubocop:disable Metrics/ClassLength
   end
 
   # The release's shards, grouped into one registry version line per ruby.
-  def version_rows(release) # rubocop:disable Metrics/MethodLength
-    shards = @client.release_assets(release.url).select { |asset| asset.name.end_with?(SHARD_SUFFIX) }
+  def version_rows(assets) # rubocop:disable Metrics/MethodLength
+    shards = assets.select { |asset| asset.name.end_with?(SHARD_SUFFIX) }
     raise RegistryUpdateError, "NAMED FAILURE: #{@tag} carries no #{SHARD_SUFFIX} shards" if shards.empty?
 
     by_ruby = {}
@@ -125,9 +139,63 @@ class RegistryUpdate # rubocop:disable Metrics/ClassLength
       {
         "version" => "#{ruby}-#{@version}",
         "platforms" => platforms.sort.to_h,
+        # The version-level ref stays the line's nominal home (spec 37
+        # §8's download base for every pre-MINOR reader); the per-ROW ref
+        # each platform row carries names the tag that actually serves
+        # its bytes (tebako#711 ask 1) — the two agree on unsharded
+        # releases and on single-platform shards.
         "release" => { "ref" => "tfs:github:#{RUNTIME_REPO}:#{@tag}" }
       }
     end
+  end
+
+  # Ask-3 verification (tebako#711): before anything merges, every rendered
+  # pin is checked against the bytes its tag actually serves. Verification
+  # runs against @tag's own asset list — the tag every rendered row's
+  # per-row `release.ref` names, i.e. exactly the derivation a resolver
+  # makes — so a green render is a proof that the registry pins only bytes
+  # the named tag serves. EVERY desync is collected and named in one
+  # refusal; the publish never lands a partial fix silently.
+  def verify_render(assets, rendered)
+    by_name = assets.to_h { |asset| [asset.name, asset.browser_download_url] }
+    desynced = []
+    rendered.each { |row| verify_row(by_name, desynced, row) }
+    return if desynced.empty?
+
+    raise RegistryUpdateError,
+          "NAMED FAILURE: #{@tag} desyncs from the rendered pins — the registry must never pin bytes " \
+          "its release does not serve (tebako#711):\n  #{desynced.join("\n  ")}"
+  end
+
+  # One rendered version row: every (triplet × pin) pair checked, the
+  # artifact pin and the blksum pin each against its own sidecar.
+  def verify_row(by_name, desynced, row)
+    row.fetch("platforms").each do |triplet, platform|
+      verify_pin(by_name, desynced, row.fetch("version"), triplet, platform["artifact"], platform["sha256"])
+      next unless (blksum = platform["blksum"])
+
+      verify_pin(by_name, desynced, row.fetch("version"), triplet, blksum["filename"], blksum["sha256"])
+    end
+  end
+
+  # One pin vs. the tag's `<name>.sha256` sidecar (sha256sum format:
+  # "<hex>  <filename>"). A missing sidecar, an unreadable one (the fetch
+  # error is folded into the desync line, never a stack trace past the exe
+  # wrapper's rescue), or a served digest ≠ the pinned digest are all
+  # desyncs — the row would name bytes the tag cannot be proven to serve.
+  def verify_pin(by_name, desynced, version, triplet, name, sha256) # rubocop:disable Metrics/ParameterLists
+    url = by_name["#{name}.sha256"]
+    unless url
+      desynced << "#{version} #{triplet}: no #{name}.sha256 asset on #{@tag}"
+      return
+    end
+
+    served = @client.get(url).to_s.split.first
+    return if served == sha256
+
+    desynced << "#{version} #{triplet}: #{name} pins #{sha256} but #{@tag} serves #{served || "(empty sidecar)"}"
+  rescue StandardError => e
+    desynced << "#{version} #{triplet}: #{name}.sha256 unreadable on #{@tag} (#{e.class}: #{e.message})"
   end
 
   # One shard folds into its ruby's platform rows: it must name THIS
@@ -192,9 +260,21 @@ class RegistryUpdate # rubocop:disable Metrics/ClassLength
   # bundle-era shards, the exe's otherwise (spec 36 §5) — plus the additive
   # blksum pin (spec 39 §3 MINOR 4) mirrored verbatim from the shard's
   # image.blksum declaration when present.
+  #
+  # Every row also carries its own `release.ref` naming THIS render's tag
+  # (tebako#711 ask 1): post-tebako-runtime-ruby#235 a version line unions
+  # rows from several per-platform shard tags, so the version-level ref
+  # cannot name the tag serving a given row's bytes. The key is additive —
+  # pre-MINOR readers ignore it (spec 37 §2's leniency rule) and keep
+  # resolving from the version-level ref, which matches on unsharded
+  # releases; MINOR readers prefer the row's ref.
   def artifact_row(entry)
     source = entry["bundle"] || entry
-    row = { "artifact" => source.fetch("filename"), "sha256" => source.fetch("sha256") }
+    row = {
+      "artifact" => source.fetch("filename"),
+      "sha256" => source.fetch("sha256"),
+      "release" => { "ref" => "tfs:github:#{RUNTIME_REPO}:#{@tag}" }
+    }
     if (blksum = entry.dig("image", "blksum"))
       row["blksum"] = { "filename" => blksum.fetch("filename"), "sha256" => blksum.fetch("sha256") }
     end
@@ -206,8 +286,8 @@ class RegistryUpdate # rubocop:disable Metrics/ClassLength
   # document when the file does not exist yet. REGISTRY_BASE_PATH reads a
   # LOCAL file instead — the sharded catalog's render loop (spec 36 §6)
   # accumulates each line's rows onto the previous line's render, so the
-  # per-tag bot PRs are supersets of one another and merge in any order
-  # without losing rows.
+  # one accumulated bot PR the workflow opens carries every shard tag's
+  # rows regardless of render order.
   def current_registry
     data = read_registry_base
     data.is_a?(Hash) ? data : seed

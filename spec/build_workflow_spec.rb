@@ -465,6 +465,22 @@ RSpec.describe "publish coordinator workflow" do
     expect(publish.fetch("if")).to include("steps.render.outcome == 'success'")
   end
 
+  # tebako#711 asks 1+3 (this PR's feedstock-publisher half): the render's
+  # owner script emits every platform row's own release.ref — the shard
+  # tag its bytes come from, which the version-level ref cannot name on a
+  # sharded catalog — and verifies every rendered pin against the tag's
+  # <name>.sha256 sidecars BEFORE the merge, so a desynced release fails
+  # the render step (and the gated publish) instead of landing a registry
+  # that pins bytes its tag does not serve.
+  it "renders per-row release refs and verifies every pin against the served sidecars (tebako#711)" do
+    src = File.read(File.join(REPO_ROOT, "tools", "registry_update.rb"))
+    # Single quotes are the point: the lock is on the script's literal text.
+    expect(src).to include('"release" => { "ref" => "tfs:github:#{RUNTIME_REPO}:#{@tag}" }') # rubocop:disable Lint/InterpolationCheck
+    expect(src).to include("def verify_render", "def verify_pin")
+    # Verification runs between render and merge — never after, never absent.
+    expect(src).to match(/verify_render\(assets, rendered\)\s+merged = merge\(current_registry, rendered\)/)
+  end
+
   # #218 + #275 (run 37397000495): the per-shard-tag PR fan-out died on
   # the first shard whose bot PR already existed — gh pr view is
   # state-blind and a swallowed transport error reads as "no PR" — and
