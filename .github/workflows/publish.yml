@@ -461,13 +461,29 @@ jobs:
             # render is byte-identical with a plan-driven one. The
             # v0.16.30 registry_only (run 36363960486) died rendering a
             # bare v0.16.30 tag that never existed (#218).
+            # The listing goes through GraphQL with only tagName+isDraft
+            # selected: the REST releases endpoint embeds every release's
+            # full asset array, and at catalog scale (~85 releases x
+            # hundreds of assets = 36 MB) GitHub's backend 504s
+            # intermittently server-side — two registry_only repairs for
+            # v0.17.1 died on exactly that. The field selection keeps the
+            # response at KBs regardless of asset count.
             releases_json="$RUNNER_TEMP/releases.json"
-            if ! gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --paginate --slurp > "$releases_json"; then
+            if ! gh api graphql --paginate --slurp \
+                 -f owner="${GITHUB_REPOSITORY%/*}" -f repo="${GITHUB_REPOSITORY#*/}" \
+                 -f query='query($owner: String!, $repo: String!, $endCursor: String) {
+                   repository(owner: $owner, name: $repo) {
+                     releases(first: 100, after: $endCursor, orderBy: {field: CREATED_AT, direction: DESC}) {
+                       nodes { tagName isDraft }
+                       pageInfo { hasNextPage endCursor }
+                     }
+                   }
+                 }' > "$releases_json"; then
               echo "::error::could not list the releases to rediscover the shard tags for v${version} — a transient API failure; rerun the job"
               exit 1
             fi
             shards="$(jq --arg v "v${version}" -c '
-              [ add[] | select(.draft | not) | .tag_name | select(. == $v or startswith($v + "-")) ] as $tags
+              [ .[].data.repository.releases.nodes[] | select(.isDraft | not) | .tagName | select(. == $v or startswith($v + "-")) ] as $tags
               | ["windows", "linux-gnu", "linux-musl", "macos"] as $platforms
               | [ $tags[] | { tag: ., key: (((capture("-ruby(?<line>[0-9.]+)-(?<platform>windows|linux-gnu|linux-musl|macos)$")?) // null) as $m
                                 | if $m then [($m.line | split(".") | map(tonumber)), ($platforms | index($m.platform))] else [[0], 9] end) } ]
