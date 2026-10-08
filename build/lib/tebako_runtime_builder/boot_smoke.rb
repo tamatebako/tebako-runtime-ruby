@@ -48,8 +48,9 @@ module TebakoRuntimeBuilder
     autoload :Artifact,         File.expand_path("boot_smoke/artifact", __dir__)
     autoload :Run,              File.expand_path("boot_smoke/run", __dir__)
     autoload :InterposeFixture, File.expand_path("boot_smoke/interpose_fixture", __dir__)
+    autoload :MagnusFixture,    File.expand_path("boot_smoke/magnus_fixture", __dir__)
 
-    SCENARIOS = %w[boot stat io bundler locks native_ext loader_interpose class_e_exec yjit zjit].freeze
+    SCENARIOS = %w[boot stat io bundler locks native_ext loader_interpose class_e_exec yjit zjit magnus_ext].freeze
     # The scenarios that boot with the spec-22 probe fixture image mounted
     # at /probe (class L's libraries + class E's jar ride the same image).
     INTERPOSE_SCENARIOS = %w[loader_interpose class_e_exec].freeze
@@ -309,9 +310,22 @@ module TebakoRuntimeBuilder
       env["TEBAKO_MOUNT_ROOT"] = mount_root_override if mount_root_override
       support_dll_expectation(env)
       arm_jit_scenario_env(env, scenario)
+      magnus_fixture_env(env, scenario)
       env.merge("RUBYOPT" => "-r#{PROBE_PATH}",
                 "TEBAKO_BOOT_PROBE" => scenario,
                 "TEBAKO_BOOT_MOUNT_POINT" => mount_root_override || mount_point)
+    end
+
+    # The magnus_ext scenario (issue #192) hands the probe the host path of
+    # the in-leg magnus fixture build; the fixture compiles once per
+    # process against THIS runtime's rbconfig + stashed headers.
+    def magnus_fixture_env(env, scenario)
+      return unless scenario == "magnus_ext"
+
+      image = "#{executable}.tfs"
+      env["TEBAKO_MAGNUS_FIXTURE"] =
+        MagnusFixture.new(platform: @platform, executable: executable,
+                          image: File.file?(image) ? image : nil).library_path
     end
 
     # The support-DLL alias expectation (spec 22 §2.1, msys only): flowed

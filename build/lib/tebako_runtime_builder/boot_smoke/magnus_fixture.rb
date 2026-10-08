@@ -1,0 +1,209 @@
+# frozen_string_literal: true
+
+# Copyright (c) 2026 [Ribose Inc](https://www.ribose.com).
+# All rights reserved.
+# This file is a part of the Tebako project.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions
+# are met:
+# 1. Redistributions of source code must retain the above copyright
+#    notice, this list of conditions and the following disclaimer.
+# 2. Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+# ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
+# TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+# PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS
+# BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
+
+require "fileutils"
+require "open3"
+require "tmpdir"
+
+module TebakoRuntimeBuilder
+  class BootSmoke
+    # The issue-#192 boot-smoke fixture: a magnus-built extension (the
+    # crate under fixtures/magnus) compiled IN-LEG against the freshly
+    # built runtime and handed to the magnus_ext scenario, which loads it
+    # inside the packaged context and calls through to
+    # ruby_thread_has_gvl_p — the internal CRuby declaration the ruby-rust
+    # gem family binds (internal/thread.h through 3.4, public on master).
+    # The gate proves, per leg: the symbol's presence in the exe/dll
+    # export surface, the magnus/rb-sys build path against the static
+    # runtime, and the load-time resolution contract (linux
+    # dlopen-from-exe, macOS dynamic lookup, windows import-lib link).
+    #
+    # The build replays the rb-sys gem's contract: rbconfig flows to
+    # rb-sys's build script as RBCONFIG_<key> env (env wins over rb-sys's
+    # own $RUBY dump), the header dirs point at the leg's stashed headers,
+    # windows adds libdir -> the build tree's import lib, and the platform
+    # link flags the gem's CargoBuilder computes ride `cargo rustc --`
+    # (macOS dynamic_lookup — rb-sys's own emitted link-arg never
+    # propagates to a dependent cdylib, cargo#9554).
+    class MagnusFixture # rubocop:disable Metrics/ClassLength
+      CRATE_DIR = File.expand_path("fixtures/magnus", __dir__).freeze
+      CRATE_NAME = "magnus_fixture"
+      # The legs provision rust per the JIT pattern (the rustup pin lives
+      # at /opt/cargo; hosted runners carry cargo on PATH).
+      # TEBAKO_SMOKE_CARGO overrides.
+      CARGO_CANDIDATES = ["/opt/cargo/bin/cargo"].freeze
+      # The msys host id -> the rust target whose linker model matches the
+      # runtime's (gnu import-lib link). windows/arm64 (clangarm64) is not
+      # wired — its rust target and import-lib naming are unverified, so
+      # the gate fails closed there rather than guessing.
+      MSYS_RUST_TARGETS = { "windows-ucrt64" => "x86_64-pc-windows-gnu" }.freeze
+
+      def initialize(executable:, platform: Platform.new, image: nil, toolchain: nil)
+        @platform = platform
+        @executable = executable
+        @image = image
+        @toolchain = toolchain || InterposeFixture::Toolchain.new
+      end
+
+      attr_reader :platform
+
+      # Build the crate once per process; returns the host path of the
+      # artifact renamed to the runtime's DLEXT spelling (require-ready).
+      def library_path
+        @library_path ||= build
+      end
+
+      private
+
+      def build
+        Dir.mktmpdir("tebako-magnus-fixture") { |dir| keep_library(build_in(dir)) }
+      end
+
+      def build_in(dir)
+        cargo_bin = resolve_cargo
+        rust_target if platform.msys? # fail closed on unwired hosts before any work
+        config = dump_rbconfig(dir)
+        run_cargo(cargo_bin, dir, config)
+        artifact = find_artifact(dir)
+        dlext = config.fetch("DLEXT") { raise TebakoRuntimeBuilder::Error.new("rbconfig carries no DLEXT", 149) }
+        staged = File.join(dir, "#{CRATE_NAME}.#{dlext}")
+        FileUtils.cp(artifact, staged)
+        staged
+      end
+
+      def keep_library(staged)
+        keep = File.join(Dir.tmpdir, "tebako-magnus-fixture-#{Process.pid}", File.basename(staged))
+        FileUtils.mkdir_p(File.dirname(keep))
+        FileUtils.cp(staged, keep)
+        keep
+      end
+
+      # The runtime's own RbConfig::CONFIG, dumped by booting it (the
+      # rb-sys record separator protocol), scrubbed of the host's
+      # bundler/rubygems leaks exactly like a probe boot.
+      def dump_rbconfig(dir)
+        env = BootSmoke::ENV_SCRUBBED.to_h { |key| [key, nil] }
+        env["TEBAKO_RUNTIME_IMAGE"] = @image if @image
+        out, err, status = Open3.capture3(env, @executable, "--disable-gems", "-rrbconfig", "-e",
+                                          'print RbConfig::CONFIG.map { |kv| kv.join("\x1F") }.join("\x1E")',
+                                          chdir: dir)
+        unless status&.success?
+          raise TebakoRuntimeBuilder::Error.new("rbconfig dump failed (#{status}): #{err.to_s.strip[0, 400]}", 149)
+        end
+
+        parse_dump(out)
+      end
+
+      def parse_dump(out)
+        # rb-sys's own parse keeps only key+value records — an empty-valued
+        # CONFIG key splits to a lone key and is absent downstream either
+        # way.
+        config = out.split("\x1E")
+                    .map { |pair| pair.split("\x1F", 2) }
+                    .select { |parts| parts.length == 2 }
+                    .to_h
+        if config.empty?
+          raise TebakoRuntimeBuilder::Error.new(
+            "rbconfig of the booted runtime did not parse (#{out.length} bytes)", 149
+          )
+        end
+
+        config
+      end
+
+      # cargo rustc with the runtime's rbconfig overlaid as RBCONFIG_* env
+      # (the rb-sys gem's contract) + the leg's header/import-lib bridges.
+      def run_cargo(cargo_bin, dir, config)
+        args = [cargo_bin, "rustc", "--release", "--manifest-path", File.join(CRATE_DIR, "Cargo.toml")]
+        args += ["--target", rust_target] if platform.msys?
+        args << "--"
+        args += ["-C", "link-arg=-Wl,-undefined,dynamic_lookup"] if platform.macos?
+        args += ["-C", "target-feature=-crt-static"] if platform.linux_musl?
+        BuildHelpers.run_with_capture(args, env: cargo_env(dir, config))
+      rescue TebakoRuntimeBuilder::Error => e
+        raise TebakoRuntimeBuilder::Error.new("the magnus boot-smoke fixture did not build: #{e.message}", 149)
+      end
+
+      def cargo_env(dir, config)
+        overrides = { "rubyhdrdir" => @toolchain.headers_dir, "rubyarchhdrdir" => @toolchain.arch_dir }
+        overrides["libdir"] = import_lib_dir if platform.msys?
+        config.merge(overrides)
+              .transform_keys { |key| "RBCONFIG_#{key}" }
+              .merge("RUBY" => @executable, "CARGO_TARGET_DIR" => File.join(dir, "target"))
+              .tap { |env| env["TEBAKO_RUNTIME_IMAGE"] = @image if @image }
+      end
+
+      # The windows link model: rb-sys force-links libruby on mingw, so
+      # libdir must name the directory holding lib*-ucrt-ruby*.dll.a — the
+      # ruby build tree's, the same file the msys devkit stages.
+      def import_lib_dir
+        hits = Dir.glob(File.join(".build", "deps", "src", "_ruby_*", "lib*-ucrt-ruby*.dll.a"))
+        if hits.empty?
+          raise TebakoRuntimeBuilder::Error.new(
+            "no ruby import library under .build/deps/src/_ruby_* (the msys leg stages it before the boot smoke)", 148
+          )
+        end
+
+        File.expand_path(File.dirname(hits.first))
+      end
+
+      def rust_target
+        MSYS_RUST_TARGETS.fetch(platform.host_id) do
+          raise TebakoRuntimeBuilder::Error.new(
+            "no rust target wired for msys host '#{platform.host_id}' (windows/arm64's clangarm64 link model " \
+            "is unverified — wire it deliberately when the leg exists)", 148
+          )
+        end
+      end
+
+      def resolve_cargo
+        explicit = ENV.fetch("TEBAKO_SMOKE_CARGO", nil)
+        candidates = explicit ? [explicit] : CARGO_CANDIDATES + path_candidates("cargo")
+        found = candidates.find { |path| File.executable?(path) && !File.directory?(path) }
+        found || raise(TebakoRuntimeBuilder::Error.new(
+                         "no cargo for the magnus boot-smoke fixture (tried: #{candidates.join(", ")}; " \
+                         "set TEBAKO_SMOKE_CARGO)", 148
+                       ))
+      end
+
+      def path_candidates(tool)
+        ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).map { |dir| File.join(dir, tool) }
+      end
+
+      def find_artifact(dir)
+        base = File.join(dir, "target")
+        base = File.join(base, rust_target) if platform.msys?
+        hits = Dir.glob(File.join(base, "release", "{lib,}#{CRATE_NAME}.{so,dylib,dll}"))
+        if hits.empty?
+          raise TebakoRuntimeBuilder::Error.new("the magnus fixture build left no cdylib under #{base}/release", 149)
+        end
+
+        hits.first
+      end
+    end
+  end
+end

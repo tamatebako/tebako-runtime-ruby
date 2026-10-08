@@ -145,6 +145,51 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
     end
   end
 
+  describe TebakoRuntimeBuilder::BootSmoke::MagnusFixture do
+    def with_env(vars)
+      old = vars.to_h { |key, _| [key, ENV.fetch(key, nil)] }
+      vars.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
+      yield
+    ensure
+      old.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
+    end
+
+    def fixture_for(platform)
+      described_class.new(platform: platform, executable: "unused")
+    end
+
+    it "ships the magnus fixture crate pinned on the magnus 0.9 line" do
+      # The pin is the gate's meaning: parsanol 1.0 / the ruby-rust family
+      # build on magnus 0.9 + rb-sys 0.9; the lockfile pins the exact tree
+      # every leg compiles, and the extern declaration is the issue's
+      # internal symbol.
+      manifest = File.read(File.join(described_class::CRATE_DIR, "Cargo.toml"))
+      lock = File.read(File.join(described_class::CRATE_DIR, "Cargo.lock"))
+      lib = File.read(File.join(described_class::CRATE_DIR, "src", "lib.rs"))
+      expect(manifest).to include('magnus = "0.9"')
+      expect(lock).to match(/name = "magnus"\nversion = "0\.9\.\d+"/)
+      expect(lib).to include("ruby_thread_has_gvl_p")
+    end
+
+    it "names every tried path when no cargo resolves" do
+      Dir.mktmpdir do |dir|
+        with_env("TEBAKO_SMOKE_CARGO" => File.join(dir, "no-such-cargo")) do
+          fixture = fixture_for(TebakoRuntimeBuilder::Platform.new("x86_64-linux-gnu"))
+          expect { fixture.library_path }
+            .to raise_error(TebakoRuntimeBuilder::Error, /no cargo for the magnus boot-smoke fixture.*tried:/m)
+        end
+      end
+    end
+
+    it "fails closed on windows/arm64 (the clangarm64 rust target is deliberately unwired)" do
+      with_env("TEBAKO_SMOKE_CARGO" => RbConfig.ruby) do
+        fixture = fixture_for(TebakoRuntimeBuilder::Platform.new("aarch64-w64-mingw32", "aarch64"))
+        expect { fixture.library_path }
+          .to raise_error(TebakoRuntimeBuilder::Error, /no rust target wired for msys host 'windows-ucrt-arm64'/)
+      end
+    end
+  end
+
   describe "#expected_yjit_state (YJIT phase 0)" do
     def with_env(vars)
       old = vars.to_h { |key, _| [key, ENV.fetch(key, nil)] }
@@ -602,6 +647,28 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
                                       "configure time (the 0.16.19 yjit class — ci/prepare-rust-toolchain.sh); " \
                                       "a windows or 3.x leg reporting enabled means upstream moved — flip the " \
                                       "derivation in BootSmoke#expected_zjit_state in the same PR."
+      end
+    end
+
+    describe "the magnus fixture gate (#192)" do
+      # The magnus/rb-sys consumer path, compiled IN-LEG against the fresh
+      # runtime (BootSmoke::MagnusFixture replays the rb-sys gem's
+      # RBCONFIG_* contract; the headers ride the leg's stash, windows adds
+      # the build tree's import lib) and loaded inside the packaged
+      # context. The fixture calls ruby_thread_has_gvl_p — internal CRuby
+      # API through the 3.4 line, public on master — so a ruby-line bump
+      # that silently drops the symbol fails the load itself, on every
+      # platform family, before the artifacts leave the leg.
+      let(:run) { smoke.run("magnus_ext") }
+
+      it "loads the magnus-built fixture and answers under the GVL" do
+        expect(run).to be_booted, boot_failure(run)
+        state = run.state("magnus_fixture")
+        detail = run.detail("magnus_fixture")
+        expect(state).to eq("ok"),
+                         "probe magnus_fixture detail: #{detail} — a load-time failure names the broken link " \
+                         "contract (linux dlopen-from-exe, macOS dynamic lookup, windows import lib)"
+        expect(detail).to eq("gvl=true")
       end
     end
 

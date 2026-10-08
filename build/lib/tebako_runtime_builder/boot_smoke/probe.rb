@@ -172,7 +172,19 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
     report("zjit") { zjit_check }
   end
 
-  SCENARIO_NAMES = %w[boot stat io bundler locks native_ext loader_interpose class_e_exec yjit zjit].freeze
+  # Issue #192: the magnus/rb-sys consumer path, gated in-leg. The host
+  # side (BootSmoke::MagnusFixture) compiled the fixture crate against
+  # THIS runtime's rbconfig + stashed headers; here, inside the packaged
+  # context, the require must bind ruby_thread_has_gvl_p from the exe/dll
+  # export surface (linux dlopen-from-exe, macOS dynamic lookup, windows
+  # import-lib link) and the call must answer under the GVL. A ruby-line
+  # bump that silently drops the internal symbol fails this load on every
+  # platform family.
+  def self.magnus_ext
+    report("magnus_fixture") { magnus_fixture_check }
+  end
+
+  SCENARIO_NAMES = %w[boot stat io bundler locks native_ext loader_interpose class_e_exec yjit zjit magnus_ext].freeze
 
   def self.run
     scenario = ENV.fetch("TEBAKO_BOOT_PROBE", "")
@@ -541,6 +553,23 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
     return if host_os =~ /mswin|mingw/
 
     raise NotImplementedError, "the support-DLL alias channel is a windows contract (host_os=#{host_os})"
+  end
+
+  # The magnus fixture check (issue #192): loads the in-leg magnus build
+  # handed over via TEBAKO_MAGNUS_FIXTURE (an absolute HOST path — the VFS
+  # falls through to the host for unmounted paths) and calls through to
+  # ruby_thread_has_gvl_p. The require is the export-surface gate: a
+  # runtime that dropped the internal symbol fails the load itself.
+  def self.magnus_fixture_check
+    fixture = ENV.fetch("TEBAKO_MAGNUS_FIXTURE") do
+      raise "TEBAKO_MAGNUS_FIXTURE is unset — the host side did not build the fixture (BootSmoke::MagnusFixture)"
+    end
+    require fixture
+    unless TebakoBootSmoke.gvl_held?
+      raise "TebakoBootSmoke.gvl_held? is false — ruby_thread_has_gvl_p answered without the GVL at probe time"
+    end
+
+    "gvl=true"
   end
 
   # The msys leg's expectation, flowed from the single owner

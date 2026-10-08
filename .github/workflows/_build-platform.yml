@@ -1667,6 +1667,14 @@ jobs:
           TEBAKO_SMOKE_EXPECT_OPENSSL: ok
         run: |
           set -euo pipefail
+          # The magnus fixture gate (issue #192) compiles a magnus
+          # extension in-leg: rb-sys's bindgen loads libclang at build
+          # time. The ubuntu images carry clang toolchains but not
+          # reliably the libclang shared library; macOS legs resolve the
+          # selected Xcode's. cargo is the runner's rustup toolchain.
+          if [ "${{ matrix.env.os }}" = "linux-gnu" ] && ! ldconfig -p | grep -q libclang; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq libclang-dev
+          fi
           bundle install --jobs 4 --retry 3
           bundle exec rspec --tag boot_smoke --format documentation
 
@@ -1695,11 +1703,19 @@ jobs:
           docker run --rm -v ${{ github.workspace }}:/mnt/w -w /mnt/w \
             -e TEBAKO_RUNTIME_ROOT \
             -e TEBAKO_SMOKE_EXPECT_OPENSSL \
+            -e RUST_VERSION="${{ needs.compute.outputs.rust-version }}" \
             alpine:3.21 sh -c '
               set -e
               # git: the Gemfile pins tebako-release from its git
               # tag (contract.yml release_tooling) — bundler shell-outs.
-              apk add --no-cache ruby ruby-dev build-base ruby-bundler git >/dev/null
+              # curl/bash/ca-certificates + clang19-libclang: the magnus
+              # fixture gate (issue #192) compiles a magnus extension
+              # in-leg — rustup installs the ecosystem pin (flowed from
+              # compute exactly like the build legs) and rb-sys'"'"'s
+              # bindgen loads libclang at build time.
+              apk add --no-cache ruby ruby-dev build-base ruby-bundler git \
+                curl bash ca-certificates clang19-libclang >/dev/null
+              bash ci/prepare-rust-toolchain.sh
               bundle install --jobs 4 --retry 3
               bundle exec rspec --tag boot_smoke --format documentation'
 
@@ -1718,6 +1734,22 @@ jobs:
           TEBAKO_SMOKE_EXPECT_OPENSSL: ok
         run: |
           set -euo pipefail
+          # The magnus fixture gate (issue #192) compiles a magnus
+          # extension in-leg against the leg's stashed headers + the build
+          # tree's import lib. The runner's rustup defaults to MSVC — the
+          # runtime is ucrt64 (mingw), so the fixture builds for the gnu
+          # target whose link model matches; rb-sys's bindgen loads
+          # libclang (the runner image's VS2022 Clang tools carry it, the
+          # ucrt64 clang package is the fallback).
+          rustup target add x86_64-pc-windows-gnu
+          vs_libclang="/c/Program Files/Microsoft Visual Studio/2022/Enterprise/VC/Tools/Llvm/x64/bin"
+          if [ -e "$vs_libclang/libclang.dll" ]; then
+            # clang-sys runs in the windows-native cargo process — the env
+            # value must be a WINDOWS path, not this shell's /c/ spelling.
+            export LIBCLANG_PATH='C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\Llvm\x64\bin'
+          else
+            pacman -S --needed --noconfirm mingw-w64-ucrt-x86_64-clang >/dev/null
+          fi
           gem install bundler --no-document
           bundle install --jobs 4 --retry 3
           bundle exec rspec --tag boot_smoke --format documentation
