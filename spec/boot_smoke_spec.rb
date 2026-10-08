@@ -139,6 +139,27 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
       end
     end
 
+    it "resolves stashed header candidates to absolute paths" do
+      # Consumers spawn builds off the repo root (the magnus fixture's
+      # cargo runs with CARGO_TARGET_DIR in a tmpdir) — a relative -I
+      # silently resolves against the wrong cwd there (the leg failures
+      # behind this test).
+      Dir.mktmpdir do |dir|
+        Dir.chdir(dir) do
+          stash = File.join(dir, ".build", "deps", "stash_3.3.12", "include", "ruby-3.3.0")
+          FileUtils.mkdir_p(File.join(stash, "arm64-darwin23", "ruby"))
+          FileUtils.touch(File.join(stash, "ruby.h"))
+          FileUtils.touch(File.join(stash, "arm64-darwin23", "ruby", "config.h"))
+          with_env("TEBAKO_SMOKE_RUBY_HEADERS" => nil) do
+            toolchain = TebakoRuntimeBuilder::BootSmoke::InterposeFixture::Toolchain.new
+            expect(File.absolute_path?(toolchain.headers_dir)).to be(true)
+            expect(File.identical?(toolchain.headers_dir, stash)).to be(true)
+            expect(File.identical?(toolchain.arch_dir, File.join(stash, "arm64-darwin23"))).to be(true)
+          end
+        end
+      end
+    end
+
     it "refuses the windows leg by name in phase 1" do
       fixture = described_class.new(platform: TebakoRuntimeBuilder::Platform.new("x64-mingw-ucrt"))
       expect { fixture.image }.to raise_error(TebakoRuntimeBuilder::Error, /POSIX-only in spec 22 phase 1/)

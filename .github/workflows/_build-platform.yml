@@ -1704,6 +1704,8 @@ jobs:
             -e TEBAKO_RUNTIME_ROOT \
             -e TEBAKO_SMOKE_EXPECT_OPENSSL \
             -e RUST_VERSION="${{ needs.compute.outputs.rust-version }}" \
+            -e RUSTUP_HOME=/opt/rustup \
+            -e CARGO_HOME=/opt/cargo \
             alpine:3.21 sh -c '
               set -e
               # git: the Gemfile pins tebako-release from its git
@@ -1712,10 +1714,19 @@ jobs:
               # fixture gate (issue #192) compiles a magnus extension
               # in-leg — rustup installs the ecosystem pin (flowed from
               # compute exactly like the build legs) and rb-sys'"'"'s
-              # bindgen loads libclang at build time.
+              # bindgen loads libclang at build time. RUSTUP_HOME/CARGO_HOME
+              # must RIDE the environment (the build legs do the same):
+              # prepare-rust-toolchain.sh'"'"'s exports die with its
+              # process, and without the pair the /opt/cargo/bin shim probes
+              # an empty $HOME/.rustup and names no default toolchain.
               apk add --no-cache ruby ruby-dev build-base ruby-bundler git \
                 curl bash ca-certificates clang19-libclang >/dev/null
               bash ci/prepare-rust-toolchain.sh
+              # bindgen dlopens libclang via clang-sys, whose probe list
+              # names the debian/llvm-config spellings — not alpine'"'"'s
+              # /usr/lib/llvm<N>/lib. Point it exactly (derived, never a
+              # second literal of the llvm version).
+              export LIBCLANG_PATH="$(dirname "$(find /usr/lib -name libclang.so | head -1)")"
               bundle install --jobs 4 --retry 3
               bundle exec rspec --tag boot_smoke --format documentation'
 

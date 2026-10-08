@@ -75,12 +75,13 @@ module TebakoRuntimeBuilder
 
         def header_candidates
           explicit = @headers_dir || ENV.fetch("TEBAKO_SMOKE_RUBY_HEADERS", nil)
-          return [explicit] if explicit
+          return [File.expand_path(explicit)] if explicit
 
           [File.join(".build", "smoke-headers", "ruby-*"),
            File.join(".build", "deps", "stash_*", "include", "ruby-*"),
            File.join(".build", "deps", "src", "ruby-*", "include")]
             .flat_map { |pattern| Dir.glob(pattern) }.select { |dir| File.directory?(dir) }
+            .map { |dir| File.expand_path(dir) }
         end
 
         def arch_dir_in(dir)
