@@ -938,6 +938,12 @@ jobs:
           # copied out to the host-visible .build/smoke-{headers,tools}
           # (host legs read the stash in place; a mkdwarfs miss is not
           # fatal — the fixture falls back to tfs when one resolves).
+          # The stash copy names the leg's EXACT version: the image bakes
+          # an older generation's stash beside this leg's, and a stash_*
+          # merge lands both ruby-<abi> trees in smoke-headers — the
+          # alphabetical ruby-* glob then picks the wrong one (the 4.0.7
+          # container legs compiled against 3.3 headers). The rm -rf makes
+          # the populate idempotent against any earlier content.
           # The pin-verified tfs CLI cache (downloads/tfs/<sha>/tfs-*)
           # is copied out too — the spawn-edge acceptance gate below runs
           # on the HOST (or in a fresh alpine for musl) and presses its
@@ -977,8 +983,9 @@ jobs:
             PATH="/opt/cargo/bin:$PATH" /mnt/w/tools/build_runtime --ruby "${{ matrix.ruby.version }}" --output "/mnt/w/runtime-packages/$runtime" \
             --prefix /root/.build --src-mirror file:///mnt/w/.build/spec22-src-roll --src-release spec22-chain \
             ${{ matrix.env.os == 'linux-gnu' && '--patchelf' || '' }} && \
+            rm -rf /mnt/w/.build/smoke-headers && \
             mkdir -p /mnt/w/.build/smoke-headers /mnt/w/.build/smoke-tools /mnt/w/.build/downloads/tfs && \
-            cp -a /root/.build/deps/stash_*/include/. /mnt/w/.build/smoke-headers/ && \
+            cp -a /root/.build/deps/stash_${{ matrix.ruby.version }}/include/. /mnt/w/.build/smoke-headers/ && \
             cp -a /root/.build/downloads/tfs/. /mnt/w/.build/downloads/tfs/ && \
             { cp -a /root/.build/deps/bin/mkdwarfs /mnt/w/.build/smoke-tools/ 2>/dev/null || true; }'; then
             echo "::warning::build failed — dumping ext extconf probe logs"
@@ -1752,7 +1759,19 @@ jobs:
           # target whose link model matches; rb-sys's bindgen loads
           # libclang (the runner image's VS2022 Clang tools carry it, the
           # ucrt64 clang package is the fallback).
-          rustup target add x86_64-pc-windows-gnu
+          # The image's rustup/cargo are windows-native under the profile's
+          # .cargo/bin — a dir the msys2 shell does NOT inherit on PATH
+          # (the first round's windows legs 127'd on exactly this).
+          # Resolve it by its canonical home and fail by name if the image
+          # moved it. Only the ucrt64 (x86_64) legs run the fixture's
+          # gnu-target build — windows/arm64 fails closed by design before
+          # any cargo call, so no target add there.
+          cargo_bin="$(cygpath -u "${CARGO_HOME:-$USERPROFILE/.cargo}/bin")"
+          [ -x "$cargo_bin/cargo.exe" ] || { echo "::error::no windows-native cargo at $cargo_bin — the runner image's rust toolchain moved"; exit 1; }
+          export PATH="$cargo_bin:$PATH"
+          if [ "$(uname -m)" = "x86_64" ]; then
+            rustup target add x86_64-pc-windows-gnu
+          fi
           vs_libclang="/c/Program Files/Microsoft Visual Studio/2022/Enterprise/VC/Tools/Llvm/x64/bin"
           if [ -e "$vs_libclang/libclang.dll" ]; then
             # clang-sys runs in the windows-native cargo process — the env

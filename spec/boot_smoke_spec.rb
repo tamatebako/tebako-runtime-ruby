@@ -160,6 +160,45 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
       end
     end
 
+    it "narrows the candidates to the runtime's ABI when several ruby versions lie around" do
+      # The 4.0.7 container legs' failure: the image bakes an older
+      # generation's stash beside the leg's, and the alphabetical ruby-*
+      # glob hands back the wrong version's headers — rb-sys then fails
+      # deep in its versioned stable-api layer. The hint comes from the
+      # runtime's own rbconfig dump (the magnus fixture passes it).
+      Dir.mktmpdir do |dir|
+        Dir.chdir(dir) do
+          %w[ruby-3.3.0 ruby-4.0.0].each do |abi|
+            base = File.join(dir, ".build", "smoke-headers", abi)
+            FileUtils.mkdir_p(File.join(base, "x86_64-linux", "ruby"))
+            FileUtils.touch(File.join(base, "ruby.h"))
+            FileUtils.touch(File.join(base, "x86_64-linux", "ruby", "config.h"))
+          end
+          with_env("TEBAKO_SMOKE_RUBY_HEADERS" => nil) do
+            toolchain = TebakoRuntimeBuilder::BootSmoke::InterposeFixture::Toolchain.new(version_hint: "4.0.0")
+            expect(File.identical?(toolchain.headers_dir, File.join(dir, ".build", "smoke-headers", "ruby-4.0.0")))
+              .to be(true)
+          end
+        end
+      end
+    end
+
+    it "names the ABI requirement when no stash matches the hint" do
+      Dir.mktmpdir do |dir|
+        Dir.chdir(dir) do
+          stash = File.join(dir, ".build", "smoke-headers", "ruby-3.3.0")
+          FileUtils.mkdir_p(File.join(stash, "x86_64-linux", "ruby"))
+          FileUtils.touch(File.join(stash, "ruby.h"))
+          FileUtils.touch(File.join(stash, "x86_64-linux", "ruby", "config.h"))
+          with_env("TEBAKO_SMOKE_RUBY_HEADERS" => nil) do
+            toolchain = TebakoRuntimeBuilder::BootSmoke::InterposeFixture::Toolchain.new(version_hint: "4.0.0")
+            expect { toolchain.headers_dir }
+              .to raise_error(TebakoRuntimeBuilder::Error, /no stashed ruby headers.*ruby-4\.0\.0 ABI/m)
+          end
+        end
+      end
+    end
+
     it "refuses the windows leg by name in phase 1" do
       fixture = described_class.new(platform: TebakoRuntimeBuilder::Platform.new("x64-mingw-ucrt"))
       expect { fixture.image }.to raise_error(TebakoRuntimeBuilder::Error, /POSIX-only in spec 22 phase 1/)
@@ -683,6 +722,12 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
       let(:run) { smoke.run("magnus_ext") }
 
       it "loads the magnus-built fixture and answers under the GVL" do
+        wired_targets = described_class::MagnusFixture::MSYS_RUST_TARGETS
+        if smoke.platform.msys? && !wired_targets.key?(smoke.platform.host_id)
+          skip "no rust target wired for #{smoke.platform.host_id} — windows/arm64's clangarm64 link model " \
+               "is deliberately unwired (the unit gate pins its fail-closed named error)"
+        end
+
         expect(run).to be_booted, boot_failure(run)
         state = run.state("magnus_fixture")
         detail = run.detail("magnus_fixture")

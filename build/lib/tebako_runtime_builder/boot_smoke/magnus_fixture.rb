@@ -44,11 +44,13 @@ module TebakoRuntimeBuilder
     #
     # The build replays the rb-sys gem's contract: rbconfig flows to
     # rb-sys's build script as RBCONFIG_<key> env (env wins over rb-sys's
-    # own $RUBY dump), the header dirs point at the leg's stashed headers,
-    # windows adds libdir -> the build tree's import lib, and the platform
-    # link flags the gem's CargoBuilder computes ride `cargo rustc --`
-    # (macOS dynamic_lookup — rb-sys's own emitted link-arg never
-    # propagates to a dependent cdylib, cargo#9554).
+    # own $RUBY dump), the header dirs point at the leg's stashed headers
+    # narrowed to the runtime's ABI line, windows adds libdir -> the
+    # build tree's import lib, and the platform link flags the gem's
+    # CargoBuilder computes ride `cargo rustc --` (macOS dynamic_lookup —
+    # rb-sys's own emitted link-arg never propagates to a dependent
+    # cdylib, cargo#9554) resp. RUSTFLAGS (musl's crt-static-off, which a
+    # trailing -C never applies at target-evaluation level).
     class MagnusFixture # rubocop:disable Metrics/ClassLength
       CRATE_DIR = File.expand_path("fixtures/magnus", __dir__).freeze
       CRATE_NAME = "magnus_fixture"
@@ -66,7 +68,7 @@ module TebakoRuntimeBuilder
         @platform = platform
         @executable = executable
         @image = image
-        @toolchain = toolchain || InterposeFixture::Toolchain.new
+        @toolchain = toolchain
       end
 
       attr_reader :platform
@@ -142,19 +144,46 @@ module TebakoRuntimeBuilder
         args += ["--target", rust_target] if platform.msys?
         args << "--"
         args += ["-C", "link-arg=-Wl,-undefined,dynamic_lookup"] if platform.macos?
-        args += ["-C", "target-feature=-crt-static"] if platform.linux_musl?
         BuildHelpers.run_with_capture(args, env: cargo_env(dir, config))
       rescue TebakoRuntimeBuilder::Error => e
         raise TebakoRuntimeBuilder::Error.new("the magnus boot-smoke fixture did not build: #{e.message}", 149)
       end
 
       def cargo_env(dir, config)
-        overrides = { "rubyhdrdir" => @toolchain.headers_dir, "rubyarchhdrdir" => @toolchain.arch_dir }
+        env = config.merge(header_overrides(config))
+                    .transform_keys { |key| "RBCONFIG_#{key}" }
+                    .merge("RUBY" => @executable, "CARGO_TARGET_DIR" => File.join(dir, "target"))
+        env["TEBAKO_RUNTIME_IMAGE"] = @image if @image
+        env["RUSTFLAGS"] = rustflags if platform.linux_musl?
+        env
+      end
+
+      def header_overrides(config)
+        tc = toolchain(config)
+        overrides = { "rubyhdrdir" => tc.headers_dir, "rubyarchhdrdir" => tc.arch_dir }
         overrides["libdir"] = import_lib_dir if platform.msys?
-        config.merge(overrides)
-              .transform_keys { |key| "RBCONFIG_#{key}" }
-              .merge("RUBY" => @executable, "CARGO_TARGET_DIR" => File.join(dir, "target"))
-              .tap { |env| env["TEBAKO_RUNTIME_IMAGE"] = @image if @image }
+        overrides
+      end
+
+      # The headers must be the SAME ruby line as the runtime under test:
+      # rb-sys's stable-api layer compiles versioned layout assumptions
+      # (its ruby_4_0.rs names RUBY_FL_USERPRIV0 and the tagged RTypedData
+      # type field — absent / differently-shaped in 3.x headers), so a
+      # stale wrong-version stash fails the rb-sys compile deep in the
+      # generated bindings (the 4.0.7 container legs, fed the image-baked
+      # 3.3 stash by the alphabetical glob). The ABI spelling flows from
+      # the runtime's own rbconfig dump.
+      def toolchain(config)
+        @toolchain ||= InterposeFixture::Toolchain.new(version_hint: config["ruby_version"])
+      end
+
+      # cdylib on musl needs crt-static OFF, and as a trailing `cargo
+      # rustc --` flag the -C never lifts rustc's crate-type support
+      # check (the first round's musl legs: "target does not support
+      # these crate types") — RUSTFLAGS is evaluated at target level, the
+      # idiom the tebako workspace's own musl cross-compiles use.
+      def rustflags
+        [ENV.fetch("RUSTFLAGS", nil), "-C target-feature=-crt-static"].compact.join(" ")
       end
 
       # The windows link model: rb-sys force-links libruby on mingw, so

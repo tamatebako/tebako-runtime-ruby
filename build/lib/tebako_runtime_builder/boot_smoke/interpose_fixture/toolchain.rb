@@ -35,11 +35,18 @@ module TebakoRuntimeBuilder
       # stashed ruby headers and an image pack tool. Both resolve from an
       # explicit env override first, then the container-leg copy-out
       # (.build/smoke-{headers,tools}), then the host-leg build prefix —
-      # a miss is a named error listing the paths tried.
+      # a miss is a named error listing the paths tried. A version_hint
+      # (the runtime's ABI spelling, e.g. "4.0.0") narrows the glob
+      # candidates to the matching ruby-<abi> dir: the container images
+      # bake an older generation's stash beside the leg's, and the
+      # alphabetical ruby-* glob picks the wrong one — the 4.0.7
+      # container legs compiled against 3.3 headers until the hint
+      # existed.
       class Toolchain
-        def initialize(headers_dir: nil, image_tool: nil)
+        def initialize(headers_dir: nil, image_tool: nil, version_hint: nil)
           @headers_dir = headers_dir
           @image_tool = image_tool
+          @version_hint = version_hint
         end
 
         # A directory holding ruby.h plus one arch dir
@@ -68,20 +75,33 @@ module TebakoRuntimeBuilder
           candidates = header_candidates
           found = candidates.find { |dir| File.file?(File.join(dir, "ruby.h")) && arch_dir_in(dir) }
           found || raise(TebakoRuntimeBuilder::Error.new(
-                           "no stashed ruby headers for the spec-22 boot-smoke fixture (tried: " \
+                           "no stashed ruby headers for the spec-22 boot-smoke fixture#{hint_clause} (tried: " \
                            "#{candidates.join(", ")}; set TEBAKO_SMOKE_RUBY_HEADERS to a directory holding ruby.h)", 145
                          ))
+        end
+
+        def hint_clause
+          @version_hint ? " matching the runtime's ruby-#{@version_hint} ABI" : ""
         end
 
         def header_candidates
           explicit = @headers_dir || ENV.fetch("TEBAKO_SMOKE_RUBY_HEADERS", nil)
           return [File.expand_path(explicit)] if explicit
 
+          narrow_to_hint(globbed_header_dirs).map { |dir| File.expand_path(dir) }
+        end
+
+        def globbed_header_dirs
           [File.join(".build", "smoke-headers", "ruby-*"),
            File.join(".build", "deps", "stash_*", "include", "ruby-*"),
            File.join(".build", "deps", "src", "ruby-*", "include")]
             .flat_map { |pattern| Dir.glob(pattern) }.select { |dir| File.directory?(dir) }
-            .map { |dir| File.expand_path(dir) }
+        end
+
+        def narrow_to_hint(dirs)
+          return dirs unless @version_hint
+
+          dirs.select { |dir| File.basename(dir) == "ruby-#{@version_hint}" }
         end
 
         def arch_dir_in(dir)
