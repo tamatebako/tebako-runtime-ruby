@@ -25,6 +25,13 @@ on:
       tag:
         description: "tamatebako/ruby source release tag (e.g. v0.2.9)"
         required: true
+      dry_run:
+        description: "Compute and report the bump (pin move + vocabulary delta) from the published release indexes; never writes, pushes, or opens a PR"
+        type: boolean
+        default: false
+      from_tag:
+        description: "Dry-run only: compute the bump FROM this tag instead of the checkout's current pin (historical-bump replays)"
+        required: false
 
 permissions:
   contents: write
@@ -40,7 +47,37 @@ jobs:
         with:
           token: ${{ secrets.TEBAKO_CI_PAT_TOKEN || secrets.GITHUB_TOKEN }}
 
+      # The dry-run: compute the whole bump from the two published release
+      # indexes (pin move + vocabulary delta) and report it — nothing is
+      # written, pushed, or opened. This is the "adding a version to the
+      # source factory's release flows to the factory matrix with zero
+      # manual edits" demonstration, safe to run for any tag pair.
+      - name: Dry-run report (no writes, no push, no PR)
+        if: inputs.dry_run
+        env:
+          TAG: ${{ github.event.client_payload.tag || inputs.tag }}
+          FROM_TAG: ${{ inputs.from_tag }}
+        run: |
+          set -euo pipefail
+          file="build/lib/tebako_runtime_builder/source_fetcher.rb"
+          case "$TAG" in
+            v[0-9]*) ;;
+            *) echo "::error::unexpected tag '$TAG'"; exit 1 ;;
+          esac
+          current="${FROM_TAG:-$(grep -oE 'DEFAULT_RELEASE = "[^"]+"' "$file" | cut -d'"' -f2)}"
+          {
+            echo "### Pin bump dry-run: $current -> $TAG"
+            echo ""
+            echo "- pin: \`DEFAULT_RELEASE\` in \`$file\` would move \`$current\` -> \`$TAG\`"
+            echo "- vocabulary sync (published SHA256SUMS indexes of both releases):"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          ruby tools/sync_matrix_vocabulary.rb "$current" "$TAG" --dry-run | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "(dry-run: the checkout is untouched, no branch is pushed, no PR is opened)" >> "$GITHUB_STEP_SUMMARY"
+
       - name: bump the pin
+        if: ${{ !inputs.dry_run }}
         id: bump
         env:
           TAG: ${{ github.event.client_payload.tag || inputs.tag }}
@@ -74,17 +111,19 @@ jobs:
       # (matrix.json ruby.catalog/full/tidy) in the SAME commit, or a
       # catalog/full/tidy coordinator dispatch silently misses the new
       # ruby (the 4.0.7 gap: #182 landed the source, the vocabulary still
-      # stopped at 4.0.6). The script runs in DELTA mode: only versions
-      # the bump newly offers are admitted -- backfills the factory
-      # deliberately skipped stay skipped.
+      # stopped at 4.0.6). The tool reads each tag's PUBLISHED index (the
+      # release's SHA256SUMS asset — releases are the interface, never the
+      # repository tree) and runs in DELTA mode: only versions the bump
+      # newly offers are admitted -- backfills the factory deliberately
+      # skipped stay skipped.
       - name: Setup Ruby
-        if: steps.bump.outputs.changed == 'true'
+        if: ${{ !inputs.dry_run && steps.bump.outputs.changed == 'true' }}
         uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
         with:
           ruby-version: 3.3
 
       - name: sync the dispatch vocabulary
-        if: steps.bump.outputs.changed == 'true'
+        if: ${{ !inputs.dry_run && steps.bump.outputs.changed == 'true' }}
         id: vocab
         env:
           GH_TOKEN: ${{ secrets.TEBAKO_CI_PAT_TOKEN || secrets.GITHUB_TOKEN }}
@@ -99,18 +138,12 @@ jobs:
             echo "summary=pin-only bump ($TAG not newer than $CURRENT), vocabulary untouched" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          gh api "repos/tamatebako/ruby/contents/versions.yml?ref=$CURRENT" \
-            -H "Accept: application/vnd.github.raw" > "$RUNNER_TEMP/versions-old.yml" \
-            || { echo "::error::cannot read versions.yml at $CURRENT -- a yanked source tag breaks the chain; fix the pin by hand"; exit 1; }
-          gh api "repos/tamatebako/ruby/contents/versions.yml?ref=$TAG" \
-            -H "Accept: application/vnd.github.raw" > "$RUNNER_TEMP/versions-new.yml" \
-            || { echo "::error::cannot read versions.yml at $TAG"; exit 1; }
-          ruby tools/sync_matrix_vocabulary.rb "$RUNNER_TEMP/versions-old.yml" "$RUNNER_TEMP/versions-new.yml" \
+          ruby tools/sync_matrix_vocabulary.rb "$CURRENT" "$TAG" \
             | tee "$RUNNER_TEMP/vocab.log"
           echo "summary=$(tail -1 "$RUNNER_TEMP/vocab.log")" >> "$GITHUB_OUTPUT"
 
       - name: push branch and open pull request
-        if: steps.bump.outputs.changed == 'true'
+        if: ${{ !inputs.dry_run && steps.bump.outputs.changed == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.TEBAKO_CI_PAT_TOKEN || secrets.GITHUB_TOKEN }}
           TAG: ${{ github.event.client_payload.tag || inputs.tag }}
