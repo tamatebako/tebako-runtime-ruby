@@ -8,29 +8,30 @@ require "tmpdir"
 $LOAD_PATH.unshift(File.expand_path("../tools", __dir__))
 require "sync_matrix_vocabulary"
 
+# The fetch seam double: ref -> an object answering sha256sums (the
+# SourceFetcher shape), so a spec never touches the network.
+class FakeSumsFetcher
+  def initialize(sums)
+    @sums = sums
+  end
+
+  attr_reader :sums
+  alias sha256sums sums
+end
+
 # The pin-bump vocabulary sync (tools/sync_matrix_vocabulary.rb): the
 # factory's dispatch vocabulary (matrix.json ruby.catalog/full/tidy) follows
 # the source factory's PUBLISHED release index (the release's SHA256SUMS
 # asset), in delta mode — only versions a bump newly offers are admitted.
 RSpec.describe VocabularySync do
-  # The fetch seam: ref -> an object answering sha256sums (the
-  # SourceFetcher shape), so a spec never touches the network.
-  class FakeSumsFetcher
-    def initialize(sums)
-      @sums = sums
-    end
-
-    attr_reader :sums
-    alias sha256sums sums
-  end
-
   def sums_content(versions)
-    versions.flat_map do |v|
-      ["#{'a' * 64}  tfs-ruby-#{v}-src.tar.gz",
-       "#{'b' * 64}  tfs-ruby-#{v}-src-linux-musl.tar.gz",
-       "#{'c' * 64}  tfs-ruby-#{v}-src-msys-pass1.tar.gz",
-       "#{'d' * 64}  tfs-ruby-#{v}-src-msys-pass2.tar.gz"]
-    end.join("\n") + "\n"
+    lines = versions.flat_map do |v|
+      ["#{"a" * 64}  tfs-ruby-#{v}-src.tar.gz",
+       "#{"b" * 64}  tfs-ruby-#{v}-src-linux-musl.tar.gz",
+       "#{"c" * 64}  tfs-ruby-#{v}-src-msys-pass1.tar.gz",
+       "#{"d" * 64}  tfs-ruby-#{v}-src-msys-pass2.tar.gz"]
+    end
+    "#{lines.join("\n")}\n"
   end
 
   def write_sums(dir, tag, versions)
@@ -46,7 +47,7 @@ RSpec.describe VocabularySync do
   def with_matrix
     Dir.mktmpdir do |dir|
       path = File.join(dir, "matrix.json")
-      File.write(path, JSON.pretty_generate(matrix_doc) + "\n")
+      File.write(path, "#{JSON.pretty_generate(matrix_doc)}\n")
       yield path, dir
     end
   end
@@ -165,7 +166,7 @@ RSpec.describe VocabularySync do
       with_matrix do |path, dir|
         old_sums = write_sums(dir, "vA", %w[3.3.12])
         empty = File.join(dir, "SHA256SUMS-empty")
-        File.write(empty, "#{'e' * 64}  README\n")
+        File.write(empty, "#{"e" * 64}  README\n")
         expect { sync_for(path).sync(old_sums, empty) }
           .to raise_error(/no ruby versions found in the published index/)
       end

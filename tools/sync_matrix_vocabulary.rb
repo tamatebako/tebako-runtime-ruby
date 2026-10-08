@@ -63,6 +63,9 @@ require "tmpdir"
 $LOAD_PATH.unshift(File.expand_path("../build/lib", __dir__))
 require "tebako_runtime_builder"
 
+# The vocabulary sync model: diffs two published source-release indexes
+# and applies the delta to matrix.json under the curation rules in the
+# file header. Injectable fetcher/stdout for the spec suite.
 class VocabularySync
   # A release's published version set is the unsuffixed linux-gnu source
   # asset names in its SHA256SUMS (every onboarded version ships the base
@@ -89,66 +92,79 @@ class VocabularySync
   # Sync the vocabulary from OLD to NEW; returns the summary line. Writes
   # the matrix unless dry_run. Raises (loud, named) on any unreadable index.
   def sync(old_ref, new_ref, dry_run: false)
-    old_versions = versions_for(old_ref)
     new_versions = versions_for(new_ref)
     raise "no ruby versions found in the published index of #{new_ref}" if new_versions.empty?
 
-    delta = new_versions - old_versions
+    delta = new_versions - versions_for(old_ref)
     if delta.empty?
       return report("no new versions between #{old_ref} and #{new_ref} (#{new_versions.last} is already known) " \
                     "-- vocabulary unchanged")
     end
 
-    matrix = JSON.parse(File.read(@matrix_path))
-    ruby = matrix.fetch("ruby") { raise "#{@matrix_path}: no ruby key" }
-    %w[catalog full tidy].each { |set| ruby.fetch(set) { raise "#{@matrix_path}: no ruby.#{set} array" } }
-
-    added, moved = apply_delta(ruby, delta)
-    if added.empty? && moved.empty?
-      return report("delta versions #{delta.join(', ')} already covered -- vocabulary unchanged")
-    end
-
-    File.write(@matrix_path, JSON.pretty_generate(matrix) + "\n") unless dry_run
-    report("#{"[dry-run] would sync: " if dry_run}vocabulary synced: catalog += [#{added.join(', ')}]; " \
-           "tips moved: #{moved.join(', ')}#{added.empty? && moved.empty? ? ' (none)' : ''}")
+    apply_to_matrix(delta, dry_run: dry_run)
   end
 
   private
+
+  def apply_to_matrix(delta, dry_run:)
+    matrix = JSON.parse(File.read(@matrix_path))
+    added, moved = apply_delta(ruby_sets(matrix), delta)
+    if added.empty? && moved.empty?
+      return report("delta versions #{delta.join(", ")} already covered -- vocabulary unchanged")
+    end
+
+    File.write(@matrix_path, "#{JSON.pretty_generate(matrix)}\n") unless dry_run
+    report("#{"[dry-run] would sync: " if dry_run}vocabulary synced: catalog += [#{added.join(", ")}]; " \
+           "tips moved: #{moved.join(", ")}")
+  end
+
+  def ruby_sets(matrix)
+    matrix.fetch("ruby") { raise "#{@matrix_path}: no ruby key" }.tap do |ruby|
+      %w[catalog full tidy].each { |set| ruby.fetch(set) { raise "#{@matrix_path}: no ruby.#{set} array" } }
+    end
+  end
 
   def report(line)
     @stdout.puts(line)
     line
   end
 
-  # The delta applied to the vocabulary sets: catalog gains each new version
-  # after its line's last member (line-grouped, oldest first); full/tidy
-  # move a tracked line's tip forward. Returns [catalog_additions, tip_moves].
+  # The delta applied to the vocabulary sets; returns
+  # [catalog_additions, tip_moves].
   def apply_delta(ruby, delta)
-    line_of = ->(v) { v.split(".").first(2).join(".") }
+    [add_to_catalog(ruby["catalog"], delta), move_tips(ruby, delta)]
+  end
 
-    added = []
-    catalog = ruby["catalog"]
-    delta.each do |v|
-      next if catalog.include?(v)
-
-      last = catalog.rindex { |e| line_of.call(e) == line_of.call(v) }
+  # catalog gains each new version after its line's last member
+  # (line-grouped, oldest first); a published row never leaves.
+  def add_to_catalog(catalog, delta)
+    delta.reject { |v| catalog.include?(v) }.each do |v|
+      last = catalog.rindex { |e| line_of(e) == line_of(v) }
       catalog.insert(last ? last + 1 : catalog.length, v)
-      added << v
     end
+  end
 
-    moved = []
-    %w[full tidy].each do |set|
-      ruby[set].map! do |tip|
-        newest = delta.select { |v| line_of.call(v) == line_of.call(tip) }.last
-        if newest && Gem::Version.new(newest) > Gem::Version.new(tip)
-          moved << "#{tip} -> #{newest} (#{set})"
-          newest
-        else
-          tip
-        end
-      end
+  # full/tidy move a tracked line's tip only forward; admitting a NEW minor
+  # line is a curation decision (CI cost, defer policy) that stays with the
+  # reviewer.
+  def move_tips(ruby, delta)
+    %w[full tidy].flat_map { |set| move_set_tips(ruby[set], delta, set) }
+  end
+
+  def move_set_tips(tips, delta, set)
+    moves = []
+    tips.map! do |tip|
+      newest = delta.select { |v| line_of(v) == line_of(tip) }.last
+      next tip unless newest && Gem::Version.new(newest) > Gem::Version.new(tip)
+
+      moves << "#{tip} -> #{newest} (#{set})"
+      newest
     end
-    [added, moved]
+    moves
+  end
+
+  def line_of(version)
+    version.split(".").first(2).join(".")
   end
 
   # {asset_name => sha256} for the ref: the release's published SHA256SUMS
@@ -162,7 +178,7 @@ class VocabularySync
   end
 
   def parse_sums(content)
-    content.each_line.each_with_object({}) do |line, acc|
+    content.each_line.with_object({}) do |line, acc|
       m = line.strip.match(SUMS_LINE)
       acc[m[2]] = m[1].downcase if m
     end
