@@ -81,6 +81,16 @@ module TebakoRuntimeBuilder
         @library_path ||= build
       end
 
+      # Public host probe: the gate's skip condition on the x86_64-windows
+      # legs reads it (nil = the smoke host has no msys clang to point
+      # bindgen's resource dir at).
+      def msys_clang
+        found = path_candidates("clang").find { |p| executable_file?(p) }
+        return found if found
+
+        msys_clang_candidates.find { |p| executable_file?(p) }
+      end
+
       private
 
       def build
@@ -183,27 +193,6 @@ module TebakoRuntimeBuilder
       # "file not found" inside ruby's and mingw's headers. Pointing the
       # parse at the leg's OWN clang resource dir restores the whole set
       # at once; the shim dir stays as the strictly-last fallback.
-      def msys_clang_resource_dir
-        return nil unless platform.msys?
-        return nil unless (clang = msys_clang)
-
-        out, _, status = Open3.capture3(clang, "-print-resource-dir")
-        dir = out.to_s.strip
-        return nil if !status.success? || dir.empty?
-
-        File.directory?(File.join(dir, "include")) ? dir : nil
-      end
-
-      def msys_clang
-        found = path_candidates("clang").find { |p| executable_file?(p) }
-        return found if found
-
-        # The rspec process's PATH carries the Windows rustup, not the
-        # msys tree — probe the known msys roots directly (the GHA
-        # setup-msys2 installation lives under RUNNER_TEMP/msys64).
-        msys_clang_candidates.find { |p| executable_file?(p) }
-      end
-
       def msys_clang_candidates
         triplet = platform.host_id.to_s.include?("arm64") ? "clangarm64" : "ucrt64"
         roots = [
@@ -216,6 +205,17 @@ module TebakoRuntimeBuilder
 
       def executable_file?(path)
         File.executable?(path) && !File.directory?(path)
+      end
+
+      def msys_clang_resource_dir
+        return nil unless platform.msys?
+        return nil unless (clang = msys_clang)
+
+        out, _, status = Open3.capture3(clang, "-print-resource-dir")
+        dir = out.to_s.strip
+        return nil if !status.success? || dir.empty?
+
+        File.directory?(File.join(dir, "include")) ? dir : nil
       end
 
       def header_overrides(config)
