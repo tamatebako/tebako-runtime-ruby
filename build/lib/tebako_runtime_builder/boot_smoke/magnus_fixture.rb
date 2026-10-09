@@ -169,7 +169,31 @@ module TebakoRuntimeBuilder
       # The fixture's shim dir rides -idirafter: searched strictly last,
       # so a toolchain shipping the real header never sees the shim.
       def bindgen_extra_clang_args
-        [ENV.fetch("BINDGEN_EXTRA_CLANG_ARGS", nil), "-idirafter", BINDGEN_SHIM_DIR].compact.join(" ")
+        parts = [ENV.fetch("BINDGEN_EXTRA_CLANG_ARGS", nil)]
+        if (dir = msys_clang_resource_dir)
+          parts << "-resource-dir" << dir
+        end
+        parts << "-idirafter" << BINDGEN_SHIM_DIR
+        parts.compact.join(" ")
+      end
+
+      # The msys legs' bindgen libclang resolves headers without any
+      # resource include — the freestanding set (stdbool, stdalign,
+      # stdckdint, mm_malloc, the *intrin family) all surface as
+      # "file not found" inside ruby's and mingw's headers. Pointing the
+      # parse at the leg's OWN clang resource dir restores the whole set
+      # at once; the shim dir stays as the strictly-last fallback.
+      def msys_clang_resource_dir
+        return nil unless platform.msys?
+
+        clang = path_candidates("clang").find { |p| File.executable?(p) && !File.directory?(p) }
+        return nil unless clang
+
+        out, _, status = Open3.capture3(clang, "-print-resource-dir")
+        dir = out.to_s.strip
+        return nil if !status.success? || dir.empty?
+
+        File.directory?(File.join(dir, "include")) ? dir : nil
       end
 
       def header_overrides(config)
