@@ -280,6 +280,15 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
       end
     end
 
+    it "ships a bindgen-time <stdalign.h> fallback for the windows legs" do
+      # Ruby 4.0's ruby/defines.h angle-includes the C11 header; the
+      # fixture's bindgen libclang resolves without a resource dir that
+      # carries it (the x86_64-windows 4.0.7 leg). Same -idirafter
+      # discipline, parse-only macros.
+      shim = File.read(File.join(described_class::BINDGEN_SHIM_DIR, "stdalign.h"))
+      expect(shim).to include("alignas _Alignas")
+    end
+
     it "names every tried path when no cargo resolves" do
       Dir.mktmpdir do |dir|
         with_env("TEBAKO_SMOKE_CARGO" => File.join(dir, "no-such-cargo")) do
