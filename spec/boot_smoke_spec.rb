@@ -249,14 +249,18 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
       # The windows runners keep rust at .../cargo.exe; Ruby's
       # File.executable? never appends the extension, so the msys legs
       # probe both spellings per PATH entry (the hosted runner's PATH
-      # carries the windows-form directory).
+      # carries the windows-form directory). Asserted at the candidate
+      # level — CARGO_CANDIDATES (/opt/cargo) legitimately wins where
+      # the runner provisions it, so resolution order is not the
+      # portable fact; the probed spellings are.
       Dir.mktmpdir do |dir|
         exe = File.join(dir, "cargo.exe")
         File.binwrite(exe, "#!/bin/sh\n")
         File.chmod(0o755, exe)
+        expect(File.executable?(exe)).to be(true)
         with_env("TEBAKO_SMOKE_CARGO" => nil, "PATH" => dir) do
           msys = fixture_for(TebakoRuntimeBuilder::Platform.new("x64-mingw-ucrt"))
-          expect(msys.send(:resolve_cargo)).to eq(exe)
+          expect(msys.send(:path_candidates, "cargo")).to include(exe)
           gnu = fixture_for(TebakoRuntimeBuilder::Platform.new("x86_64-linux-gnu"))
           paths = gnu.send(:path_candidates, "cargo")
           expect(paths).to all(end_with("/cargo"))
