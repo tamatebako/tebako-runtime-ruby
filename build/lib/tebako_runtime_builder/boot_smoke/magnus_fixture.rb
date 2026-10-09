@@ -195,7 +195,19 @@ module TebakoRuntimeBuilder
       end
 
       def msys_clang
-        path_candidates("clang").find { |p| File.executable?(p) && !File.directory?(p) }
+        found = path_candidates("clang").find { |p| File.executable?(p) && !File.directory?(p) }
+        return found if found
+        # The rspec process's PATH carries the Windows rustup, not the
+        # msys tree — probe the known msys roots directly (the GHA
+        # setup-msys2 installation lives under RUNNER_TEMP/msys64).
+        triplet = platform.host_id.to_s.include?("arm64") ? "clangarm64" : "ucrt64"
+        roots = [
+          ENV.fetch("MSYS_ROOT", nil),
+          ENV.fetch("RUNNER_TEMP", nil)&.then { |t| File.join(t, "msys64") },
+          "C:/msys64"
+        ].compact
+        roots.lazy.flat_map { |root| %w[clang clang.exe].map { |exe| File.join(root, triplet, "bin", exe) } }
+             .find { |p| File.executable?(p) && !File.directory?(p) }
       end
 
       def header_overrides(config)
