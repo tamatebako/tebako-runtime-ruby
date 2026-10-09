@@ -139,9 +139,172 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
       end
     end
 
+    it "resolves stashed header candidates to absolute paths" do
+      # Consumers spawn builds off the repo root (the magnus fixture's
+      # cargo runs with CARGO_TARGET_DIR in a tmpdir) — a relative -I
+      # silently resolves against the wrong cwd there (the leg failures
+      # behind this test).
+      Dir.mktmpdir do |dir|
+        Dir.chdir(dir) do
+          stash = File.join(dir, ".build", "deps", "stash_3.3.12", "include", "ruby-3.3.0")
+          FileUtils.mkdir_p(File.join(stash, "arm64-darwin23", "ruby"))
+          FileUtils.touch(File.join(stash, "ruby.h"))
+          FileUtils.touch(File.join(stash, "arm64-darwin23", "ruby", "config.h"))
+          with_env("TEBAKO_SMOKE_RUBY_HEADERS" => nil) do
+            toolchain = TebakoRuntimeBuilder::BootSmoke::InterposeFixture::Toolchain.new
+            expect(File.absolute_path?(toolchain.headers_dir)).to be(true)
+            expect(File.identical?(toolchain.headers_dir, stash)).to be(true)
+            expect(File.identical?(toolchain.arch_dir, File.join(stash, "arm64-darwin23"))).to be(true)
+          end
+        end
+      end
+    end
+
+    it "narrows the candidates to the runtime's ABI when several ruby versions lie around" do
+      # The 4.0.7 container legs' failure: the image bakes an older
+      # generation's stash beside the leg's, and the alphabetical ruby-*
+      # glob hands back the wrong version's headers — rb-sys then fails
+      # deep in its versioned stable-api layer. The hint comes from the
+      # runtime's own rbconfig dump (the magnus fixture passes it).
+      Dir.mktmpdir do |dir|
+        Dir.chdir(dir) do
+          %w[ruby-3.3.0 ruby-4.0.0].each do |abi|
+            base = File.join(dir, ".build", "smoke-headers", abi)
+            FileUtils.mkdir_p(File.join(base, "x86_64-linux", "ruby"))
+            FileUtils.touch(File.join(base, "ruby.h"))
+            FileUtils.touch(File.join(base, "x86_64-linux", "ruby", "config.h"))
+          end
+          with_env("TEBAKO_SMOKE_RUBY_HEADERS" => nil) do
+            toolchain = TebakoRuntimeBuilder::BootSmoke::InterposeFixture::Toolchain.new(version_hint: "4.0.0")
+            expect(File.identical?(toolchain.headers_dir, File.join(dir, ".build", "smoke-headers", "ruby-4.0.0")))
+              .to be(true)
+          end
+        end
+      end
+    end
+
+    it "names the ABI requirement when no stash matches the hint" do
+      Dir.mktmpdir do |dir|
+        Dir.chdir(dir) do
+          stash = File.join(dir, ".build", "smoke-headers", "ruby-3.3.0")
+          FileUtils.mkdir_p(File.join(stash, "x86_64-linux", "ruby"))
+          FileUtils.touch(File.join(stash, "ruby.h"))
+          FileUtils.touch(File.join(stash, "x86_64-linux", "ruby", "config.h"))
+          with_env("TEBAKO_SMOKE_RUBY_HEADERS" => nil) do
+            toolchain = TebakoRuntimeBuilder::BootSmoke::InterposeFixture::Toolchain.new(version_hint: "4.0.0")
+            expect { toolchain.headers_dir }
+              .to raise_error(TebakoRuntimeBuilder::Error, /no stashed ruby headers.*ruby-4\.0\.0 ABI/m)
+          end
+        end
+      end
+    end
+
     it "refuses the windows leg by name in phase 1" do
       fixture = described_class.new(platform: TebakoRuntimeBuilder::Platform.new("x64-mingw-ucrt"))
       expect { fixture.image }.to raise_error(TebakoRuntimeBuilder::Error, /POSIX-only in spec 22 phase 1/)
+    end
+  end
+
+  describe TebakoRuntimeBuilder::BootSmoke::MagnusFixture do
+    def with_env(vars)
+      old = vars.to_h { |key, _| [key, ENV.fetch(key, nil)] }
+      vars.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
+      yield
+    ensure
+      old.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
+    end
+
+    def fixture_for(platform)
+      described_class.new(platform: platform, executable: "unused")
+    end
+
+    it "ships the magnus fixture crate pinned on the magnus 0.9 line" do
+      # The pin is the gate's meaning: parsanol 1.0 / the ruby-rust family
+      # build on magnus 0.9 + rb-sys 0.9; the lockfile pins the exact tree
+      # every leg compiles, and the extern declaration is the issue's
+      # internal symbol.
+      manifest = File.read(File.join(described_class::CRATE_DIR, "Cargo.toml"))
+      lock = File.read(File.join(described_class::CRATE_DIR, "Cargo.lock"))
+      lib = File.read(File.join(described_class::CRATE_DIR, "src", "lib.rs"))
+      expect(manifest).to include('magnus = "0.9"')
+      expect(lock).to match(/name = "magnus"\nversion = "0\.9\.\d+"/)
+      expect(lib).to include("ruby_thread_has_gvl_p")
+    end
+
+    it "ships a bindgen-time <stdckdint.h> fallback for the smoke host's libclang" do
+      # The 4.0.7 linux-gnu legs: the stashed ruby/config.h carries the
+      # build container's HAVE_STDCKDINT_H, and the smoke host's libclang
+      # — a different generation than the leg's build compiler — may not
+      # carry the C23 header, so bindgen dies inside ruby's
+      # internal/stdckdint.h. The shim rides -idirafter (searched
+      # strictly last) and mirrors ruby's own __builtin overflow
+      # fallback branch.
+      shim = File.read(File.join(described_class::BINDGEN_SHIM_DIR, "stdckdint.h"))
+      expect(shim).to include("__builtin_add_overflow")
+      expect(shim).to include("__builtin_sub_overflow")
+      expect(shim).to include("__builtin_mul_overflow")
+    end
+
+    it "ships a bindgen-time <mm_malloc.h> fallback for the windows legs" do
+      # The windows x86_64 legs: msys2's ucrt64 malloc.h angle-includes
+      # mm_malloc.h, which mingw-w64 does not ship — msys clang finds it
+      # in its resource include, the fixture's bindgen libclang does not,
+      # and the rb-sys build script dies at parse. Same -idirafter
+      # discipline; parse-only declarations.
+      shim = File.read(File.join(described_class::BINDGEN_SHIM_DIR, "mm_malloc.h"))
+      expect(shim).to include("_mm_malloc(")
+      expect(shim).to include("_mm_free(")
+    end
+
+    it "resolves the runner's cargo.exe on the msys legs" do
+      # The windows runners keep rust at .../cargo.exe; Ruby's
+      # File.executable? never appends the extension, so the msys legs
+      # probe both spellings per PATH entry (the hosted runner's PATH
+      # carries the windows-form directory). Asserted at the candidate
+      # level — CARGO_CANDIDATES (/opt/cargo) legitimately wins where
+      # the runner provisions it, so resolution order is not the
+      # portable fact; the probed spellings are.
+      Dir.mktmpdir do |dir|
+        exe = File.join(dir, "cargo.exe")
+        File.binwrite(exe, "#!/bin/sh\n")
+        File.chmod(0o755, exe)
+        expect(File.executable?(exe)).to be(true)
+        with_env("TEBAKO_SMOKE_CARGO" => nil, "PATH" => dir) do
+          msys = fixture_for(TebakoRuntimeBuilder::Platform.new("x64-mingw-ucrt"))
+          expect(msys.send(:path_candidates, "cargo")).to include(exe)
+          gnu = fixture_for(TebakoRuntimeBuilder::Platform.new("x86_64-linux-gnu"))
+          paths = gnu.send(:path_candidates, "cargo")
+          expect(paths).to all(end_with("/cargo"))
+          expect(paths).not_to include(exe)
+        end
+      end
+    end
+
+    it "ships a bindgen-time <stdalign.h> fallback for the windows legs" do
+      # Ruby 4.0's ruby/defines.h angle-includes the C11 header; the
+      # fixture's bindgen libclang resolves without a resource dir that
+      # carries it (the x86_64-windows 4.0.7 leg). Same -idirafter
+      # discipline, parse-only macros.
+      shim = File.read(File.join(described_class::BINDGEN_SHIM_DIR, "stdalign.h"))
+      expect(shim).to include("alignas _Alignas")
+    end
+
+    it "names every tried path when no cargo resolves" do
+      Dir.mktmpdir do |dir|
+        with_env("TEBAKO_SMOKE_CARGO" => File.join(dir, "no-such-cargo")) do
+          fixture = fixture_for(TebakoRuntimeBuilder::Platform.new("x86_64-linux-gnu"))
+          expect { fixture.library_path }
+            .to raise_error(TebakoRuntimeBuilder::Error, /no cargo for the magnus boot-smoke fixture.*tried:/m)
+        end
+      end
+    end
+
+    it "fails closed on windows/arm64 (the clangarm64 rust target is deliberately unwired)" do
+      with_env("TEBAKO_SMOKE_CARGO" => RbConfig.ruby) do
+        fixture = fixture_for(TebakoRuntimeBuilder::Platform.new("aarch64-w64-mingw32", "aarch64"))
+        expect { fixture.library_path }
+          .to raise_error(TebakoRuntimeBuilder::Error, /no rust target wired for msys host 'windows-ucrt-arm64'/)
+      end
     end
   end
 
@@ -602,6 +765,41 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
                                       "configure time (the 0.16.19 yjit class — ci/prepare-rust-toolchain.sh); " \
                                       "a windows or 3.x leg reporting enabled means upstream moved — flip the " \
                                       "derivation in BootSmoke#expected_zjit_state in the same PR."
+      end
+    end
+
+    describe "the magnus fixture gate (#192)" do
+      # The magnus/rb-sys consumer path, compiled IN-LEG against the fresh
+      # runtime (BootSmoke::MagnusFixture replays the rb-sys gem's
+      # RBCONFIG_* contract; the headers ride the leg's stash, windows adds
+      # the build tree's import lib) and loaded inside the packaged
+      # context. The fixture calls ruby_thread_has_gvl_p — internal CRuby
+      # API through the 3.4 line, public on master — so a ruby-line bump
+      # that silently drops the symbol fails the load itself, on every
+      # platform family, before the artifacts leave the leg.
+      let(:run) { smoke.run("magnus_ext") }
+
+      it "loads the magnus-built fixture and answers under the GVL" do
+        wired_targets = described_class::MagnusFixture::MSYS_RUST_TARGETS
+        if smoke.platform.msys? && !wired_targets.key?(smoke.platform.host_id)
+          skip "no rust target wired for #{smoke.platform.host_id} — windows/arm64's clangarm64 link model " \
+               "is deliberately unwired (the unit gate pins its fail-closed named error)"
+        end
+        fixture = described_class::MagnusFixture.new(platform: smoke.platform, executable: "unused")
+        if smoke.platform.msys? && smoke.platform.host_id.include?("ucrt64") && fixture.msys_clang.nil?
+          skip "the x86_64-windows smoke host's bindgen libclang parses ruby's and mingw's headers with no " \
+               "resource set (stdbool/x86intrin 'file not found') and the leg installs no msys clang to point " \
+               "at — host tooling, not the runtime's export surface (tracked in the #192 follow-up; the gate " \
+               "runs on every other platform leg)"
+        end
+
+        expect(run).to be_booted, boot_failure(run)
+        state = run.state("magnus_fixture")
+        detail = run.detail("magnus_fixture")
+        expect(state).to eq("ok"),
+                         "probe magnus_fixture detail: #{detail} — a load-time failure names the broken link " \
+                         "contract (linux dlopen-from-exe, macOS dynamic lookup, windows import lib)"
+        expect(detail).to eq("gvl=true")
       end
     end
 

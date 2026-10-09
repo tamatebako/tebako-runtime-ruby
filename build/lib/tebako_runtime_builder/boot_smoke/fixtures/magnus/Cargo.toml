@@ -1,0 +1,15 @@
+# Boot-smoke fixture crate (issue #192) — see src/lib.rs and
+# build/lib/tebako_runtime_builder/boot_smoke/magnus_fixture.rb.
+[package]
+name = "magnus_fixture"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# The magnus line parsanol 1.0 and the ruby-rust gem family build on; the
+# Cargo.lock beside this file pins the exact tree the legs compile.
+magnus = "0.9"

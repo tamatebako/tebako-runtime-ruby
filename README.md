@@ -1,305 +1,143 @@
 # tebako-runtime-ruby
 
-Builds and publishes the prebuilt tebako Ruby runtime packages
-(`tebako-runtime-<tebako-version>-<ruby-version>-<platform>`) that the
-tebako gem resolves at press/run time.
+The tebako Ruby runtime factory. This repository builds the prebuilt Ruby
+runtime packages that tebako packages run on, and publishes them as
+releases.
 
-The package-name spelling is era-gated
-([tebako#716](https://github.com/tamatebako/tebako/issues/716)): tebako
-lines **>= 0.17.0** compose
-`tebako-runtime-<tebako-version>-ruby-<ruby-version>-<platform>` — a `ruby`
-language segment joins the name — while the **<= 0.16.32** lines are
-immutable (sha256-pinned in the live registries) and keep the lang-less
-spelling forever. The gate keys on the tebako version of the run at hand,
-never on a repo-wide flag: the build workflow computes a `lang-infix`
-output from that version and every compose site threads it, and the
-release adapter's `lang_name` hook reads the same run version off
-`TEBAKO_VERSION`, so a catalog or mop-up re-run of an old line keeps
-composing old-era names even after the flip lands. Tooling that parses
-artifact names (the boot smoke's artifact model, the release gem) accepts
+## Objective
+
+tebako packages a Ruby application into a single executable by stitching
+the app onto a prebuilt runtime. Someone has to build that runtime once,
+per Ruby version and per platform, so that packagers and end users never
+compile anything. That someone is this repository.
+
+## What this repository consumes
+
+- **Pre-patched Ruby source releases** from
+  [tamatebako/ruby](https://github.com/tamatebako/ruby): one
+  `tfs-ruby-<version>-src.tar.gz` asset per supported Ruby version (plus
+  per-platform scenario variants), verified against the release's
+  `SHA256SUMS`. The pin lives in
+  `build/lib/tebako_runtime_builder/source_fetcher.rb`
+  (`DEFAULT_RELEASE`); a dispatch from the source factory bumps it by
+  pull request, and the same pull request extends the build vocabulary
+  (`tools/sync_matrix_vocabulary.rb`), so onboarding a Ruby version is a
+  source-factory release with no manual edits here.
+- **The tebako driver stack** (link unit) and the **`tfs` image CLI** from
+  [tamatebako/tebako](https://github.com/tamatebako/tebako) releases,
+  pinned by `contract.yml`'s `link_unit_release` and verified against the
+  release's checksum sidecars.
+- **CI containers** from tebako-ci-containers for the Linux legs.
+
+Releases are the interface everywhere: this repository never consumes
+another project's source tree.
+
+## What this repository produces
+
+Each release tag `v$(cat VERSION)` carries, per Ruby version × platform:
+
+- **the runtime executable**
+  (`tebako-runtime-<tebako-version>-ruby-<ruby-version>-<platform>`) — the
+  interpreter with the tebako driver linked in;
+- **the runtime filesystem image** (`<runtime>.tfs`) — the Ruby standard
+  library and gems as a single mountable image, shipped next to the
+  executable (the executable mounts it at boot; nothing is extracted);
+- **the Windows Ruby DLL** (`<runtime>.dll`) on Windows only, where the
+  runtime is a shared build so native extensions can bind against it;
+- **a `.sha256` sidecar next to every served asset** — the trust anchor
+  resolvers verify downloads against;
+- **a `.manifest.json` shard per package** — the package's manifest entry
+  (versions, checksums, sizes, mount root, image layout, build
+  provenance, contract version, and the image/DLL companions);
+- **detached OpenPGP signatures** (`.asc`) for every served name on
+  signing-enabled lines.
+
+The machine-readable resolution index is this repository's
+**`tpkg-registry.yaml`** on the main branch, rendered from the release's
+shards by the publish pipeline (`tools/registry_update.rb`) and landed by
+bot pull request — never hand-edited, except `status: withdrawn` marks.
+
+Older release lines are immutable: packages published under the
+`<= 0.16.32` lines keep their original
+`tebako-runtime-<tebako-version>-<ruby-version>-<platform>` spelling (no
+`ruby` language segment) and stay installable forever; release lines
+`>= 0.17.0` compose the name with the language segment. Tooling accepts
 both spellings.
 
-## How a runtime is built
+## The release contract
 
-The build input is the **pre-patched ruby source** published by
-[tamatebako/ruby](https://github.com/tamatebako/ruby) as the
-`tfs-ruby-<version>-src.tar.gz` release assets (verified against the
-release `SHA256SUMS`). The runtime links the prebuilt
-[libtfs](https://github.com/tamatebako/libtfs) package and embeds the
-modern `tebako_fs_*` entry driver (vendored in `build/src`).
+- **Byte-immutable payloads.** A published payload asset never changes
+  under its name. Metadata (checksums, shards) is derivable and may be
+  regenerated, but always describes the bytes actually served.
+- **Contract version.** The loader ↔ runtime protocol (environment
+  variables, argument layout, image handoff) is versioned as an integer
+  in `contract.yml` (schema in `schema/`), locked in CI against the
+  constant compiled into the runtime itself. A semantic change to that
+  protocol bumps the integer by exactly one in both places in the same
+  commit.
+- **Verification at fetch, never per run.** Downloads are verified
+  against the `.sha256` sidecars when they are installed into the local
+  store; running a package performs no verification and no installation.
+- **Every leg is gated before upload.** A freshly built runtime is
+  boot-smoked in its own CI leg (see below); a failed smoke blocks the
+  upload, and the publish pipeline fails loudly on any missing artifact.
+
+## The build matrix
+
+The platform and Ruby vocabulary lives in `.github/matrix.json`;
+`scripts/compute_matrix.rb` derives each run's legs from
+`.github/build-graph.yaml` (a leg runs only when something it reads
+changed). The Ruby version sets are extended automatically on each
+source-factory release (see "What this repository consumes").
+
+Platforms today: linux-gnu and linux-musl, macOS, and Windows (ucrt64),
+each on x86_64 and arm64 where the upstream and driver support holds.
+The windows/arm64 leg is wired but stays disabled until the product
+publishes the arm64 Windows link unit; publish runs additionally require
+the `TEBAKO_SERVE_WINDOWS_ARM64` repository variable.
+
+## Building a runtime locally
 
 ```sh
 tools/build_runtime --ruby 3.3.7
 ```
 
 produces `runtime-packages/tebako-runtime-$(cat VERSION)-3.3.7-<platform>`
-(see `tools/build_runtime --help` for options: output path, build prefix,
-`--src-release`/`--src-mirror` overrides, `--patchelf`, `--jobs`).
+plus its `.tfs` image (see `tools/build_runtime --help` for output path,
+build prefix, source mirror/release overrides, and parallelism).
 
-## Runtime filesystem image (item 30)
-
-Every build also packs the assembled runtime layout tree — the exact tree
-the v1 runtime executable embedded as its memfs image — as a standalone
-DwarFS image next to the executable:
-
-```
-runtime-packages/tebako-runtime-$(cat VERSION)-3.3.7-<platform>.tfs
-```
-
-**Image era (item 30b, the default):** the executable ships WITHOUT the
-embedded incbin image — the standalone `.tfs` is the runtime's only
-filesystem image, and the entry driver mounts the file
-`TEBAKO_RUNTIME_IMAGE` names (an image-era tebako bootstrap sets it after
-resolving the sha256-verified `.tfs` into the shared cache; the v1 handoff
-is unchanged). Standalone use — including `--tebako-extract` — therefore
-takes the variable explicitly:
+Running the executable standalone needs the image handoff:
 
 ```sh
-TEBAKO_RUNTIME_IMAGE=$PWD/runtime-packages/tebako-runtime-$(cat VERSION)-3.3.7-<platform>.tfs \
-  runtime-packages/tebako-runtime-$(cat VERSION)-3.3.7-<platform> --tebako-extract layout
+TEBAKO_RUNTIME_IMAGE=$PWD/runtime-packages/<runtime>.tfs \
+  runtime-packages/<runtime> --tebako-extract layout
 ```
 
-Without the variable (and no embedded image) the driver fails startup with
-a message naming the expected handoff; v1 runtimes — the published 0.15.9
-executables, or anything built `--embed-image` — ignore the variable and
-mount the embedded image exactly as before (graceful degradation, no
-republish needed). The variable wins wherever it is set, so an embedded
-build also mounts the named image.
+## CI layout
 
-The image is written by our own factory toolchain — the `tfs` CLI's
-`mkimage` with its default format (limnifs), resolved in exactly one way:
-
-1. An explicit `--tfs PATH` or `TEBAKO_TFS` setting wins (fail-closed: a
-   request that does not resolve is a named error, never a fallback).
-2. Otherwise the builder fetches the CLI published with the pinned
-   tamatebako/tebako release (`contract.yml`'s `link_unit_release`),
-   verified against its published `.sha256` sidecar and cached per digest.
-   An empty pin means a source-built driver — a named error asking for
-   `--tfs`.
-
-Either way it is a build-time factory tool, never a runtime dependency of
-the shipped packages. `--no-image` skips the step (only meaningful with
-`--embed-image`, the v1 shape — an image-era executable without the `.tfs`
-cannot boot); `--embed-image` embeds the image into the executable instead
-(v1 backward-compat shape: the variable is honored when set, the embedded
-image otherwise). Both artifacts are
-uploaded to the release; the package's `<package>.manifest.json` shard
-carries the image as an additive `image` key
-(`filename`/`sha256`/`size_bytes`), and each asset's `<asset>.sha256`
-sidecar carries its checksum line (see "Release metadata", below).
-
-Image layout (same as the embedded memfs tree): `/lib/ruby/<api>` (stdlib),
-`/lib/ruby/gems/<api>` (gem home — spec 22 phase M2: the env image ships
-NO tebako-runtime gem; the Rust driver covers the VFS),
-`/local/stub.rb` (the runtime's compiled-in entry point), `/bin` (empty —
-the ruby executable and the bin shims are stripped from the layout; the
-interpreter is the outer driver executable that mounts the image, exactly
-like the packaged-app path).
-
-## The windows ruby DLL (issue 40)
-
-The windows-ucrt64 runtime is `--enable-shared` (the standard ruby-mingw
-shape; every other platform stays `--disable-shared`): the ruby core and
-the tebako closure link into `x64-ucrt-ruby<ABI>.dll`, and the runtime
-executable imports it — a `--disable-shared` exe exports zero symbols and
-ships no DLL, so no dynamically linked native extension could ever bind.
-The memfs mount table exists exactly once per process, in the DLL; the
-exe's driver reaches it through the DLL's `tebako_fs_*` exports.
-
-The DLL is the third artifact of a windows package:
-
-- it is built as `x64-ucrt-ruby<ABI>.dll` in the ruby tree and staged as
-  `<runtime>.dll` (the package name — two same-ABI legs share the PE name
-  and would collide in the merged release workspace);
-- the store entry holds it next to the exe **under the PE name**
-  (`x64-ucrt-ruby<ABI>.dll`): the PE loader resolves the exe's imports
-  against the exe's own directory first, so interpreter and extensions
-  bind without PATH games. The package shard's additive `dll` key flows
-  the mapping (`filename` = the asset, `install_as` = the PE name, plus
-  `sha256`/`size_bytes`; consumers ignoring the key keep working, same
-  rule as `image`), and `<asset>.sha256` carries the line;
-- the env image does NOT carry the DLL (`bin/` is stripped from the
-  layout — a DLL inside the read-only memfs would be dead weight: PE
-  imports never resolve against it).
-
-The leg proves the wiring before the artifacts leave CI: the windows
-boot smoke materializes the PE-named copy next to the exe (the store
-entry's shape) and loads racc's `cparse.so` from the image — a real
-`LoadLibrary` bind of an in-image PE extension against the DLL
-(`spec/boot_smoke_spec.rb`, the `native_ext` scenario).
-
-## The build matrix and the windows/arm64 leg
-
-The env vocabulary lives in `.github/matrix.json` (versions, runners,
-arches — workflow YAML branches on `matrix.env.arch` only, never on a
-duplicated list). Today: linux-gnu / linux-musl / macos (x86_64 + arm64),
-windows-ucrt64 on `windows-2022`, and a **windows/arm64** row
-(`windows-11-arm` hosted runner + msys2's native **clangarm64**
-environment, triple `aarch64-w64-mingw32`) that is wired but **disabled**
-until the product side catches up. Two gates keep that honest, both in
-the matrix planner (`scripts/compute_matrix.rb`, so every trigger path
-— dispatch, pin bumps, validation, release runs — gets them):
-
-1. **The artifact gate (every run).** A build consumes the driver stack
-   from the pinned `link_unit_release` (contract.yml) — and no
-   tamatebako/tebako release publishes an arm64 windows link unit yet
-   (`link-unit-<version>-aarch64-windows-gnu.tar.gz`; today's releases
-   ship `x86_64-windows-gnu` only). The planner skips the leg with a
-   loud note naming the exact missing asset — the factory never builds
-   the driver stack from source on arm64. When a product release
-   publishes the unit, the leg builds automatically in build CI
-   (push/PR/dispatch), natively on the arm64 runner, boot smoke
-   included (the one expected first-run follow-up: the windows
-   DLL-grammar checks below).
-2. **The publish gate (publish runs only).** A green build still does
-   not serve: publish runs exclude windows/arm64 until the repository
-   variable **`TEBAKO_SERVE_WINDOWS_ARM64`** is `true`. The env and
-   link-unit matrices and the coordinator's audit expectations all
-   derive from the same planner walk, so a gated leg cannot half-serve
-   a release.
-
-The leg's package name rides the product's reserved release-asset
-spelling (`windows-ucrt-arm64` — the `aarch64-windows-ucrt` triplet,
-which the product parses but rejects in served payload manifests until
-the platform ships).
-
-## Bootstrap ↔ runtime contract version
-
-The bootstrap (released from tamatebako/tebako) and the runtime images
-published here version independently, so the protocol between them — the
-env vars passed down, the argv layout, the filesystem-image handoff — is
-versioned as an integer **contract**. Contract 1 pins today's semantics
-exactly; current behavior IS the contract.
-
-Two representations, locked in agreement by CI
-(`scripts/check_contract_version.rb`, run in the prepare job before the
-matrix builds, and by `spec/contract_spec.rb`):
-
-- `contract.yml` (schema: `schema/contract.schema.yml`) — the release
-  pipeline's single source of truth. The tebako-release gem's uploader
-  emits it as an additive `contract_version` key in every package's
-  manifest entry (the `<package>.manifest.json` shard; consumers ignoring
-  the key keep working, same rule as `image`).
-- `TEBAKO_CONTRACT_VERSION` in `build/src/tebako-main.cpp` — the constant
-  compiled into the runtime itself. The driver exports it as the
-  `TEBAKO_CONTRACT_VERSION` environment variable before the entry dispatch,
-  so the packaged context (and any driver-stage tooling) can read the
-  contract the runtime speaks.
-
-**Bump rules:** any change to env/argv/handoff semantics bumps the integer
-by exactly +1 in BOTH places, same commit — the agreement check fails the
-build otherwise. The bootstrap side (negotiation, `min_contract..max_contract`
-range, `ContractMismatch` named error) lives in the tebako-rs workspace; the
-version → semantics changelog table is spec 06's.
-
-## Release metadata: per-asset sidecars, per-package shards
-
-The release's asset listing IS the package index. A build leg publishes and
-signs IN-LEG (spec 13 §2a's de-rendezvous): the leg that built a package
-uploads ONLY the write-once names it owns — its payload assets plus, for
-each package, the metadata set enumerated below.
-
-Spec 36's bundle era: the headline payload asset is one **`<stem>.tar.gz`**
-per package (exe + env image + windows DLL + in-bundle SHA256SUMS — the
-compat-window path old loaders resolve). Alongside it, spec 36 §3's
-co-publish mode (gem v0.4.0) serves the per-file members again — the bare
-exe, the bare env `.tfs` image, and the windows `.dll` — witnessing spec 39
-§7's lazy arm: a bundle-era loader serves block-group fetches straight off
-the release page without fetching the bundle. The bundle stays the
-registry-row artifact; the shard declares the additive **`per_file_assets`**
-witness (runtime-manifest MINOR 2) so the loaders' lazy gate fails closed on
-shards that never co-published, and the compat window keeps closing on
-co-published lines.
-
-- **`<asset>.sha256`** — the checksum sidecar next to every served asset
-  (bundle, exe, `.tfs`, `.tfs.blksum.json`, windows `.dll`), in the tebako
-  store's own trust-anchor
-  shape (`"<sha256>  <filename>\n"`, spec 00 §8). This is the authority a
-  resolver verifies a download against.
-- **`<package>.manifest.json`** — the package's shard: exactly its manifest
-  entry (`ruby_version` / `platform` / `filename` / `sha256` /
-  `size_bytes` / `mount_root` / `image_layout` / `built_from` /
-  `contract_era` / `contract_version`, plus the additive `abi` / `image` /
-  `dll` keys). The non-derivable fields (the windows DLL's `install_as`,
-  the image sibling, the contract version) live here and nowhere else. On
-  signing-enabled lines the entry also declares its `signature` block
-  (`{keyid, asc}` — the exact `.asc` asset name within the release, spec 09
-  §5), at the entry and facet levels. A co-published shard additionally
-  carries `"per_file_assets": true` — the witness that the per-file member
-  set was served alongside the bundle (spec 39 §7's lazy gate requires it
-  on bundle-declaring shards).
-- **`<image>.blksum.json`** — the env image's block-group digest sidecar
-  (spec 39 §3: one sha256 per 4 MiB group of image bytes plus the
-  whole-image sha256 — the lazy mount's range-GET trust anchor). The
-  uploader derives it in-leg from the staged image bytes (derivable
-  metadata, the same class as the checksum sidecars), uploads it BEFORE
-  the shard that pins it, and pins it in the shard's additive
-  `image.blksum` key (`{filename, sha256}` — consumers that predate the
-  key ignore it; a pre-blksum release declares nothing). The render is
-  byte-exact with `tpkg::lazy::Blksum::render`, golden-pinned in the
-  tebako-release gem's suite. Its registry row mirror (spec 03 §4's
-  tier-3 rule) lands as `blksum` on the version's platform entry.
-- **`<asset>.asc`** — on signing-enabled lines, every served name (payload,
-  sidecar, shard, contract card) carries its own detached OpenPGP
-  signature, made in-leg from the fresh bytes (spec 09 §5's no-fold rule:
-  nothing is ever "covered by" another artifact's signature).
-
-Payload assets stay byte-immutable per name; metadata is DERIVABLE, so it
-replaces on drift (and a settled package's metadata describes the served
-bytes — the previous entry — never the fresh bytes that did not land). No
-leg ever read-modify-writes a shared file, so N legs publish concurrently
-with zero rendezvous; the release notes are written once at release
-creation and never rewritten.
-
-The monolithic **`manifest.json`** and **`SHA256SUMS.txt`** are GONE as
-release assets: both are derivable conveniences, computed consumer-side
-from the shards + the asset listing. The
-machine-readable resolution index is this repo's **`tpkg-registry.yaml`**
-(spec 04 §2), rendered from the release's shards by the publish
-coordinator's audit+registry job (`tools/registry_update.rb`) and landed
-on main by bot PR — never hand-edited except `status: withdrawn` marks.
-The same job AUDITS the whole matrix against the release (read-only) —
-on signing-enabled lines it requires every served name's `.asc`.
-
-`BACKFILL_METADATA=true` is the one-shot migration / repair pass for a
-pre-shard release: it writes the missing sidecars from the listing's
-server-computed digests (the served bytes' truth — a disagreement with
-the monolith's record is named loudly and the digest wins) and the
-missing shards from the monolith's entries (sha fields re-anchored to
-the digests). It never touches a monolith or the notes.
+`.github/workflows/` holds a multi-staged hierarchy:
+`_build-platform.yml` (the per-platform build/publish unit), four thin
+platform triggers (`build-<platform>.yml`), `bump-source-pin.yml` (the
+source-release pin bump), and `publish.yml` (the release coordinator).
+The architecture, cache layout, and determinism invariants are documented
+in `docs/build-chain.md` — read it before touching any workflow, the roll
+tooling, or a cache key.
 
 ## Layout
 
-- `VERSION` — the package version: package names and the release tag follow
-  it (`v$(cat VERSION)`), and the gem's RuntimeManager resolves packages by
-  exactly this version. Bump it in lockstep with the tebako gem version the
-  produced runtimes serve. (Not the bootstrap contract version — that one
-  lives in `contract.yml`.)
-- `contract.yml` + `schema/` — the bootstrap ↔ runtime contract version
-  and its JSON schema; `scripts/check_contract_version.rb`
-  locks it against the compiled-in constant (see the contract section above).
-- `build/` — the self-contained CMake build project (vendored from the
-  tebako gem's runtime press driver, adapted to the pre-patched source):
-  `CMakeLists.txt`, `cmake/`, `cmake-scripts/`, `src/tebako-main.cpp`,
-  `include/tebako/`, codegen templates in `resources/`, and the Ruby build
-  tooling in `lib/` + `tools/build_pass.rb`.
+- `VERSION` — the package version: package names and the release tag
+  follow it (`v$(cat VERSION)`).
+- `contract.yml` + `schema/` — the loader ↔ runtime contract version and
+  its JSON schema; `scripts/check_contract_version.rb` locks it against
+  the compiled-in constant.
+- `build/` — the self-contained CMake build project (adapted to the
+  pre-patched source): `CMakeLists.txt`, `cmake/`, `cmake-scripts/`,
+  `src/`, `include/`, codegen templates in `resources/`, and the Ruby
+  build tooling in `lib/`.
 - `tools/build_runtime` — the build entry point (fetch → verify → build →
-  package).
-- `.github/workflows/` — the multi-staged hierarchy: `_build-platform.yml`
-  (the one per-platform build/publish unit), the four thin platform
-  triggers (`build-<platform>.yml`), and `publish.yml` (the release
-  coordinator — one version everywhere / one platform all versions / one
-  version on one platform, via workflow dispatch). `scripts/` holds the
-  dependency-tree matrix computer (`compute_matrix.rb`, walking
-  `.github/build-graph.yaml`) and this factory's release declaration
-  (`release_adapter.rb` — the tebako-release gem's adapter seam: the
-  per-leg publish jobs' upload + sign and the coordinator's audit run the
-  gem's machinery, pinned at `contract.yml`'s `release_tooling`);
-  `tools/registry_update.rb` renders the `tpkg-registry.yaml` mirror from
-  a release's shards.
-  **The architecture and the cache/determinism invariants are documented
-  in `docs/build-chain.md` — read it before touching any workflow, the
-  roll tooling, or a cache key.**
+  package); `tools/registry_update.rb` renders the registry mirror from a
+  release's shards; `tools/sync_matrix_vocabulary.rb` keeps the dispatch
+  vocabulary in step with the source factory's releases.
 - `Brewfile` — macOS host build dependencies (CI).
 
 ## Specs
@@ -312,18 +150,17 @@ bundle exec rspec
 ### Runtime boot smoke
 
 `spec/boot_smoke_spec.rb` (tag `:boot_smoke`) boots a built runtime
-executable and exercises the memfs syscall surface from inside the
-packaged context — stat/lstat/fstat + btime (the ruby-4.0-linux statx
-case), image IO and `$LOAD_PATH` resolution, gem home + bundler (incl.
-bundler's process lock degrading to no-lock on the read-only gem home),
-and `File#flock` — the statx/fcntl/flock drift class, caught at build
-time.
+executable and exercises the packaged context from inside: the virtual
+filesystem syscall surface, image IO and `$LOAD_PATH` resolution, gem
+home and bundler, file locking, the openssl canary, dynamic extension
+loading, the JIT support matrix, and a compiled magnus (Ruby/Rust)
+extension fixture that proves the executable's export surface serves the
+ruby-rust gem ecosystem.
 
 Point `TEBAKO_RUNTIME_ROOT` at a runtime root — a directory holding
 exactly one `tebako-runtime-*` executable (a build leg's
 `runtime-packages/`, a tebako-home runtime cache dir) or the executable
-path itself (a bare layout tree or a mounted filesystem image carries no
-interpreter, so it is never a valid root) — and run:
+path itself — and run:
 
 ```sh
 TEBAKO_RUNTIME_ROOT=runtime-packages bundle exec rspec --tag boot_smoke
@@ -331,4 +168,4 @@ TEBAKO_RUNTIME_ROOT=runtime-packages bundle exec rspec --tag boot_smoke
 
 Without the variable the class skips in a plain run and fails loudly when
 targeted explicitly. CI runs the tag against each freshly built runtime
-before the artifact upload (`.github/workflows/_build-platform.yml`).
+before the artifact upload.
