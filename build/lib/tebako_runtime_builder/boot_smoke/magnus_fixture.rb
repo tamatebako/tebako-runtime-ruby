@@ -185,15 +185,17 @@ module TebakoRuntimeBuilder
       # at once; the shim dir stays as the strictly-last fallback.
       def msys_clang_resource_dir
         return nil unless platform.msys?
-
-        clang = path_candidates("clang").find { |p| File.executable?(p) && !File.directory?(p) }
-        return nil unless clang
+        return nil unless (clang = msys_clang)
 
         out, _, status = Open3.capture3(clang, "-print-resource-dir")
         dir = out.to_s.strip
         return nil if !status.success? || dir.empty?
 
         File.directory?(File.join(dir, "include")) ? dir : nil
+      end
+
+      def msys_clang
+        path_candidates("clang").find { |p| File.executable?(p) && !File.directory?(p) }
       end
 
       def header_overrides(config)
