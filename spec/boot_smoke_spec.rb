@@ -231,6 +231,20 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
       expect(lib).to include("ruby_thread_has_gvl_p")
     end
 
+    it "ships a bindgen-time <stdckdint.h> fallback for the smoke host's libclang" do
+      # The 4.0.7 linux-gnu legs: the stashed ruby/config.h carries the
+      # build container's HAVE_STDCKDINT_H, and the smoke host's libclang
+      # — a different generation than the leg's build compiler — may not
+      # carry the C23 header, so bindgen dies inside ruby's
+      # internal/stdckdint.h. The shim rides -idirafter (searched
+      # strictly last) and mirrors ruby's own __builtin overflow
+      # fallback branch.
+      shim = File.read(File.join(described_class::BINDGEN_SHIM_DIR, "stdckdint.h"))
+      expect(shim).to include("__builtin_add_overflow")
+      expect(shim).to include("__builtin_sub_overflow")
+      expect(shim).to include("__builtin_mul_overflow")
+    end
+
     it "names every tried path when no cargo resolves" do
       Dir.mktmpdir do |dir|
         with_env("TEBAKO_SMOKE_CARGO" => File.join(dir, "no-such-cargo")) do

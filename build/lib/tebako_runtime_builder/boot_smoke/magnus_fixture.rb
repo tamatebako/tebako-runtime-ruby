@@ -54,6 +54,8 @@ module TebakoRuntimeBuilder
     class MagnusFixture # rubocop:disable Metrics/ClassLength
       CRATE_DIR = File.expand_path("fixtures/magnus", __dir__).freeze
       CRATE_NAME = "magnus_fixture"
+      # The bindgen-time C23 <stdckdint.h> fallback (see cargo_env).
+      BINDGEN_SHIM_DIR = File.expand_path("fixtures/magnus/bindgen-shim", __dir__).freeze
       # The legs provision rust per the JIT pattern (the rustup pin lives
       # at /opt/cargo; hosted runners carry cargo on PATH).
       # TEBAKO_SMOKE_CARGO overrides.
@@ -155,7 +157,19 @@ module TebakoRuntimeBuilder
                     .merge("RUBY" => @executable, "CARGO_TARGET_DIR" => File.join(dir, "target"))
         env["TEBAKO_RUNTIME_IMAGE"] = @image if @image
         env["RUSTFLAGS"] = rustflags if platform.linux_musl?
+        env["BINDGEN_EXTRA_CLANG_ARGS"] = bindgen_extra_clang_args
         env
+      end
+
+      # Ruby 4.0's headers angle-include <stdckdint.h> when the leg's
+      # configure found it (HAVE_STDCKDINT_H rides the stashed
+      # ruby/config.h), but bindgen replays them against the SMOKE host's
+      # libclang — a different generation than the leg's build compiler,
+      # whose resource dir may lack the C23 header (the linux-gnu legs).
+      # The fixture's shim dir rides -idirafter: searched strictly last,
+      # so a toolchain shipping the real header never sees the shim.
+      def bindgen_extra_clang_args
+        [ENV.fetch("BINDGEN_EXTRA_CLANG_ARGS", nil), "-idirafter", BINDGEN_SHIM_DIR].compact.join(" ")
       end
 
       def header_overrides(config)
