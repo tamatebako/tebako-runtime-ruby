@@ -245,6 +245,26 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
       expect(shim).to include("__builtin_mul_overflow")
     end
 
+    it "resolves the runner's cargo.exe on the msys legs" do
+      # The windows runners keep rust at .../cargo.exe; Ruby's
+      # File.executable? never appends the extension, so the msys legs
+      # probe both spellings per PATH entry (the hosted runner's PATH
+      # carries the windows-form directory).
+      Dir.mktmpdir do |dir|
+        exe = File.join(dir, "cargo.exe")
+        File.binwrite(exe, "#!/bin/sh\n")
+        File.chmod(0o755, exe)
+        with_env("TEBAKO_SMOKE_CARGO" => nil, "PATH" => dir) do
+          msys = fixture_for(TebakoRuntimeBuilder::Platform.new("x64-mingw-ucrt"))
+          expect(msys.send(:resolve_cargo)).to eq(exe)
+          gnu = fixture_for(TebakoRuntimeBuilder::Platform.new("x86_64-linux-gnu"))
+          paths = gnu.send(:path_candidates, "cargo")
+          expect(paths).to all(end_with("/cargo"))
+          expect(paths).not_to include(exe)
+        end
+      end
+    end
+
     it "names every tried path when no cargo resolves" do
       Dir.mktmpdir do |dir|
         with_env("TEBAKO_SMOKE_CARGO" => File.join(dir, "no-such-cargo")) do

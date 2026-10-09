@@ -234,7 +234,12 @@ module TebakoRuntimeBuilder
       end
 
       def path_candidates(tool)
-        ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).map { |dir| File.join(dir, tool) }
+        # Windows keeps the runner's rust at .../cargo.exe; Ruby's
+        # File.executable? never appends the extension, so the msys legs
+        # probe both spellings per PATH entry.
+        suffixes = platform.msys? ? ["", ".exe"] : [""]
+        ENV.fetch("PATH", "").split(File::PATH_SEPARATOR)
+           .flat_map { |dir| suffixes.map { |suffix| File.join(dir, "#{tool}#{suffix}") } }
       end
 
       def find_artifact(dir)
