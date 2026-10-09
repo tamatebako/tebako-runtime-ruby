@@ -245,6 +245,17 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
       expect(shim).to include("__builtin_mul_overflow")
     end
 
+    it "ships a bindgen-time <mm_malloc.h> fallback for the windows legs" do
+      # The windows x86_64 legs: msys2's ucrt64 malloc.h angle-includes
+      # mm_malloc.h, which mingw-w64 does not ship — msys clang finds it
+      # in its resource include, the fixture's bindgen libclang does not,
+      # and the rb-sys build script dies at parse. Same -idirafter
+      # discipline; parse-only declarations.
+      shim = File.read(File.join(described_class::BINDGEN_SHIM_DIR, "mm_malloc.h"))
+      expect(shim).to include("_mm_malloc(")
+      expect(shim).to include("_mm_free(")
+    end
+
     it "resolves the runner's cargo.exe on the msys legs" do
       # The windows runners keep rust at .../cargo.exe; Ruby's
       # File.executable? never appends the extension, so the msys legs
