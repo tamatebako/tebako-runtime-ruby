@@ -66,12 +66,32 @@ module TebakoRuntimeBuilder
 
       def failure_summary
         lines = ["scenario '#{@scenario}' did not boot (exit #{exitstatus || "timeout"})"]
-        lines << "stderr: #{@stderr.strip[0, 500]}" unless @stderr.to_s.strip.empty?
-        lines << "stdout: #{@stdout.strip[0, 500]}" if @checks.empty? && !@stdout.to_s.strip.empty?
+        # Both streams ALWAYS report (a silent exit needs its absence said
+        # out loud — the v2.8.28-unit boot failure showed nothing on
+        # either), then the driver journal's tail (the boot's own record
+        # of how far it got) when one exists.
+        lines << "stderr: #{@stderr.to_s.strip.empty? ? "(empty)" : @stderr.strip[0, 500]}"
+        lines << "stdout: #{@stdout.to_s.strip.empty? ? "(empty)" : @stdout.strip[0, 500]}"
+        journal = journal_tail
+        lines << "driver journal (tail): #{journal}" if journal
         lines.join("\n")
       end
 
       private
+
+      # The driver's store journal (journal.log) tails the boot — the
+      # named step the boot died inside is its last lines. The smoke's
+      # scrubbed env keeps the default home, so the journal sits at the
+      # machine store's standard path.
+      def journal_tail
+        log = File.join(Dir.home, ".tebako", "journal.log")
+        return nil unless File.file?(log)
+
+        tail = File.readlines(log).last(25).join.strip
+        tail.empty? ? nil : tail
+      rescue StandardError
+        nil
+      end
 
       def parse(stdout)
         checks = {}

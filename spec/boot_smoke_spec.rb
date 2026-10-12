@@ -977,3 +977,30 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
     end
   end
 end
+
+# The Run model's failure report (tebako#772's lesson: a silent exit must
+# SAY both streams were empty — a report that only shows non-empty
+# streams reads identically whether the child printed nothing or the
+# harness swallowed it).
+RSpec.describe TebakoRuntimeBuilder::BootSmoke::Run do
+  def status_of(code)
+    Open3.capture3("sh", "-c", "exit #{code}")[2]
+  end
+
+  it "reports both streams even when both are empty" do
+    run = described_class.new(scenario: "boot", stdout: "", stderr: "",
+                              status: status_of(2))
+    summary = run.failure_summary
+    expect(summary).to include("did not boot (exit 2)")
+    expect(summary).to include("stderr: (empty)")
+    expect(summary).to include("stdout: (empty)")
+  end
+
+  it "carries the child's words when it spoke" do
+    run = described_class.new(scenario: "boot", stdout: "some probe output", stderr: "the complaint",
+                              status: status_of(1))
+    summary = run.failure_summary
+    expect(summary).to include("stderr: the complaint")
+    expect(summary).to include("stdout: some probe output")
+  end
+end
