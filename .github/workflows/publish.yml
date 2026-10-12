@@ -512,12 +512,12 @@ jobs:
       # The product-side gate (trr#241): the accumulated render must parse
       # under the PRODUCT's own registry reader — the grammar's owner is
       # the product's resolve model, never a hand-copied schema here. The
-      # pinned product release's CLI (contract.yml link_unit_release — the
-      # product line this factory builds against) runs `registry validate`
-      # over the accumulated file; a render the product cannot read stops
-      # the line BEFORE any bot PR opens. The verb landed after v2.8.27 —
-      # the gate needs a pin ≥ v2.8.28 and fails the run by name on a
-      # pinned CLI that predates it (never a silent skip).
+      # pinned product release's CLI (contract.yml registry_reader_release —
+      # a READER pin, deliberately separate from the legs' link unit) runs
+      # `registry validate` over the accumulated file; a render the product
+      # cannot read stops the line BEFORE any bot PR opens. The verb landed
+      # after v2.8.27 — the gate needs a pin ≥ v2.8.28 and fails the run by
+      # name on a pinned CLI that predates it (never a silent skip).
       - name: Validate the accumulated registry with the product reader
         if: ${{ always() && !cancelled() && !inputs.audit && steps.render.outcome == 'success' }}
         env:
@@ -526,8 +526,8 @@ jobs:
           set -euo pipefail
           acc="$RUNNER_TEMP/registry-accumulated.yaml"
           [ -f "$acc" ] || { echo "::error::the render step left no accumulated registry (registry-accumulated.yaml missing)"; exit 1; }
-          pin=$(grep -E '^link_unit_release:' contract.yml | sed -E 's/^link_unit_release: *"([^"]*)".*/\1/')
-          [ -n "$pin" ] || { echo "::error::contract.yml pins no link_unit_release — the registry gate needs the product release to validate against"; exit 1; }
+          pin=$(grep -E '^registry_reader_release:' contract.yml | sed -E 's/^registry_reader_release: *"([^"]*)".*/\1/')
+          [ -n "$pin" ] || { echo "::error::contract.yml pins no registry_reader_release — the registry gate needs the product release to validate against"; exit 1; }
           asset="tebako-${pin#v}-linux-gnu-x86_64"
           gh release download "$pin" --repo tamatebako/tebako --pattern "$asset" --dir "$RUNNER_TEMP/product-cli" --clobber
           chmod +x "$RUNNER_TEMP/product-cli/$asset"

@@ -183,14 +183,18 @@ container_version: "0.16.2"
 # unchanged (2). Full-catalog re-cut: the runtime exe embeds the unit.
 # v2.8.25 touched the CLI/bootstrap spellers (tebako#716), not the
 # driver, so the pin skips it.
-# v2.8.28 (trr#241): the registry render gate validates every accumulated
-# mirror with the pinned product CLI's `registry validate` before a bot
-# PR opens, and the per-row shard release.ref reader (tebako#711) is what
-# makes the sharded catalog's rows resolvable — both landed after
-# v2.8.27, so the gate needs this line. The driver/link-unit content is
-# unchanged from v2.8.26 (the interim merges are CLI/shim-side), so no
-# catalog re-cut rides this bump.
-link_unit_release: "v2.8.28"
+link_unit_release: "v2.8.26"
+
+# The registry-render gate's reader pin (trr#241): the tamatebako/tebako
+# release whose CLI validates every accumulated registry mirror with
+# `registry validate` before a bot PR opens (publish.yml). This is a
+# READER pin, deliberately separate from link_unit_release — the gate
+# needs the verb + the per-row shard release.ref reader (tebako#711),
+# both of which ship in v2.8.28, while the build legs' link-unit
+# consumption stays on its own line. (The v2.8.28 unit's boot behavior
+# under this factory's embedding is under investigation — the pin split
+# keeps the gate unblocked by it.)
+registry_reader_release: "v2.8.28"
 
 # The release machinery pin: the tamatebako/tebako-release tag
 # the Gemfile resolves (the legs' publish/sign jobs + the coordinator's

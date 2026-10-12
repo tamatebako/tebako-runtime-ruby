@@ -487,7 +487,7 @@ RSpec.describe "publish coordinator workflow" do
     expect(gate.fetch("if")).to include("always()", "!cancelled()", "!inputs.audit",
                                         "steps.render.outcome == 'success'")
     run = gate.fetch("run")
-    expect(run).to include("registry-accumulated.yaml", "link_unit_release",
+    expect(run).to include("registry-accumulated.yaml", "registry_reader_release",
                            "gh release download", "--repo tamatebako/tebako",
                            'registry validate "$acc"')
     # The predating-CLI probe discriminates on the "unknown command" TEXT
