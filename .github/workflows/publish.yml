@@ -509,6 +509,39 @@ jobs:
             echo "rendered ${ref}"
           done
 
+      # The product-side gate (trr#241): the accumulated render must parse
+      # under the PRODUCT's own registry reader — the grammar's owner is
+      # the product's resolve model, never a hand-copied schema here. The
+      # pinned product release's CLI (contract.yml registry_reader_release —
+      # a READER pin, deliberately separate from the legs' link unit) runs
+      # `registry validate` over the accumulated file; a render the product
+      # cannot read stops the line BEFORE any bot PR opens. The verb landed
+      # after v2.8.27 — the gate needs a pin ≥ v2.8.28 and fails the run by
+      # name on a pinned CLI that predates it (never a silent skip).
+      - name: Validate the accumulated registry with the product reader
+        if: ${{ always() && !cancelled() && !inputs.audit && steps.render.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          acc="$RUNNER_TEMP/registry-accumulated.yaml"
+          [ -f "$acc" ] || { echo "::error::the render step left no accumulated registry (registry-accumulated.yaml missing)"; exit 1; }
+          pin=$(grep -E '^registry_reader_release:' contract.yml | sed -E 's/^registry_reader_release: *"([^"]*)".*/\1/')
+          [ -n "$pin" ] || { echo "::error::contract.yml pins no registry_reader_release — the registry gate needs the product release to validate against"; exit 1; }
+          asset="tebako-${pin#v}-linux-gnu-x86_64"
+          gh release download "$pin" --repo tamatebako/tebako --pattern "$asset" --dir "$RUNNER_TEMP/product-cli" --clobber
+          chmod +x "$RUNNER_TEMP/product-cli/$asset"
+          # The verb probe: a CLI carrying the verb answers its usage line;
+          # a predating one answers "unknown command" (exit codes are
+          # non-zero on both — the TEXT is the discriminator).
+          probe_out="$("$RUNNER_TEMP/product-cli/$asset" registry validate 2>&1 || true)"
+          if echo "$probe_out" | grep -q "unknown command"; then
+            echo "::error::the pinned product CLI ($pin) predates the registry validate verb — bump contract.yml's link_unit_release to a release that carries it (≥ v2.8.28)"
+            exit 1
+          fi
+          "$RUNNER_TEMP/product-cli/$asset" registry validate "$acc"
+          echo "the accumulated registry parses under the product reader ($pin)"
+
       # main is branch-protected: the registry lands by bot PR +
       # auto-merge, never by direct push. ONE PR per coordinator run
       # carrying every shard tag's accumulated render (#275: the per-tag

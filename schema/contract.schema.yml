@@ -17,6 +17,10 @@ properties:
     type: string
     pattern: '^$|^v\d+\.\d+\.\d+$'
     description: the tamatebako/tebako release whose published link unit the legs consume (empty = build the closure from source)
+  registry_reader_release:
+    type: string
+    pattern: '^v\d+\.\d+\.\d+$'
+    description: the tamatebako/tebako release whose CLI validates the rendered registry (the publish flow's product-reader gate — a READER pin, separate from the legs' link unit)
   release_tooling:
     type: string
     pattern: '^v\d+\.\d+\.\d+$'
