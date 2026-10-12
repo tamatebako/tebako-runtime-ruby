@@ -461,8 +461,38 @@ RSpec.describe "publish coordinator workflow" do
     publish = release_steps.find { |step| step["name"] == "Publish the registry via pull request" }
     expect(render.fetch("id")).to eq("render")
     run = render.fetch("run")
-    expect(run).to include("/releases?per_page=100", 'startswith($v + "-")')
+    # The rediscovery rides GraphQL with only tagName+isDraft selected —
+    # the REST releases endpoint embeds every asset row and 504s at
+    # catalog scale (the v0.17.1 registry_only repairs).
+    expect(run).to include("gh api graphql", "tagName", "isDraft", 'startswith($v + "-")')
+    expect(run).not_to include("/releases?per_page=100")
     expect(publish.fetch("if")).to include("steps.render.outcome == 'success'")
+  end
+
+  # trr#241's remaining acceptance: the render is asserted against the
+  # PRODUCT's reader before any bot PR opens — the grammar's owner is the
+  # product's resolve model, so the pinned product CLI (contract.yml's
+  # link_unit_release) runs `registry validate` over the accumulated file.
+  # A pinned CLI that predates the verb fails the run by name (never a
+  # silent skip).
+  it "validates the accumulated registry with the pinned product reader between render and publish (trr#241)" do
+    render = release_steps.find { |step| step["name"] == "Render the registry entries (per shard tag)" }
+    gate = release_steps.find { |step| step["name"] == "Validate the accumulated registry with the product reader" }
+    publish = release_steps.find { |step| step["name"] == "Publish the registry via pull request" }
+    expect(gate).not_to be_nil
+    expect(release_step_names.index(render.fetch("name")))
+      .to be < release_step_names.index(gate.fetch("name"))
+    expect(release_step_names.index(gate.fetch("name")))
+      .to be < release_step_names.index(publish.fetch("name"))
+    expect(gate.fetch("if")).to include("always()", "!cancelled()", "!inputs.audit",
+                                        "steps.render.outcome == 'success'")
+    run = gate.fetch("run")
+    expect(run).to include("registry-accumulated.yaml", "link_unit_release",
+                           "gh release download", "--repo tamatebako/tebako",
+                           'registry validate "$acc"')
+    # The predating-CLI probe discriminates on the "unknown command" TEXT
+    # (both eras exit non-zero on a bare `registry validate`).
+    expect(run).to include('grep -q "unknown command"', "predates the registry validate verb")
   end
 
   # tebako#711 asks 1+3 (this PR's feedstock-publisher half): the render's
