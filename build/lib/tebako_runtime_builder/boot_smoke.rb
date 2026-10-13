@@ -271,9 +271,14 @@ module TebakoRuntimeBuilder
 
     def boot(scenario, mount_root_override: nil, extra_argv: [])
       Dir.mktmpdir("tebako-boot-smoke") do |cwd|
+        # The env builds OUTSIDE the timeout: the magnus scenario's
+        # fixture build (a cold cargo compile inside boot_env) is
+        # host-side work that must not ride the boot's budget (the
+        # trr#284 probe leg's magnus_ext died at 60s on the compile,
+        # never reaching the boot).
+        env = boot_env(scenario, mount_root_override: mount_root_override)
         return Timeout.timeout(BOOT_TIMEOUT) do
-          Open3.capture3(boot_env(scenario, mount_root_override: mount_root_override),
-                         executable, *extra_argv, chdir: cwd)
+          Open3.capture3(env, executable, *extra_argv, chdir: cwd)
         end
       end
     rescue Timeout::Error

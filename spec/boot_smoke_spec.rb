@@ -301,6 +301,23 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
       end
     end
 
+    it "shell-quotes the resource dir through BINDGEN_EXTRA_CLANG_ARGS (the VS path has spaces)" do
+      # bindgen shlex-splits the env var — a space in the resource dir (the
+      # VS tree's "C:/Program Files/…") shatters the flag's value unless
+      # the value rides shell-quoted.
+      Dir.mktmpdir do |dir|
+        spaced = File.join(dir, "with space")
+        include_dir = File.join(spaced, "bin", "..", "lib", "clang", "19", "include")
+        FileUtils.mkdir_p(File.expand_path(include_dir))
+        msys = fixture_for(TebakoRuntimeBuilder::Platform.new("x64-mingw-ucrt"))
+        with_env("LIBCLANG_PATH" => File.join(spaced, "bin"), "BINDGEN_EXTRA_CLANG_ARGS" => nil) do
+          args = msys.send(:bindgen_extra_clang_args)
+          expect(args).to include("-resource-dir \"")
+          expect(args).to match(/-resource-dir "[^"]*with space[^"]*"/)
+        end
+      end
+    end
+
     it "ships a bindgen-time <stdalign.h> fallback for the windows legs" do
       # Ruby 4.0's ruby/defines.h angle-includes the C11 header; the
       # fixture's bindgen libclang resolves without a resource dir that

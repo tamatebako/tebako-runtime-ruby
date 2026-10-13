@@ -116,11 +116,21 @@ module TebakoRuntimeBuilder
         end
         return nil unless (clang = msys_clang)
 
-        out, _, status = Open3.capture3(clang, "-print-resource-dir")
-        dir = out.to_s.strip
-        return nil if !status.success? || dir.empty?
+        # Never spawn the clang for its -print-resource-dir (it flaked
+        # under CI load once — the skip and the build disagreed). The
+        # resource dir rides the exe's own layout:
+        # <bin>/clang[.exe] → <…>/lib/clang/<ver>/include.
+        resource_dir_from_clang(clang)
+      end
 
-        File.directory?(File.join(dir, "include")) ? dir : nil
+      # <bin>/clang[.exe] → <…>/lib/clang/<ver>/include (the newest
+      # versioned dir present).
+      def resource_dir_from_clang(clang)
+        clang_lib = File.expand_path(File.join(File.dirname(clang), "..", "lib", "clang"))
+        include = Dir.glob(File.join(clang_lib, "*", "include")).max
+        return nil unless include && File.directory?(include)
+
+        File.dirname(include)
       end
 
       private
@@ -213,10 +223,22 @@ module TebakoRuntimeBuilder
       def bindgen_extra_clang_args
         parts = [ENV.fetch("BINDGEN_EXTRA_CLANG_ARGS", nil)]
         if (dir = msys_clang_resource_dir)
-          parts << "-resource-dir" << dir
+          # bindgen shlex-splits BINDGEN_EXTRA_CLANG_ARGS — the VS tree's
+          # path carries spaces ("C:/Program Files/…"), so the value rides
+          # shell-quoted or the flag shatters on the first space.
+          parts << "-resource-dir" << "\"#{dir}\""
         end
         parts << "-idirafter" << BINDGEN_SHIM_DIR
+        report_resolution
         parts.compact.join(" ")
+      end
+
+      # trr#281's diagnostic: the leg reports the resolution once, at
+      # build time — the skip-vs-build disagreement class needed the
+      # build's own record (the resolution inputs + the answer).
+      def report_resolution
+        warn "magnus fixture: msys?=#{platform.msys?} resource_dir=#{msys_clang_resource_dir.inspect} " \
+             "msys_clang=#{msys_clang.inspect} LIBCLANG_PATH=#{ENV.fetch("LIBCLANG_PATH", nil).inspect}"
       end
 
       # The msys legs' bindgen libclang resolves headers without any
