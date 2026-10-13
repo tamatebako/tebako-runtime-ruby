@@ -280,6 +280,44 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
       end
     end
 
+    it "resolves the bindgen resource dir from the LOADED libclang first (trr#281)" do
+      # The VS2022 LLVM tools' libclang carries its version-matched
+      # resource headers at <LIBCLANG_PATH>/../lib/clang/<ver>/include —
+      # that dir wins over any msys clang probe (the msys clang-23
+      # resource dir over-parses the intrinsics headers, the avx512 error
+      # class the unconditional-install round proved).
+      Dir.mktmpdir do |dir|
+        include_dir = File.join(dir, "bin", "..", "lib", "clang", "19", "include")
+        FileUtils.mkdir_p(File.expand_path(include_dir))
+        msys = fixture_for(TebakoRuntimeBuilder::Platform.new("x64-mingw-ucrt"))
+        with_env("LIBCLANG_PATH" => File.join(dir, "bin")) do
+          expect(msys.msys_clang_resource_dir).to eq(File.dirname(File.expand_path(include_dir)))
+        end
+        with_env("LIBCLANG_PATH" => nil) do
+          # No loaded libclang and no msys clang on this host path set:
+          # nil (the probe stays the fallback).
+          expect(msys.msys_clang_resource_dir).to(satisfy { |v| v.nil? || File.directory?(File.join(v, "include")) })
+        end
+      end
+    end
+
+    it "shell-quotes the resource dir through BINDGEN_EXTRA_CLANG_ARGS (the VS path has spaces)" do
+      # bindgen shlex-splits the env var — a space in the resource dir (the
+      # VS tree's "C:/Program Files/…") shatters the flag's value unless
+      # the value rides shell-quoted.
+      Dir.mktmpdir do |dir|
+        spaced = File.join(dir, "with space")
+        include_dir = File.join(spaced, "bin", "..", "lib", "clang", "19", "include")
+        FileUtils.mkdir_p(File.expand_path(include_dir))
+        msys = fixture_for(TebakoRuntimeBuilder::Platform.new("x64-mingw-ucrt"))
+        with_env("LIBCLANG_PATH" => File.join(spaced, "bin"), "BINDGEN_EXTRA_CLANG_ARGS" => nil) do
+          args = msys.send(:bindgen_extra_clang_args)
+          expect(args).to include("-resource-dir \"")
+          expect(args).to match(/-resource-dir "[^"]*with space[^"]*"/)
+        end
+      end
+    end
+
     it "ships a bindgen-time <stdalign.h> fallback for the windows legs" do
       # Ruby 4.0's ruby/defines.h angle-includes the C11 header; the
       # fixture's bindgen libclang resolves without a resource dir that
@@ -786,11 +824,10 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
                "is deliberately unwired (the unit gate pins its fail-closed named error)"
         end
         fixture = described_class::MagnusFixture.new(platform: smoke.platform, executable: "unused")
-        if smoke.platform.msys? && smoke.platform.host_id.include?("ucrt64") && fixture.msys_clang.nil?
-          skip "the x86_64-windows smoke host's bindgen libclang parses ruby's and mingw's headers with no " \
-               "resource set (stdbool/x86intrin 'file not found') and the leg installs no msys clang to point " \
-               "at — host tooling, not the runtime's export surface (tracked in the #192 follow-up; the gate " \
-               "runs on every other platform leg)"
+        if smoke.platform.msys? && smoke.platform.host_id.include?("ucrt64") && fixture.msys_clang_resource_dir.nil?
+          skip "the x86_64-windows smoke host resolves no clang resource dir for the bindgen parse (neither " \
+               "the loaded VS libclang's own nor an msys clang's) — host tooling, not the runtime's export " \
+               "surface (the gate runs on every other platform leg). #{fixture.msys_clang_diagnostic}"
         end
 
         expect(run).to be_booted, boot_failure(run)

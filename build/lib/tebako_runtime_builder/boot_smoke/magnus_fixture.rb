@@ -91,6 +91,48 @@ module TebakoRuntimeBuilder
         msys_clang_candidates.find { |p| executable_file?(p) }
       end
 
+      # trr#281's diagnostic (the probe missed an installed clang once —
+      # the path-form question needed the leg's own words, not a guess):
+      # when the resolution comes up empty on an msys leg, say what was
+      # probed and what PATH carried.
+      def msys_clang_diagnostic
+        cands = (path_candidates("clang") + msys_clang_candidates).uniq
+        "clang probe: #{cands.size} candidates, none executable; " \
+          "PATH=#{ENV.fetch("PATH", "")} ; candidates=#{cands.first(6).join(", ")}"
+      end
+
+      # Public host probe: the gate's skip condition on the x86_64-windows
+      # legs reads it (nil = no clang resource dir resolves for the
+      # bindgen parse — neither the loaded libclang's own nor an msys
+      # clang's).
+      def msys_clang_resource_dir
+        return nil unless platform.msys?
+        # trr#281: the dir must belong to the libclang IN USE — the VS
+        # image's LLVM carries the version-matched one (the msys
+        # clang-23's own dir over-parses the intrinsics headers — the
+        # avx512 error class).
+        if (dir = loaded_libclang_resource_dir)
+          return dir
+        end
+        return nil unless (clang = msys_clang)
+
+        # Never spawn the clang for its -print-resource-dir (it flaked
+        # under CI load once — the skip and the build disagreed). The
+        # resource dir rides the exe's own layout:
+        # <bin>/clang[.exe] → <…>/lib/clang/<ver>/include.
+        resource_dir_from_clang(clang)
+      end
+
+      # <bin>/clang[.exe] → <…>/lib/clang/<ver>/include (the newest
+      # versioned dir present).
+      def resource_dir_from_clang(clang)
+        clang_lib = File.expand_path(File.join(File.dirname(clang), "..", "lib", "clang"))
+        include = Dir.glob(File.join(clang_lib, "*", "include")).max
+        return nil unless include && File.directory?(include)
+
+        File.dirname(include)
+      end
+
       private
 
       def build
@@ -181,10 +223,22 @@ module TebakoRuntimeBuilder
       def bindgen_extra_clang_args
         parts = [ENV.fetch("BINDGEN_EXTRA_CLANG_ARGS", nil)]
         if (dir = msys_clang_resource_dir)
-          parts << "-resource-dir" << dir
+          # bindgen shlex-splits BINDGEN_EXTRA_CLANG_ARGS — the VS tree's
+          # path carries spaces ("C:/Program Files/…"), so the value rides
+          # shell-quoted or the flag shatters on the first space.
+          parts << "-resource-dir" << "\"#{dir}\""
         end
         parts << "-idirafter" << BINDGEN_SHIM_DIR
+        report_resolution
         parts.compact.join(" ")
+      end
+
+      # trr#281's diagnostic: the leg reports the resolution once, at
+      # build time — the skip-vs-build disagreement class needed the
+      # build's own record (the resolution inputs + the answer).
+      def report_resolution
+        warn "magnus fixture: msys?=#{platform.msys?} resource_dir=#{msys_clang_resource_dir.inspect} " \
+             "msys_clang=#{msys_clang.inspect} LIBCLANG_PATH=#{ENV.fetch("LIBCLANG_PATH", nil).inspect}"
       end
 
       # The msys legs' bindgen libclang resolves headers without any
@@ -207,15 +261,22 @@ module TebakoRuntimeBuilder
         File.executable?(path) && !File.directory?(path)
       end
 
-      def msys_clang_resource_dir
-        return nil unless platform.msys?
-        return nil unless (clang = msys_clang)
-
-        out, _, status = Open3.capture3(clang, "-print-resource-dir")
-        dir = out.to_s.strip
-        return nil if !status.success? || dir.empty?
-
-        File.directory?(File.join(dir, "include")) ? dir : nil
+      # The loaded libclang's own resource include. The VS image's LLVM
+      # tools carry the version-matched set — globbed across the image's
+      # year/edition drift (the hardcoded 2022/Enterprise path missed a
+      # moved runner image once already), then LIBCLANG_PATH's own tree.
+      # Both spell <bin>/../lib/clang/<ver>/include.
+      def loaded_libclang_resource_dir
+        bins = []
+        libclang_dir = ENV.fetch("LIBCLANG_PATH", nil)
+        bins << libclang_dir unless libclang_dir.to_s.empty?
+        bins.concat(Dir.glob("C:/Program Files/Microsoft Visual Studio/*/*/VC/Tools/Llvm/x64/bin"))
+        bins.each do |bin|
+          clang_lib = File.expand_path(File.join(bin, "..", "lib", "clang"))
+          include = Dir.glob(File.join(clang_lib, "*", "include")).max
+          return File.dirname(include) if include && File.directory?(include)
+        end
+        nil
       end
 
       def header_overrides(config)
