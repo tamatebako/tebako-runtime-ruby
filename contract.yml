@@ -183,7 +183,7 @@ container_version: "0.16.2"
 # unchanged (2). Full-catalog re-cut: the runtime exe embeds the unit.
 # v2.8.25 touched the CLI/bootstrap spellers (tebako#716), not the
 # driver, so the pin skips it.
-link_unit_release: "v2.8.26"
+link_unit_release: "v2.8.45"
 
 # The registry-render gate's reader pin (trr#241): the tamatebako/tebako
 # release whose CLI validates every accumulated registry mirror with
