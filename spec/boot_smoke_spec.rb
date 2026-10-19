@@ -341,6 +341,39 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
       expect(shim).to include("__bool_true_false_are_defined 1")
     end
 
+    it "force-includes <stdbool.h> when the stash's config.h withholds HAVE_STDBOOL_H" do
+      # Ruby 3.2's ruby/internal/stdbool.h takes `#include <stdbool.h>`
+      # only when the stash's config.h defines HAVE_STDBOOL_H (3.3+
+      # includes it unconditionally); a 3.2 stash carrying HAVE__BOOL
+      # without it defines neither bool nor true through ruby, and the
+      # shim alone cannot help — the TU never includes <stdbool.h>. The
+      # force-include resolves through the ordinary search order (the
+      # toolchain's real header first, the -idirafter shim last), so
+      # __bool_true_false_are_defined is set before ruby.h's first line.
+      Dir.mktmpdir do |dir|
+        arch = File.join(dir, "x64-mingw-ucrt")
+        config_h = File.join(arch, "ruby", "config.h")
+        FileUtils.mkdir_p(File.dirname(config_h))
+        FileUtils.touch(File.join(dir, "ruby.h"))
+        without_it = TebakoRuntimeBuilder::BootSmoke::InterposeFixture::Toolchain.new(headers_dir: dir)
+        File.write(config_h, "#define HAVE__BOOL 1\n")
+        fixture = fixture_for(TebakoRuntimeBuilder::Platform.new("x86_64-linux-gnu"))
+        expect(fixture.send(:stdbool_force_include?, without_it)).to be(true)
+        with_env("BINDGEN_EXTRA_CLANG_ARGS" => nil) do
+          args = fixture.send(:bindgen_extra_clang_args, without_it)
+          expect(args).to include("-idirafter #{described_class::BINDGEN_SHIM_DIR}")
+          expect(args).to include("-include stdbool.h")
+        end
+
+        File.write(config_h, "#define HAVE_STDBOOL_H 1\n#define HAVE__BOOL 1\n")
+        with_it = TebakoRuntimeBuilder::BootSmoke::InterposeFixture::Toolchain.new(headers_dir: dir)
+        expect(fixture.send(:stdbool_force_include?, with_it)).to be(false)
+        with_env("BINDGEN_EXTRA_CLANG_ARGS" => nil) do
+          expect(fixture.send(:bindgen_extra_clang_args, with_it)).not_to include("-include stdbool.h")
+        end
+      end
+    end
+
     it "names every tried path when no cargo resolves" do
       Dir.mktmpdir do |dir|
         with_env("TEBAKO_SMOKE_CARGO" => File.join(dir, "no-such-cargo")) do

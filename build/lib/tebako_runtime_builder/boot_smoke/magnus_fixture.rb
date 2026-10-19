@@ -209,7 +209,7 @@ module TebakoRuntimeBuilder
                     .merge("RUBY" => @executable, "CARGO_TARGET_DIR" => File.join(dir, "target"))
         env["TEBAKO_RUNTIME_IMAGE"] = @image if @image
         env["RUSTFLAGS"] = rustflags if platform.linux_musl?
-        env["BINDGEN_EXTRA_CLANG_ARGS"] = bindgen_extra_clang_args
+        env["BINDGEN_EXTRA_CLANG_ARGS"] = bindgen_extra_clang_args(toolchain(config))
         env
       end
 
@@ -220,7 +220,7 @@ module TebakoRuntimeBuilder
       # whose resource dir may lack the C23 header (the linux-gnu legs).
       # The fixture's shim dir rides -idirafter: searched strictly last,
       # so a toolchain shipping the real header never sees the shim.
-      def bindgen_extra_clang_args
+      def bindgen_extra_clang_args(toolchain = nil)
         parts = [ENV.fetch("BINDGEN_EXTRA_CLANG_ARGS", nil)]
         if (dir = msys_clang_resource_dir)
           # bindgen shlex-splits BINDGEN_EXTRA_CLANG_ARGS — the VS tree's
@@ -229,16 +229,53 @@ module TebakoRuntimeBuilder
           parts << "-resource-dir" << "\"#{dir}\""
         end
         parts << "-idirafter" << BINDGEN_SHIM_DIR
-        report_resolution
+        # The stash's config.h decides whether ruby 3.2's headers ever
+        # include <stdbool.h> (see stdbool_force_include?); when they
+        # don't, the force-include establishes C99 bool ahead of
+        # ruby.h's first line — through the ordinary search order, so
+        # the toolchain's real header wins and the shim serves the
+        # resource-less parses.
+        force_stdbool = toolchain && stdbool_force_include?(toolchain)
+        parts << "-include" << "stdbool.h" if force_stdbool
+        report_resolution(force_stdbool: force_stdbool, toolchain: toolchain)
         parts.compact.join(" ")
+      end
+
+      # Ruby 3.2's ruby/internal/stdbool.h includes <stdbool.h> only when
+      # the stash's config.h defines HAVE_STDBOOL_H (3.3+ includes it
+      # unconditionally); a 3.2 stash that carries HAVE__BOOL without
+      # HAVE_STDBOOL_H defines NEITHER bool NOR true through ruby's own
+      # fallback, and rb-sys's wrapper (rb-sys-build 0.9.130, wrapper.h)
+      # enters through `ruby.h` without establishing them either — so
+      # ruby/backward/2/bool.h's `#define TRUE true` leaves `true`
+      # undefined and every downstream TRUE use dies at the macro's own
+      # spelling, bool.h:31:15 (the 3.2.11 windows-x86_64 leg, runs
+      # 39232741187 and 39272868113 — the stdbool shim alone cannot fix
+      # it: the TU never includes <stdbool.h> when config.h withholds
+      # HAVE_STDBOOL_H). The force-include sets
+      # __bool_true_false_are_defined before ruby.h's first line, which
+      # is exactly the state internal/stdbool.h's first branch expects.
+      def stdbool_force_include?(toolchain)
+        config_h = File.join(toolchain.arch_dir, "ruby", "config.h")
+        return false unless File.readable?(config_h)
+
+        !File.read(config_h).match?(/^\s*#\s*define\s+HAVE_STDBOOL_H\b/)
       end
 
       # trr#281's diagnostic: the leg reports the resolution once, at
       # build time — the skip-vs-build disagreement class needed the
-      # build's own record (the resolution inputs + the answer).
-      def report_resolution
-        warn "magnus fixture: msys?=#{platform.msys?} resource_dir=#{msys_clang_resource_dir.inspect} " \
-             "msys_clang=#{msys_clang.inspect} LIBCLANG_PATH=#{ENV.fetch("LIBCLANG_PATH", nil).inspect}"
+      # build's own record (the resolution inputs + the answer). The
+      # stdbool force-include verdict rides along: the config.h evidence
+      # (HAVE__BOOL present, HAVE_STDBOOL_H absent) belongs to the leg's
+      # own log, not to an after-the-fact reconstruction.
+      def report_resolution(force_stdbool: false, toolchain: nil)
+        base = "magnus fixture: msys?=#{platform.msys?} resource_dir=#{msys_clang_resource_dir.inspect} " \
+               "msys_clang=#{msys_clang.inspect} LIBCLANG_PATH=#{ENV.fetch("LIBCLANG_PATH", nil).inspect}"
+        if force_stdbool && toolchain
+          config_h = File.join(toolchain.arch_dir, "ruby", "config.h")
+          base += " stdbool_force_include=true (#{config_h} defines no HAVE_STDBOOL_H)"
+        end
+        warn base
       end
 
       # The msys legs' bindgen libclang resolves headers without any
