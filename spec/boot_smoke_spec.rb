@@ -327,6 +327,20 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
       expect(shim).to include("alignas _Alignas")
     end
 
+    it "ships a bindgen-time <stdbool.h> fallback for the ruby 3.2 legs" do
+      # Ruby 3.2's headers spell C99 bool throughout
+      # (ruby/backward/2/bool.h, ruby/internal/special_consts.h); the
+      # fixture's bindgen libclang resolves without a resource dir that
+      # carries the freestanding header (the x86_64-windows 3.2.11 leg's
+      # first publish run: `unknown type name 'bool'`, `undeclared
+      # identifier 'true'`). Same -idirafter discipline; the content is
+      # the C99 standard's entire stdbool.h.
+      shim = File.read(File.join(described_class::BINDGEN_SHIM_DIR, "stdbool.h"))
+      expect(shim).to include("bool  _Bool")
+      expect(shim).to include("true  1")
+      expect(shim).to include("__bool_true_false_are_defined 1")
+    end
+
     it "names every tried path when no cargo resolves" do
       Dir.mktmpdir do |dir|
         with_env("TEBAKO_SMOKE_CARGO" => File.join(dir, "no-such-cargo")) do
