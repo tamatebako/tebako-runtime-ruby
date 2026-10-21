@@ -329,5 +329,22 @@ RSpec.describe TebakoRuntimeBuilder::ImageBuilder do
       expect(File.exist?(File.join(bin, "ruby"))).to be(false)
       expect(File.exist?(File.join(data_src_dir, "share"))).to be(false)
     end
+
+    # The msys shared build's ABI DLL is <cpu>-ucrt-ruby<ABI>.dll; the
+    # arm64 spelling (aarch64-…) must go too — the old x64-only glob left
+    # it in the arm64 image (the trr#291 read-back gate named it).
+    it "removes the msys ABI DLL in every arch spelling" do
+      msys = TebakoRuntimeBuilder::Platform.new("x64-mingw-ucrt", "x86_64")
+      bin = File.join(data_src_dir, "bin")
+      FileUtils.mkdir_p(bin)
+      %w[x64-ucrt-ruby400.dll aarch64-ucrt-ruby400.dll].each do |name|
+        File.write(File.join(bin, name), "MZ")
+      end
+      File.write(File.join(bin, "gem.cmd"), "prolog")
+
+      TebakoRuntimeBuilder::Stripper.strip(msys, data_src_dir)
+
+      expect(Dir.children(bin)).to eq(["gem.cmd"])
+    end
   end
 end

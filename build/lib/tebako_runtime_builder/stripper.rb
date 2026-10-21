@@ -85,10 +85,12 @@ module TebakoRuntimeBuilder
       #   * the msys shared build's ABI DLL (issue #40) — dead weight in
       #     the env image: PE imports resolve against the runtime exe's
       #     host directory (the store entry holds the DLL next to the exe),
-      #     never against the memfs.
+      #     never against the memfs. The name is <cpu>-ucrt-ruby<ABI>.dll
+      #     (x64-…, aarch64-… — the arm64 leg's spelling was missed by the
+      #     old x64-only glob until the trr#291 read-back gate named it).
       def strip_fi(platform, src_dir)
         files = get_files(platform).map { |f| "#{src_dir}/bin/#{f}" }
-        files += Dir.glob("#{src_dir}/bin/x64-*-ruby*.dll") if platform.msys?
+        files += Dir.glob("#{src_dir}/bin/*-ucrt-ruby*.dll") if platform.msys?
         FileUtils.rm(files, force: true)
       end
 
