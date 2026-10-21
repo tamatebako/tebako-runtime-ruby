@@ -250,13 +250,26 @@ module TebakoRuntimeBuilder
     end
 
     def excluded?(name)
-      interpreter_names.include?(name) || alias_names.include?(name)
+      interpreter_names.include?(name) || alias_names.include?(name) || interpreter_library?(name)
     end
 
     def interpreter_names
       @interpreter_names ||= INTERPRETER_NAMES.flat_map do |name|
         [name, "#{name}#{@platform.exe_suffix}"]
       end.uniq
+    end
+
+    # The interpreter's own shared library, staged into bin/ beside the
+    # exe by the same install. ruby 4's msys builds spell it with the
+    # toolchain prefix and the API minor (`aarch64-ucrt-ruby400.dll`,
+    # `x64-ucrt-ruby400.dll`); older lines use `msvcrt-ruby300.dll` or
+    # the `libruby…` form. It is the interpreter, never a command — the
+    # read-back gate refused it as a stray on the first windows-arm64
+    # ruby 4.0.7 leg (the gate's own find).
+    def interpreter_library?(name)
+      return false unless @platform.msys?
+
+      name.end_with?(".dll") && name.match?(/(?:\A|-)ruby\d+\.dll\z/)
     end
 
     # The spec 22 §2.1 alias channel's names — an msys contract only;

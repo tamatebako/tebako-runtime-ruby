@@ -195,6 +195,19 @@ RSpec.describe TebakoRuntimeBuilder::Entrypoints do
       expect(surface.verify!(declared: declared, image_entries: entries)).to eq(declared)
     end
 
+    it "accepts the interpreter's own versioned shared library (ruby 4's msys shape)" do
+      declared = [{ "name" => "gem", "path" => "/bin/gem.cmd", "args_default" => ["-x"] }]
+      entries = %w[gem.cmd ruby.exe rubyw.exe aarch64-ucrt-ruby400.dll libwinpthread-1.dll]
+
+      expect(surface.verify!(declared: declared, image_entries: entries)).to eq(declared)
+      # older lines spell it through the msvcrt prefix; the gem's own
+      # .dll is still a stray.
+      older = %w[gem.cmd ruby.exe msvcrt-ruby300.dll]
+      expect(surface.verify!(declared: declared, image_entries: older)).to eq(declared)
+      expect { surface.verify!(declared: declared, image_entries: %w[gem.cmd ruby.exe evil.dll]) }
+        .to raise_error(TebakoRuntimeBuilder::Error, /does not declare: evil\.dll/)
+    end
+
     it "accepts a declared script's .bat launcher twin" do
       declared = [{ "name" => "minitest", "path" => "/bin/minitest" },
                   { "name" => "test-unit", "path" => "/bin/test-unit" }]
