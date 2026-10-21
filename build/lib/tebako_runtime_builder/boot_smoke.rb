@@ -190,6 +190,26 @@ module TebakoRuntimeBuilder
       Run.new(scenario: scenario, stdout: out, stderr: err, status: status)
     end
 
+    # Boot the runtime through the spec-17 §7 ENTRY wire — the exact argv a
+    # shim hands the runtime for `tebako run ruby:<name>`:
+    #   <runtime> --tebako-entry <name> <user args...>
+    # The workspace probe is NOT preloaded: the entry's own process is the
+    # subject, and its stdout/stderr are what a consumer would see. The
+    # entry name must be one the env image's provides.entrypoints declares
+    # (spec 30 §2) — an undeclared name is the driver's named refusal.
+    def run_entry(name, *args)
+      materialize_ruby_dll
+      Dir.mktmpdir("tebako-boot-entry") do |cwd|
+        out, err, status = Timeout.timeout(BOOT_TIMEOUT) do
+          Open3.capture3(entry_env, executable, "--tebako-entry", name, *args, chdir: cwd)
+        end
+        Run.new(scenario: "entry:#{name}", stdout: out, stderr: err, status: status)
+      end
+    rescue Timeout::Error
+      Run.new(scenario: "entry:#{name}", stdout: "",
+              stderr: "boot-smoke entry: runtime did not exit within #{BOOT_TIMEOUT}s", status: nil)
+    end
+
     private
 
     # The msys shared build (issue #40): the exe's PE imports resolve
@@ -319,6 +339,16 @@ module TebakoRuntimeBuilder
       env.merge("RUBYOPT" => "-r#{PROBE_PATH}",
                 "TEBAKO_BOOT_PROBE" => scenario,
                 "TEBAKO_BOOT_MOUNT_POINT" => mount_root_override || mount_point)
+    end
+
+    # The entry wire's child env: the same scrub (a host GEM_HOME/RUBYLIB
+    # must never leak into the entry's gem resolution) with the image
+    # handoff and NOTHING else — no probe, no scenario variables.
+    def entry_env
+      env = ENV_SCRUBBED.to_h { |key| [key, nil] }
+      image = "#{executable}.tfs"
+      env["TEBAKO_RUNTIME_IMAGE"] = image if File.file?(image)
+      env
     end
 
     # The magnus_ext scenario (issue #192) hands the probe the host path of

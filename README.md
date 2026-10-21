@@ -41,7 +41,14 @@ Each release tag `v$(cat VERSION)` carries, per Ruby version × platform:
   interpreter with the tebako driver linked in;
 - **the runtime filesystem image** (`<runtime>.tfs`) — the Ruby standard
   library and gems as a single mountable image, shipped next to the
-  executable (the executable mounts it at boot; nothing is extracted);
+  executable (the executable mounts it at boot; nothing is extracted).
+  The image also carries the interpreter install's command scripts in
+  `/bin` and declares them as `provides.entrypoints` in its L1 manifest
+  (spec 30 §2's spawn surface): `gem`, `irb`, `rake`, `bundle`, `rdoc`
+  and the rest of the line's bin inventory are what `tebako run
+  ruby:<command>` and a payload's `runtime` edge `expose:` list dispatch
+  to. The declaration is derived from the actual staged inventory and is
+  read back out of the packed image before the artifact uploads;
 - **the Windows Ruby DLL** (`<runtime>.dll`) on Windows only, where the
   runtime is a shared build so native extensions can bind against it;
 - **a `.sha256` sidecar next to every served asset** — the trust anchor
@@ -153,9 +160,11 @@ bundle exec rspec
 executable and exercises the packaged context from inside: the virtual
 filesystem syscall surface, image IO and `$LOAD_PATH` resolution, gem
 home and bundler, file locking, the openssl canary, dynamic extension
-loading, the JIT support matrix, and a compiled magnus (Ruby/Rust)
+loading, the JIT support matrix, a compiled magnus (Ruby/Rust)
 extension fixture that proves the executable's export surface serves the
-ruby-rust gem ecosystem.
+ruby-rust gem ecosystem, and the spawn surface through the spec-17 entry
+wire (`--tebako-entry gem --version` — the exact argv a shim hands the
+runtime).
 
 Point `TEBAKO_RUNTIME_ROOT` at a runtime root — a directory holding
 exactly one `tebako-runtime-*` executable (a build leg's

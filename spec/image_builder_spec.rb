@@ -283,4 +283,51 @@ RSpec.describe TebakoRuntimeBuilder::ImageBuilder do
       expect(File.exist?(File.join(data_src_dir, "bin", "libwinpthread-1.dll"))).to be(false)
     end
   end
+
+  # Spec 30 §2 (the spawn surface): the interpreter install's bin scripts
+  # ride the image and the declarations are derived from what is actually
+  # there. A bin/ with no script is a named build error — a ruby runtime
+  # without a spawn surface cannot serve `tebako run ruby:<command>`.
+  describe "#deploy_entrypoints" do
+    def write_bin(name, content = "#!/usr/bin/env ruby\n")
+      FileUtils.mkdir_p(File.join(data_src_dir, "bin"))
+      File.write(File.join(data_src_dir, "bin", name), content)
+    end
+
+    it "answers the declarations of the staged POSIX scripts" do
+      %w[gem rake irb].each { |name| write_bin(name) }
+      write_bin("ruby", "\x7fELF")
+
+      declarations = builder_for("4.0.6").deploy_entrypoints
+
+      expect(declarations.map { |decl| decl["name"] }).to eq(%w[gem irb rake])
+      expect(declarations.map { |decl| decl["path"] }).to eq(%w[/bin/gem /bin/irb /bin/rake])
+    end
+
+    it "fails closed by name when bin/ holds no command script" do
+      write_bin("ruby", "\x7fELF")
+
+      expect { builder_for("4.0.6").deploy_entrypoints }
+        .to raise_error(TebakoRuntimeBuilder::Error, /no command script in bin/)
+    end
+  end
+
+  # The v1 era deleted every bin script; the spawn surface needs them to
+  # ship. The strip still removes the installed interpreter (a second copy
+  # nothing compiled against the memfs) and the doc/build trees.
+  describe "the deploy strip" do
+    it "keeps the bin command scripts and removes only the interpreter" do
+      bin = File.join(data_src_dir, "bin")
+      FileUtils.mkdir_p([bin, File.join(data_src_dir, "share")])
+      File.write(File.join(bin, "gem"), "#!/usr/bin/env ruby\n")
+      File.write(File.join(bin, "ruby"), "\x7fELF")
+
+      TebakoRuntimeBuilder::Stripper.strip(TebakoRuntimeBuilder::Platform.new("arm64-darwin23", "arm64"),
+                                           data_src_dir)
+
+      expect(File.file?(File.join(bin, "gem"))).to be(true)
+      expect(File.exist?(File.join(bin, "ruby"))).to be(false)
+      expect(File.exist?(File.join(data_src_dir, "share"))).to be(false)
+    end
+  end
 end
