@@ -122,6 +122,31 @@ RSpec.describe TebakoRuntimeBuilder::Entrypoints do
       )
     end
 
+    # The same install shape in its batch-polyglot spelling: rubygems'
+    # WindowsScript writes an UNSUFFIXED <name> whose head is the same
+    # `:""||{` prolog (the published v0.17.1 windows image's
+    # /bin/minitest is exactly this, 703 B). It is not a shebang script,
+    # so it declares ruby's -x; the .bat twin stays excluded.
+    it "declares the unsuffixed msys polyglot (rubygems WindowsScript) with ruby's -x" do
+      polyglot = <<~CMD
+        :""||{ ""=> %q<-*- ruby -*-
+        @"%~dp0ruby" -x "%~f0" %*
+        @exit /b %ERRORLEVEL%
+        };{ #
+        bindir="${0%/*}" #
+        exec "$bindir/ruby" "-x" "$0" "$@" #
+        >,
+        }
+        #!/usr/bin/env -S ruby
+      CMD
+      write_file("minitest", polyglot)
+      write_file("minitest.bat", "@ECHO OFF\r\n@ruby.exe \"%~dpn0\" %*\r\n")
+
+      expect(described_class.new(platform: msys).declarations(tree)).to eq(
+        [{ "name" => "minitest", "path" => "/bin/minitest", "args_default" => ["-x"] }]
+      )
+    end
+
     it "fails closed by name when bin/ holds no command script" do
       FileUtils.mkdir_p(bin)
       write_file("ruby.exe", "MZ")

@@ -47,20 +47,24 @@ module TebakoRuntimeBuilder
   #          `<interpreter> <args_default…> <in-image path> <user args…>`
   #          (spec 17 §7), so the script is RUN BY THE INTERPRETER and its
   #          shebang never executes: no rewrite is needed or wanted.
-  #   MSYS:  two installers, two shapes:
-  #          * rbinstall's `$cmdtype = 'cmd'` polyglot: bin/<name>.cmd — a
-  #            batch prolog, then the same ruby script behind its `#!`
-  #            line. The prolog is not ruby, so the declaration carries
-  #            `args_default: ["-x"]` — ruby's own `-x` skips to the `#!`
-  #            line, exactly what the .cmd wrapper's `ruby -x` line does
-  #            when the OS runs it;
-  #          * rubygems' gem-executable install (rake, irb, minitest, …):
-  #            bin/<name> (the ruby script) plus bin/<name>.bat (the OS
-  #            launcher). The script is declared; the .bat is its
-  #            launcher TWIN — excluded, because the driver never asks
-  #            the OS to launch anything (the manifest's server-side
-  #            evidence: the published v0.17.1 windows image's /bin holds
-  #            minitest, minitest.bat, test-unit, test-unit.bat).
+  #   MSYS:  two installer families, and the rbinstall wrapper shows up in
+  #          BOTH spellings:
+  #          * the batch polyglot (head `:""||{`) — as bin/<name>.cmd from
+  #            rbinstall's `$cmdtype = 'cmd'` (its `gem`), and as the
+  #            extensionless bin/<name> from rubygems' WindowsScript
+  #            (its balanced form: the extra `}` after the `%q<…>` makes
+  #            it valid ruby as-is). The unbalanced rbinstall form is NOT
+  #            ruby until the prolog is skipped, so EVERY polyglot
+  #            declaration carries `args_default: ["-x"]` — ruby's own
+  #            `-x` skips to the `#!` line, exactly what the wrapper's
+  #            `ruby -x` line does when the OS runs it (and it is inert
+  #            on the balanced form);
+  #          * rubygems' gem-executable install also writes bin/<name>.bat
+  #            (the OS launcher). A .bat whose base name is declared is a
+  #            launcher TWIN — excluded, because the driver never asks the
+  #            OS to launch anything (the published v0.17.1 windows
+  #            image's /bin holds minitest, minitest.bat, test-unit,
+  #            test-unit.bat).
   #
   # The support-DLL alias channel (SupportDlls, spec 22 §2.1) also stages
   # into bin/ on msys, and the installed interpreter itself sits there
@@ -211,26 +215,34 @@ module TebakoRuntimeBuilder
         next unless File.file?(path)
         next if excluded?(name)
 
-        path if script?(path, name)
+        path if script?(path)
       end
     end
 
-    # A shebang script (every POSIX install script) or, on msys, the
-    # rbinstall cmdtype='cmd' wrapper (its polyglot prolog). A file that
-    # is neither is NOT declared; the read-back gate then names it as a
-    # stray so a new install shape can never ship silently.
-    def script?(path, name)
+    # A shebang script (every POSIX install script and the platform's plain
+    # wrappers) or, on msys, the batch polyglot prolog in either spelling
+    # (bin/<name>.cmd from rbinstall, extensionless bin/<name> from
+    # rubygems' WindowsScript). A file that is neither is NOT declared;
+    # the read-back gate then names it as a stray so a new install shape
+    # can never ship silently.
+    def script?(path)
       head = File.open(path, "rb") { |file| file.read(64) }.to_s
       return true if head.start_with?("#!")
 
-      @platform.msys? && name.end_with?(MSYS_SUFFIX) && head.start_with?(MSYS_PROLOG)
+      @platform.msys? && head.start_with?(MSYS_PROLOG)
     end
 
     def declaration_for(path)
       file = File.basename(path)
       declaration = { "name" => command_name(file), "path" => "#{IN_IMAGE_DIR}/#{file}" }
-      declaration["args_default"] = MSYS_ARGS_DEFAULT.dup if @platform.msys? && file.end_with?(MSYS_SUFFIX)
+      declaration["args_default"] = MSYS_ARGS_DEFAULT.dup if msys_polyglot?(path)
       declaration
+    end
+
+    def msys_polyglot?(path)
+      return false unless @platform.msys?
+
+      File.open(path, "rb") { |file| file.read(64) }.to_s.start_with?(MSYS_PROLOG)
     end
 
     def command_name(file)
