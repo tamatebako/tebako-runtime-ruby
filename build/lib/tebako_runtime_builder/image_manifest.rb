@@ -55,12 +55,17 @@ module TebakoRuntimeBuilder
     # absolute spelling of CaBundle's deploy target.
     MATERIALIZE = ["/#{CaBundle::IN_IMAGE_PATH}"].freeze
 
-    def initialize(platform:, ruby_version:, tebako_version:, patch_set:, src_sha256:)
+    def initialize(platform:, ruby_version:, tebako_version:, patch_set:, src_sha256:, entrypoints: []) # rubocop:disable Metrics/ParameterLists -- one keyword per manifest field
       @platform = platform
       @ruby_version = ruby_version
       @tebako_version = tebako_version
       @patch_set = patch_set
       @src_sha256 = src_sha256
+      # The spawn surface (spec 30 §2), DERIVED from the image's actual
+      # staged bin inventory by Entrypoints — the class renders exactly
+      # what the image holds, so the driver's "the declaration lies"
+      # refusal (exit 65) is unreachable by construction.
+      @entrypoints = entrypoints
     end
 
     # Write the manifest into the assembled layout tree (before the image
@@ -113,12 +118,16 @@ module TebakoRuntimeBuilder
     end
 
     # kind=runtime PROVIDES (spec 03 §2.2): the engine line the dispatcher
-    # matches runtime_requirements against, the source provenance, and the
-    # locked runtime capability triple. abi_line is the ruby major.minor
-    # (the "~> x.y.z" line native-extension payloads pin).
+    # matches runtime_requirements against, the spawn surface (spec 30 §2 —
+    # the commands a consumer's runtime-edge expose list dispatches), the
+    # source provenance, and the locked runtime capability triple. abi_line
+    # is the ruby major.minor (the "~> x.y.z" line native-extension
+    # payloads pin). entrypoints is omitted when empty (the grammar's
+    # optional key); the builder refuses an empty inventory before this
+    # point, so a ruby image never ships surface-less.
     def provides # rubocop:disable Metrics/MethodLength -- one declarative block per spec 03 §2.2; splitting it scatters the grammar
       ruby = TebakoRuntimeBuilder::RubyVersion.new(@ruby_version)
-      {
+      provides = {
         "provides" => {
           "engine" => "ruby",
           "version" => @ruby_version,
@@ -128,6 +137,8 @@ module TebakoRuntimeBuilder
         "built_from" => { "src_sha256" => @src_sha256, "patch_set" => @patch_set },
         "capabilities" => { "exec" => true, "read" => true, "runtime" => true }
       }
+      provides["entrypoints"] = @entrypoints unless @entrypoints.empty?
+      provides
     end
   end
 end

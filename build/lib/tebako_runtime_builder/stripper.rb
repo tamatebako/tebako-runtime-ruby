@@ -33,12 +33,6 @@ module TebakoRuntimeBuilder
   # Tebako packaging support (stripper) -- gem Tebako::Stripper
   module Stripper
     DELETE_EXTENSIONS = %w[o lo obj a la lib].freeze
-    BIN_FILES = %w[
-      bundle bundler rbs erb gem irb racc racc2y
-      rake rdoc ri y2racc rdbg syntax_suggest typeprof
-    ].freeze
-    CMD_SUFFIX = ".cmd"
-    BAT_SUFFIX = ".bat"
 
     class << self
       # Strip
@@ -68,12 +62,7 @@ module TebakoRuntimeBuilder
 
       def get_files(platform)
         exe_suffix = platform.exe_suffix
-        files = BIN_FILES.flat_map do |f|
-          [f, "#{f}#{CMD_SUFFIX}", "#{f}#{BAT_SUFFIX}"]
-        end
-
-        files += ["ruby#{exe_suffix}", "rubyw#{exe_suffix}"]
-        files
+        ["ruby#{exe_suffix}", "rubyw#{exe_suffix}"]
       end
 
       def strip_bs(src_dir)
@@ -84,15 +73,24 @@ module TebakoRuntimeBuilder
                         ])
       end
 
+      # The bin/ scripts now SHIP (the spec 30 §2 spawn surface): Entrypoints
+      # declares the interpreter install's command scripts in the image
+      # manifest and the driver runs the interpreter on them, so the v1
+      # era's wholesale deletion (BIN_FILES) would leave every declaration
+      # lying ("the env image's declaration lies", exit 65). What still
+      # goes:
+      #   * the installed interpreter itself — the runtime EXECUTABLE is
+      #     the interpreter (spec 17 §7); bin/ruby is a second copy nothing
+      #     compiled against the memfs, and a false spawn-surface candidate;
+      #   * the msys shared build's ABI DLL (issue #40) — dead weight in
+      #     the env image: PE imports resolve against the runtime exe's
+      #     host directory (the store entry holds the DLL next to the exe),
+      #     never against the memfs. The name is <cpu>-ucrt-ruby<ABI>.dll
+      #     (x64-…, aarch64-… — the arm64 leg's spelling was missed by the
+      #     old x64-only glob until the trr#291 read-back gate named it).
       def strip_fi(platform, src_dir)
         files = get_files(platform).map { |f| "#{src_dir}/bin/#{f}" }
-        # The msys shared build (issue #40) installs x64-ucrt-ruby<ABI>.dll
-        # into bin/: dead weight in the env image -- PE imports resolve
-        # against the runtime exe's host directory (the store entry holds
-        # the DLL next to the exe), never against the memfs. The import
-        # library under lib/ is a *.a and joins the other build artifacts
-        # strip_li deletes.
-        files += Dir.glob("#{src_dir}/bin/x64-*-ruby*.dll") if platform.msys?
+        files += Dir.glob("#{src_dir}/bin/*-ucrt-ruby*.dll") if platform.msys?
         FileUtils.rm(files, force: true)
       end
 

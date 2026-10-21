@@ -545,6 +545,34 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
       end
     end
 
+    # Spec 30 §2's acceptance — the ruby half of `tebako run ruby:gem`:
+    # the env image DECLARES the spawn surface and the very argv a shim
+    # hands the runtime (`--tebako-entry <name> <user args…>`) boots the
+    # command. The read-back gate proves the declarations ride the image;
+    # these examples prove the declared entries actually RUN.
+    describe "the spawn surface (spec 30 §2)" do
+      it "runs `gem --version` through the --tebako-entry wire" do
+        run = smoke.run_entry("gem", "--version")
+
+        expect(run.exitstatus).to eq(0), "gem --version failed: #{run.failure_summary}"
+        expect(run.stdout).to match(/\A\d+\.\d+/), "gem --version printed #{run.stdout.inspect}"
+      end
+
+      it "runs `rake --version` through the same wire" do
+        run = smoke.run_entry("rake", "--version")
+
+        expect(run.exitstatus).to eq(0), "rake --version failed: #{run.failure_summary}"
+        expect(run.stdout).to match(/rake, version \d+\.\d+/), "rake --version printed #{run.stdout.inspect}"
+      end
+
+      it "refuses a name the image does not declare, by name" do
+        run = smoke.run_entry("tebako-no-such-command")
+
+        expect(run.exitstatus).not_to eq(0), "an undeclared entry must fail: #{run.failure_summary}"
+        expect(run.stderr).to include("declares no runtime entrypoint of that name")
+      end
+    end
+
     describe "the TEBAKO_MOUNT_ROOT override (spec 17 §1)" do
       # The full chain end-to-end: the driver mounts the env image at the
       # override, the layout's mount_root_override grant permits it, and

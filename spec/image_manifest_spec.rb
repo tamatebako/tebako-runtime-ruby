@@ -33,10 +33,10 @@ RSpec.describe TebakoRuntimeBuilder::ImageManifest do
   let(:gnu) { TebakoRuntimeBuilder::Platform.new("x86_64-linux-gnu", "x86_64") }
   let(:src_sha256) { "ab" * 32 }
 
-  def manifest_for(platform, ruby_version: "3.4.8")
+  def manifest_for(platform, ruby_version: "3.4.8", entrypoints: [])
     described_class.new(platform: platform, ruby_version: ruby_version,
                         tebako_version: "0.16.6", patch_set: "v0.2.24",
-                        src_sha256: src_sha256).to_h
+                        src_sha256: src_sha256, entrypoints: entrypoints).to_h
   end
 
   it "writes the runtime-kind identity block per spec 03 §2.1" do
@@ -79,6 +79,25 @@ RSpec.describe TebakoRuntimeBuilder::ImageManifest do
     expect(manifest_for(msys)["materialize"]).to eq(["/ssl/cert.pem"])
     expect(manifest_for(msys)["provides"]["provides"]["platform"]).to eq("x86_64-windows-ucrt")
     expect(manifest_for(gnu)).not_to have_key("materialize")
+  end
+
+  # Spec 30 §2 (the spawn surface): the runtime-kind provides block carries
+  # the commands a consumer's runtime-edge expose list dispatches. The
+  # emitter renders exactly the Entrypoints-derived inventory handed to
+  # it; an empty inventory omits the optional key rather than declaring an
+  # empty surface.
+  it "renders provides.entrypoints from the staged inventory" do
+    entrypoints = [{ "name" => "gem", "path" => "/bin/gem" },
+                   { "name" => "rake", "path" => "/bin/rake" }]
+
+    expect(manifest_for(gnu, entrypoints: entrypoints)["provides"]["entrypoints"]).to eq(entrypoints)
+    expect(manifest_for(gnu)["provides"]).not_to have_key("entrypoints")
+  end
+
+  it "renders the msys args_default the .cmd shape needs" do
+    entrypoints = [{ "name" => "gem", "path" => "/bin/gem.cmd", "args_default" => ["-x"] }]
+
+    expect(manifest_for(msys, entrypoints: entrypoints)["provides"]["entrypoints"]).to eq(entrypoints)
   end
 
   # The spec 22 §2.1 alias channel (the packed-mn#251 windows 126): the

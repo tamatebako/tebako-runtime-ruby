@@ -34,12 +34,13 @@ module TebakoRuntimeBuilder
   # pristine ruby environment -- the runtime-mode subset of the gem's
   # Packager.init + DeployHelper (simple_script scenario) + Packager.mkdwarfs.
   #
-  # The image content is the stashed ruby installation plus /local/stub.rb
-  # (the runtime's compiled-in entry point). Spec 22 phase M2: the
-  # tebako-runtime gem is NO LONGER staged — its require maps ship empty
-  # (spec 22 §7) and the Rust driver covers the VFS, so the image carries
-  # no tebako-runtime gem at all, and the gem_prelude require patch that
-  # loaded it at boot is retired (tamatebako/ruby#65). For the
+  # The image content is the stashed ruby installation (its bin/ command
+  # scripts included — the spec 30 §2 spawn surface), plus /local/stub.rb
+  # (the runtime's compiled-in entry point) and the L1 manifest. Spec 22
+  # phase M2: the tebako-runtime gem is NO LONGER staged — its require maps
+  # ship empty (spec 22 §7) and the Rust driver covers the VFS, so the
+  # image carries no tebako-runtime gem at all, and the gem_prelude require
+  # patch that loaded it at boot is retired (tamatebako/ruby#65). For the
   # supported ruby matrix (>= 3.1.6) the gem's deploy gates
   # (DeployHelper#configure: '@needs_bundler = true unless ruby31?',
   # #update_rubygems: 'return if ruby31?') make the rubygems update and the
@@ -196,6 +197,23 @@ module TebakoRuntimeBuilder
       puts "   ... support DLLs staged into bin/: #{names.join(", ")} (declared as library_aliases in the manifest)"
     end
 
+    # The env image's spawn surface (spec 30 §2): the interpreter install's
+    # own bin/ command scripts STAY in the image (the stripper no longer
+    # deletes them) and Entrypoints normalizes their mode and derives the
+    # provides.entrypoints declarations from exactly what is there. The
+    # manifest emitter (builder.rb) re-derives from this same tree before
+    # packing, and the read-back gate re-reads the packed image — three
+    # views of one inventory, never a hand-kept list. The msys support
+    # DLLs (staged just above) and the interpreter itself are the only
+    # names Entrypoints excludes. Public like its sibling deploy passes so
+    # the specs drive it against a layout tree directly.
+    def deploy_entrypoints
+      staged = TebakoRuntimeBuilder::Entrypoints.new(platform: @platform).stage(@data_src_dir)
+      puts "   ... spawn surface staged in bin/ (provides.entrypoints): " \
+           "#{staged.map { |decl| decl["path"] }.join(", ")}"
+      staged
+    end
+
     private
 
     # Recreate the packaging environment from the stash
@@ -252,6 +270,7 @@ module TebakoRuntimeBuilder
       deploy_stub(stub_dir)
       deploy_ca_bundle
       deploy_support_dlls
+      deploy_entrypoints
       deploy_preload
       deploy_layout
       TebakoRuntimeBuilder::Stripper.strip(@platform, @data_src_dir)

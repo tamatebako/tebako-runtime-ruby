@@ -27,6 +27,7 @@
 
 require "digest"
 require "fileutils"
+require "open3"
 require "yaml"
 
 module TebakoRuntimeBuilder
@@ -53,7 +54,7 @@ module TebakoRuntimeBuilder
       @platform = TebakoRuntimeBuilder::Platform.new
     end
 
-    def run # rubocop:disable Metrics/MethodLength
+    def run # rubocop:disable Metrics/MethodLength,Metrics/AbcSize -- the build's ordered stages, one call per line
       check_image_shape!
       assets = fetcher.fetch_assets(@ruby_version, @platform)
       puts "-- Building tebako runtime for ruby #{@ruby_version} " \
@@ -65,6 +66,7 @@ module TebakoRuntimeBuilder
       emit_image_manifest(assets) if @image
       pack_image if @image
       write_image_sidecar if @image
+      read_back_image if @image
       write_abi_sidecar
       write_contract_sidecar(assets)
       @output
@@ -251,15 +253,85 @@ module TebakoRuntimeBuilder
     # the class — never this callsite — owns the grammar. assets[0] is the
     # pass-1 tarball pair: its verified sha256 is the image's
     # built_from/source provenance (the msys pass-2 overlay rides the
-    # .contract.yaml card).
+    # .contract.yaml card). The spawn surface (spec 30 §2) is derived here
+    # from the SAME layout tree the packer is about to read, by the single
+    # owner (Entrypoints): the declaration can never outrun the bytes.
     def emit_image_manifest(assets)
       (_tarball, sha256) = assets[0]
+      entrypoints = TebakoRuntimeBuilder::Entrypoints.new(platform: @platform).declarations(layout_tree)
       path = TebakoRuntimeBuilder::ImageManifest.new(platform: @platform, ruby_version: @ruby_version,
                                                      tebako_version: @tebako_version, patch_set: @release,
-                                                     src_sha256: sha256)
+                                                     src_sha256: sha256, entrypoints: entrypoints)
                                                 .deploy(layout_tree)
       note = @platform.msys? ? " (materialize: /ssl/cert.pem)" : ""
       puts "   ... env image payload manifest: #{path}#{note}"
+      puts "   ... provides.entrypoints: #{entrypoints.map { |decl| decl["path"] }.join(", ")}"
+    end
+
+    # The spawn-surface read-back gate (spec 30 §2): re-read the PACKED
+    # image with the SAME tfs CLI that wrote it and prove both directions —
+    # every declared path is a file the image holds, and every /bin entry
+    # is declared or one of Entrypoints' explicit exclusions. The declared
+    # block must also equal the tree-derived inventory (the emitter and the
+    # packer agree), so a manifest drift is caught before upload. A red
+    # gate fails the leg; the boot smoke then proves the entry wire runs.
+    def read_back_image
+      declared = image_manifest_doc.fetch("provides", {}).fetch("entrypoints", [])
+      verify_declared_surface!(declared)
+
+      surface = TebakoRuntimeBuilder::Entrypoints.new(platform: @platform)
+      surface.verify!(declared: declared, image_entries: image_bin_entries)
+      puts "   ... read-back: #{declared.length} declared entrypoint(s) ride the image " \
+           "(#{declared.map { |decl| decl["path"] }.join(", ")}); /bin holds no undeclared script"
+    end
+
+    # The emitter/packer agreement: the declarations embedded in the image
+    # must be the ones the layout tree's bin/ yields (semantic equality —
+    # the writer re-renders the manifest from the tpkg model).
+    def verify_declared_surface!(declared)
+      expected = TebakoRuntimeBuilder::Entrypoints.new(platform: @platform).declarations(layout_tree)
+      return if TebakoRuntimeBuilder::Entrypoints.canonical(declared) ==
+                TebakoRuntimeBuilder::Entrypoints.canonical(expected)
+
+      raise TebakoRuntimeBuilder::Error.new(
+        "the packed image's provides.entrypoints does not match the staged bin inventory: " \
+        "declared #{declared.inspect}, staged #{expected.inspect}", 150
+      )
+    end
+
+    def image_manifest_doc
+      @image_manifest_doc ||= begin
+        doc = YAML.safe_load(capture_image("cat", image_output, "/__tpkg__/manifest.yaml"))
+        unless doc.is_a?(Hash)
+          raise TebakoRuntimeBuilder::Error.new(
+            "the packed image's /__tpkg__/manifest.yaml did not parse as a map (#{doc.class})", 150
+          )
+        end
+        doc
+      end
+    end
+
+    # The image's /bin listing as bare entry names. tfs ls prints one
+    # absolute VFS path per line; the read-back compares the basenames
+    # (declarations are /bin/<file>).
+    def image_bin_entries
+      capture_image("ls", image_output, "/bin").lines.filter_map do |line|
+        entry = line.strip.delete_prefix("/bin/")
+        entry.empty? ? nil : entry
+      end
+    end
+
+    # The tfs CLI invocation shared by the read-back. MSYS2_ARG_CONV_EXCL
+    # keeps the msys runtime from rewriting the VFS paths (/__tpkg__/…,
+    # /bin) into host paths before the native CLI sees them — inert on
+    # POSIX (the sibling factories' rule).
+    def capture_image(*args)
+      out, err, status = Open3.capture3({ "MSYS2_ARG_CONV_EXCL" => "*" }, image_tfs, *args)
+      return out if status.success?
+
+      raise TebakoRuntimeBuilder::Error.new(
+        "tfs #{args.join(" ")} on #{image_output} failed (#{status.exitstatus}): #{err.strip}", 150
+      )
     end
 
     # The assembled layout tree (the CMake project's DATA_SRC_DIR), in
