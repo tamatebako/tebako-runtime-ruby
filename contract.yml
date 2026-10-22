@@ -183,7 +183,15 @@ container_version: "0.16.2"
 # unchanged (2). Full-catalog re-cut: the runtime exe embeds the unit.
 # v2.8.25 touched the CLI/bootstrap spellers (tebako#716), not the
 # driver, so the pin skips it.
-link_unit_release: "v2.8.45"
+# v2.8.45 -> v2.8.55: the unit now carries the lazy transport window
+# (tebako#851: a demand fetch's resolver reads no longer re-enter the
+# interposed surface behind the VFS read lock — the sampled
+# getaddrinfo → networkd_settings → open_impl deadlock) and the
+# host-gated wire (tebako#853: a boot tier that cannot read a seeded
+# entry takes the loud eager fallback instead of seeding one the
+# windows materialize tier then refuses). The pin is what puts both
+# INSIDE the runtime exe — the artifact, not the user's CLI, owns them.
+link_unit_release: "v2.8.55"
 
 # The registry-render gate's reader pin (trr#241): the tamatebako/tebako
 # release whose CLI validates every accumulated registry mirror with
