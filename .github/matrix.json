@@ -1,15 +1,15 @@
 {
   "ruby": {
     "tidy": [
-      "3.3.12",
-      "4.0.7"
+      "3.3.13",
+      "4.0.9"
     ],
     "full": [
       "3.1.6",
       "3.2.11",
-      "3.3.12",
-      "3.4.10",
-      "4.0.7"
+      "3.3.13",
+      "3.4.12",
+      "4.0.9"
     ],
     "catalog": [
       "3.1.6",
@@ -24,9 +24,12 @@
       "3.3.6",
       "3.3.7",
       "3.3.12",
+      "3.3.13",
       "3.4.1",
       "3.4.2",
       "3.4.10",
+      "3.4.11",
+      "3.4.12",
       "4.0.0",
       "4.0.1",
       "4.0.2",
@@ -34,7 +37,9 @@
       "4.0.4",
       "4.0.5",
       "4.0.6",
-      "4.0.7"
+      "4.0.7",
+      "4.0.8",
+      "4.0.9"
     ]
   },
   "env": [
@@ -91,6 +96,8 @@
   ],
   "defer": {
     "_comment": "Per-platform availability: a version is DEFERRED for a platform (never scheduled, never expected, never promised) when it starts with a listed minor-line prefix. Remove a prefix to re-admit that line to the platform's catalog. (windows 3.3+ was deferred for the boot smoke's native-extension bind — the cparse.so LoadError: (null) class, issue 40 — and is re-admitted with the dln.c C-side dlmap extraction fix.)",
-    "windows": []
+    "windows": [
+
+    ]
   }
 }

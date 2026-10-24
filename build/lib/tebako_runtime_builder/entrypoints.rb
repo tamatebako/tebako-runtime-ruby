@@ -115,9 +115,12 @@ module TebakoRuntimeBuilder
     # command script is a named build error: the runtime would ship with
     # no spawn surface at all (the issue-291 class, silently).
     def stage(tree_root)
+      bin_dir = File.join(tree_root, "bin")
+      swept = Dir.exist?(bin_dir) ? sweep_binstub_locks(bin_dir) : []
+      puts "   ... RubyGems bin-script lock file(s) swept from bin/: #{swept.join(", ")}" unless swept.empty?
       declarations = declarations(tree_root)
       declarations.each do |decl|
-        FileUtils.chmod(0o755, File.join(tree_root, "bin", File.basename(decl["path"])))
+        FileUtils.chmod(0o755, File.join(bin_dir, File.basename(decl["path"])))
       end
       declarations
     end
@@ -207,6 +210,28 @@ module TebakoRuntimeBuilder
 
       match = /\A(?<base>.+)\.(?:bat|cmd)\z/.match(entry)
       match ? declared_names.include?(match[:base]) : false
+    end
+
+    # RubyGems 3.5.16 — the version Ruby 3.3.5 bundles — writes an installed
+    # executable inside a raw flock, `Gem.open_file_with_flock("#{path}.lock")`,
+    # and never removes the lock file; 3.5.19 added `open_file_with_lock`,
+    # whose `ensure` deletes it. The turds are empty,
+    # they sit beside the script they guarded, and they are not part of the
+    # distribution: swept here, the read-back gate stays strict and the image
+    # ships no lock file. Only an EMPTY `<name>.lock` whose `<name>` is a file
+    # in the same directory is swept — a lock carrying bytes is somebody's
+    # data, and it stays for the gate to name.
+    def sweep_binstub_locks(bin_dir)
+      swept = Dir.children(bin_dir).sort.select do |name|
+        next false unless name.end_with?(".lock")
+
+        base = name.delete_suffix(".lock")
+        next false if base.empty? || !File.file?(File.join(bin_dir, base))
+
+        File.empty?(File.join(bin_dir, name))
+      end
+      swept.each { |name| FileUtils.rm_f(File.join(bin_dir, name)) }
+      swept
     end
 
     def script_files(bin_dir)

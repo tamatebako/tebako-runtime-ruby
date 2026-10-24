@@ -171,6 +171,34 @@ RSpec.describe TebakoRuntimeBuilder::Entrypoints do
       expect(File.stat(path).mode & 0o777).to eq(0o755)
       expect(declarations).to eq([{ "name" => "gem", "path" => "/bin/gem" }])
     end
+
+    # Ruby 3.3.5 bundles RubyGems 3.5.16, which writes each installed
+    # executable under a raw flock (`Gem.open_file_with_flock("#{path}.lock")`)
+    # and never removes the lock file; the read-back gate then refused the
+    # image with twelve `<script>.lock` strays (the 3.3.5 legs of the catalog,
+    # run 40081793181). 3.5.17+ cleans up after itself.
+    it "sweeps the empty RubyGems bin-script lock files Ruby 3.3.5 leaves behind" do
+      write_script("irb")
+      write_script("rake")
+      write_script("gem")
+      write_file("irb.lock", "")
+
+      declarations = described_class.new(platform: gnu).stage(tree)
+
+      expect(File.exist?(File.join(bin, "irb.lock"))).to be(false)
+      expect(declarations.map { |decl| decl["name"] }).to eq(%w[gem irb rake])
+    end
+
+    it "keeps a lock file that carries bytes, and one whose script is absent" do
+      write_script("irb")
+      write_file("irb.lock", "held")
+      write_file("orphan.lock", "")
+
+      described_class.new(platform: gnu).stage(tree)
+
+      expect(File.read(File.join(bin, "irb.lock"))).to eq("held")
+      expect(File.exist?(File.join(bin, "orphan.lock"))).to be(true)
+    end
   end
 
   describe ".canonical" do
