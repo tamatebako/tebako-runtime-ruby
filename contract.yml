@@ -191,7 +191,12 @@ container_version: "0.16.2"
 # entry takes the loud eager fallback instead of seeding one the
 # windows materialize tier then refuses). The pin is what puts both
 # INSIDE the runtime exe — the artifact, not the user's CLI, owns them.
-link_unit_release: "v2.8.55"
+# v2.8.55 -> v2.8.61: the unit exports `tebako_fs_host_guard`, which the
+# v0.2.39 source's IO shims call to decide whether an UNCOVERED host path
+# must route through the policy (tebako#917). The two pins move together:
+# a source-only bump would link against a unit without the symbol, and a
+# unit-only bump would carry a source that never asks.
+link_unit_release: "v2.8.61"
 
 # The registry-render gate's reader pin (trr#241): the tamatebako/tebako
 # release whose CLI validates every accumulated registry mirror with
