@@ -33,11 +33,12 @@ require "net/http"
 require "uri"
 
 module TebakoRuntimeBuilder
-  # Ruby build helpers (gem Tebako::BuildHelpers) plus the shared download
-  # core every fetcher uses (SourceFetcher carries its own private copy for
-  # the SHA256SUMS flow; TfsTool consumes this one) — so the Net::HTTP
-  # discipline (redirect bound, timeouts, named failures) exists exactly
-  # once per consumer class, mirrored from the python factory.
+  # Ruby build helpers (gem Tebako::BuildHelpers) plus the download core
+  # TfsTool and the release-asset probes use. The Net::HTTP discipline
+  # itself (timeouts, the transient-failure budget, named failures) lives
+  # in UrlFetch, so this class and SourceFetcher/CaBundle share one
+  # implementation of it; only the redirect bound and each caller's exit
+  # code stay local.
   module BuildHelpers
     MAX_REDIRECTS = 5
 
@@ -125,7 +126,7 @@ module TebakoRuntimeBuilder
         return read_file_url(uri, code) if uri.scheme == "file"
         raise TebakoRuntimeBuilder::Error.new("too many redirects fetching #{url}", code) if redirects_left.zero?
 
-        response = http_get(uri)
+        response = UrlFetch.get(uri, code: code)
         case response
         when Net::HTTPSuccess then response.body
         when Net::HTTPRedirection
@@ -144,16 +145,6 @@ module TebakoRuntimeBuilder
         File.binread(path)
       rescue Errno::ENOENT
         raise TebakoRuntimeBuilder::Error.new("not found: #{path}", code)
-      end
-
-      def http_get(uri)
-        http = Net::HTTP.new(uri.host, uri.port)
-        http.use_ssl = uri.scheme == "https"
-        http.open_timeout = 15
-        http.read_timeout = 600
-        http.start do |session|
-          session.get(uri.request_uri.empty? ? "/" : uri.request_uri)
-        end
       end
 
       private
