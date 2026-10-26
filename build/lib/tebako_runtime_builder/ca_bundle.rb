@@ -98,7 +98,7 @@ module TebakoRuntimeBuilder
       return read_file_url(uri) if uri.scheme == "file"
       raise TebakoRuntimeBuilder::Error.new("too many redirects fetching #{url}", 124) if redirects_left.zero?
 
-      response = http_get(uri)
+      response = UrlFetch.get(uri, code: 124)
       case response
       when Net::HTTPSuccess then response.body
       when Net::HTTPRedirection
@@ -116,14 +116,6 @@ module TebakoRuntimeBuilder
       File.binread(path)
     rescue Errno::ENOENT
       raise TebakoRuntimeBuilder::Error.new("not found: #{path}", 124)
-    end
-
-    def http_get(uri)
-      http = Net::HTTP.new(uri.host, uri.port)
-      http.use_ssl = uri.scheme == "https"
-      http.open_timeout = 15
-      http.read_timeout = 600
-      http.start { |session| session.get(uri.request_uri.empty? ? "/" : uri.request_uri) }
     end
   end
 end

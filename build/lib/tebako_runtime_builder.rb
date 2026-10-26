@@ -59,6 +59,7 @@ module TebakoRuntimeBuilder
   autoload :Stripper,       File.expand_path("tebako_runtime_builder/stripper", __dir__)
   autoload :SupportDlls,    File.expand_path("tebako_runtime_builder/support_dlls", __dir__)
   autoload :TfsTool,        File.expand_path("tebako_runtime_builder/tfs_tool", __dir__)
+  autoload :UrlFetch,       File.expand_path("tebako_runtime_builder/url_fetch", __dir__)
 
   # Bundler/rubygems versions pinned by the gem's scenario manager. For the
   # supported ruby matrix (>= 3.1.6) the gem's deploy gates make the rubygems
