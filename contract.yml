@@ -196,7 +196,14 @@ container_version: "0.16.2"
 # must route through the policy (tebako#917). The two pins move together:
 # a source-only bump would link against a unit without the symbol, and a
 # unit-only bump would carry a source that never asks.
-link_unit_release: "v2.8.61"
+# v2.8.61 -> v2.8.65: the unit carries the raw-syscall interposition that
+# makes a mounted file visible to libuv-style callers on Linux (stat, fstat,
+# close and the directory listing reach the kernel through `syscall(2)`,
+# where no symbol interposition can see them — tebako#935/#937), the
+# `AT_SYMLINK_NOFOLLOW` answer in `statx`, and `scandir`/`scandir64` from
+# the mounts. Everything this factory ships EMBEDS the unit, so a pair built
+# from this pin is the only way a payload gets the fix.
+link_unit_release: "v2.8.65"
 
 # The registry-render gate's reader pin (trr#241): the tamatebako/tebako
 # release whose CLI validates every accumulated registry mirror with
