@@ -49,9 +49,9 @@ module TebakoRuntimeBuilder
   # pair, never the moving cacert.pem alias. Bump procedure: pick the
   # newest cacert-<date>.pem, record its digest here, same PR.
   class CaBundle
-    FILENAME = "cacert-2026-08-13.pem"
+    FILENAME = "cacert-2026-10-20.pem"
     URL = "https://curl.se/ca/#{FILENAME}".freeze
-    SHA256 = "f66dff1bdf8f96060b8177976f8b7d9254bc89bc4db933d769f7384d28480bc9"
+    SHA256 = "796f1389bfea13c0ed78f663b765baaff54a508e5483786bd6ece73c5e3e3cbe"
     # Where the bundle rides inside the env image — the path the image
     # manifest's class-R materialize list declares (as "/ssl/cert.pem").
     IN_IMAGE_PATH = File.join("ssl", "cert.pem").freeze
