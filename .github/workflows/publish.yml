@@ -664,6 +664,35 @@ jobs:
               ;;
           esac
 
+      # Immediacy, not correctness (tebako-packages/registry#5). The
+      # official aggregate polls every six hours, so a publish stays
+      # invisible to `tebako install` until the next tick. Fired only AFTER
+      # the registry PR is merged (the aggregate reads this feedstock's
+      # registry at its default branch); an undeliverable dispatch warns and
+      # leaves the cron as the floor.
+      - name: Nudge the official registry's aggregate
+        env:
+          GH_TOKEN: ${{ secrets.TEBAKO_CI_PAT_TOKEN }}
+        run: |
+          set -uo pipefail
+          version="$(cat VERSION)"
+          branch="publish/v${version}-registry"
+          merged=""
+          for _ in $(seq 1 30); do
+            merged=$(gh pr list --head "$branch" --state merged --json number --jq '.[0].number // empty' 2>/dev/null || true)
+            [ -n "$merged" ] && break
+            sleep 10
+          done
+          if [ -z "$merged" ]; then
+            echo "::warning::the registry row is not on main yet — the six-hourly tick catches it"
+            exit 0
+          fi
+          gh api repos/tebako-packages/registry/dispatches \
+            -f event_type=feedstock-published \
+            -f client_payload[feedstock]="${{ github.repository }}" \
+            -f client_payload[tag]="${{ github.ref_name }}" \
+            || echo "::warning::the aggregate dispatch failed — the six-hourly tick still catches it"
+
       - name: Ping the versions catalog
         if: ${{ always() && success() }}
         continue-on-error: true
