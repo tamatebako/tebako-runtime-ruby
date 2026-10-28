@@ -271,8 +271,24 @@ module TebakoRuntimeBuilder
       libs = rust_link_libraries.reject { |path| covered.include?(File.basename(path)) }
       ["-Wl,--start-group",
        "-Wl,--whole-archive -l:libtebako-fs.a -Wl,--no-whole-archive"] +
+        exe_shape_libraries +
         libs +
         ["-Wl,--end-group"] + platform_libraries + ["-l:libz.a"]
+    end
+
+    # The exe shape's file-IO family (spec 22 §3.6, tebako#953): the link
+    # unit's libtfs_preload.a, whole-archived so the interpose objects are
+    # pulled even though nothing references them statically — preemption
+    # IS the reference. The export-dynamic flag puts tebako_preload_init
+    # in the dynamic symbol table, which is where the driver's dlsym arm
+    # reads it; without it the family links but stays invisible, and the
+    # driver's jailed boot says so on stderr. Absent from a pre-#953 link
+    # unit, and the runtime then boots byte-identically to before.
+    def exe_shape_libraries
+      path = File.join(rust_libdir.to_s, "libtfs_preload.a")
+      return [] unless rust_libdir && File.file?(path)
+
+      ["-Wl,--whole-archive #{path} -Wl,--no-whole-archive", "-Wl,--export-dynamic"]
     end
 
     # The closure archives the platform set already covers, by basename

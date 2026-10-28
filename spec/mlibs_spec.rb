@@ -93,6 +93,26 @@ RSpec.describe TebakoRuntimeBuilder::Mlibs do
       expect(result).not_to include("closure/liblzma.a")
       expect(result).to include("#{root}/closure/libfmt.a")
     end
+
+    it "ships no exe-shape link when the unit has no libtfs_preload.a (pre-#953 units boot unchanged)" do
+      result = mlibs.compute(ruby_ver)
+      expect(result).not_to include("libtfs_preload.a")
+      expect(result).not_to include("--export-dynamic")
+    end
+
+    context "with the exe-shape archive in the unit (tebako#953 and later)" do
+      before { FileUtils.touch(File.join(root, "libtfs_preload.a")) }
+
+      it "whole-archives the family and exports the driver's arm target" do
+        result = mlibs.compute(ruby_ver)
+        expect(result).to start_with(
+          "-Wl,--start-group " \
+          "-Wl,--whole-archive -l:libtebako-fs.a -Wl,--no-whole-archive " \
+          "-Wl,--whole-archive #{root}/libtfs_preload.a -Wl,--no-whole-archive " \
+          "-Wl,--export-dynamic #{root}/libtebako_driver.a"
+        )
+      end
+    end
   end
 
   context "on msys" do
