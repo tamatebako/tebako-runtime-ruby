@@ -12,10 +12,11 @@ name: bump-source-pin
 # already at that tag or the bump branch already exists. The branch is
 # pushed once, plainly -- never force-pushed.
 #
-# The PAT (TEBAKO_CI_PAT_TOKEN, the same secret the other tamatebako repos
-# use for cross-repo work) is used for the push and PR creation so the
-# pull_request event actually triggers CI; a PR created with the default
-# GITHUB_TOKEN would not. GITHUB_TOKEN is the fallback.
+# The tebako-fleet App's installation token (tebako-release#3) is used
+# for the push and PR creation so the pull_request event actually
+# triggers CI; a PR created with the default GITHUB_TOKEN would not. The
+# token also spends its own per-installation rate budget instead of the
+# shared per-user PAT it replaces.
 
 on:
   repository_dispatch:
@@ -42,10 +43,18 @@ jobs:
     name: bump DEFAULT_RELEASE to ${{ github.event.client_payload.tag || inputs.tag }}
     runs-on: ubuntu-latest
     steps:
+      # Minted FIRST: the checkout's persisted credentials are the App
+      # token, so the later branch push is the App's doing (CI fires).
+      - name: Mint the fleet token
+        id: fleet
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.TEBAKO_CI_APP_ID }}
+          private-key: ${{ secrets.TEBAKO_CI_APP_PRIVATE_KEY }}
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          token: ${{ secrets.TEBAKO_CI_PAT_TOKEN || secrets.GITHUB_TOKEN }}
+          token: ${{ steps.fleet.outputs.token }}
 
       # The dry-run: compute the whole bump from the two published release
       # indexes (pin move + vocabulary delta) and report it — nothing is
@@ -126,7 +135,7 @@ jobs:
         if: ${{ !inputs.dry_run && steps.bump.outputs.changed == 'true' }}
         id: vocab
         env:
-          GH_TOKEN: ${{ secrets.TEBAKO_CI_PAT_TOKEN || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.fleet.outputs.token }}
           TAG: ${{ github.event.client_payload.tag || inputs.tag }}
           CURRENT: ${{ steps.bump.outputs.current }}
         run: |
@@ -145,7 +154,7 @@ jobs:
       - name: push branch and open pull request
         if: ${{ !inputs.dry_run && steps.bump.outputs.changed == 'true' }}
         env:
-          GH_TOKEN: ${{ secrets.TEBAKO_CI_PAT_TOKEN || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.fleet.outputs.token }}
           TAG: ${{ github.event.client_payload.tag || inputs.tag }}
           CURRENT: ${{ steps.bump.outputs.current }}
           BRANCH: ${{ steps.bump.outputs.branch }}
