@@ -203,7 +203,16 @@ container_version: "0.16.2"
 # `AT_SYMLINK_NOFOLLOW` answer in `statx`, and `scandir`/`scandir64` from
 # the mounts. Everything this factory ships EMBEDS the unit, so a pair built
 # from this pin is the only way a payload gets the fix.
-link_unit_release: "v2.8.66"
+# v2.8.65 -> v2.8.66: the syscall forward keeps no locks (tebako#935's
+# follow-up: a first intercepted syscall in a process's earliest startup
+# deadlocked under the loader lock).
+# v2.8.66 -> v2.8.67: the unit gains a third scoped archive on the linux
+# legs — libtfs_preload.a built exe-shape (the file-IO interpose family,
+# spec 22 §3.6). mlibs whole-archives it into the exe WITH
+# --export-dynamic when the unit carries it (tebako#952's driver arm then
+# finds tebako_preload_init), so runtimes built from this pin close the
+# in-exe libcrypto jail hole (tebako-runtime-ruby#126).
+link_unit_release: "v2.8.67"
 
 # The registry-render gate's reader pin (trr#241): the tamatebako/tebako
 # release whose CLI validates every accumulated registry mirror with
