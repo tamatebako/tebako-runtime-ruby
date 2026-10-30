@@ -187,6 +187,7 @@ module TebakoRuntimeBuilder
       materialize_ruby_dll
       extra_argv = INTERPOSE_SCENARIOS.include?(scenario) ? interpose_argv : []
       out, err, status = boot(scenario, mount_root_override: mount_root_override, extra_argv: extra_argv)
+      dump_trace(scenario)
       Run.new(scenario: scenario, stdout: out, stderr: err, status: status)
     end
 
@@ -203,11 +204,11 @@ module TebakoRuntimeBuilder
         out, err, status = Timeout.timeout(BOOT_TIMEOUT) do
           Open3.capture3(entry_env, executable, "--tebako-entry", name, *args, chdir: cwd)
         end
-        dump_trace
+        dump_trace("entry:#{name}")
         Run.new(scenario: "entry:#{name}", stdout: out, stderr: err, status: status)
       end
     rescue Timeout::Error
-      dump_trace
+      dump_trace("entry:#{name} TIMEOUT")
       Run.new(scenario: "entry:#{name}", stdout: "",
               stderr: "boot-smoke entry: runtime did not exit within #{BOOT_TIMEOUT}s", status: nil)
     end
@@ -219,8 +220,10 @@ module TebakoRuntimeBuilder
     # materialization answer looks like. The tail alone drowned the seam
     # (the exit-time dlcache walk floods the last-40 window), so the dump
     # leads with the decision events — dlopen/materialize/exec/spawn and
-    # every error verdict — and closes with the raw tail.
-    def dump_trace
+    # every error verdict — and closes with the raw tail. The label ties
+    # the dump to the leg that produced it (the file accumulates across
+    # legs).
+    def dump_trace(label = nil)
       trace = ENV["TEBAKO_TRACE_SMOKE"]
       return unless trace && File.file?(trace)
 
@@ -228,9 +231,9 @@ module TebakoRuntimeBuilder
       decisions = lines.select do |line|
         line.match?(/"op":"(dlopen|materialize|exec|spawn)"/) || line.include?('"verdict":"error')
       end
-      puts "== tebako trace decisions (#{decisions.size} of #{lines.size} lines in #{trace}) =="
+      puts "== tebako trace decisions (#{label || 'run'}: #{decisions.size} of #{lines.size} lines in #{trace}) =="
       puts decisions.last(160)
-      puts "== tebako trace tail (the last 15 lines) =="
+      puts "== tebako trace tail (#{label || 'run'}: the last 15 lines) =="
       puts lines.last(15)
     end
 
@@ -355,6 +358,10 @@ module TebakoRuntimeBuilder
       image = "#{executable}.tfs"
       env["TEBAKO_RUNTIME_IMAGE"] = image if File.file?(image)
       env["TEBAKO_MOUNT_ROOT"] = mount_root_override if mount_root_override
+      # DEBUG: the same trace arm as entry_env — the class-L/E legs ride
+      # this path, and their dlopen/materialize decisions are the seam's
+      # evidence. Never set on main.
+      env["TEBAKO_TRACE"] = ENV["TEBAKO_TRACE_SMOKE"] if ENV["TEBAKO_TRACE_SMOKE"]
       support_dll_expectation(env)
       arm_jit_scenario_env(env, scenario)
       magnus_fixture_env(env, scenario)
