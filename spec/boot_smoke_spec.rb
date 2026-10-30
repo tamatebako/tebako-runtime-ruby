@@ -1060,7 +1060,7 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
         end
 
         image = "#{smoke.executable}.tfs"
-        probe = <<~RUBY
+        probe = <<~'RUBY'
           require "openssl"
           begin
             OpenSSL::X509::Store.new.add_file("/etc/ssl/cert.pem")
