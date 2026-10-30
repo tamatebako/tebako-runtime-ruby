@@ -1672,6 +1672,11 @@ jobs:
           # never happens. The spec fails on ANY drift from this record,
           # either way.
           TEBAKO_SMOKE_EXPECT_OPENSSL: ok
+          # DEBUG BRANCH ONLY: the exe-shape seam's evidence. The driver's
+          # spec-25 trace lands in this file and the smoke dumps its tail
+          # after each run (tebako-runtime-ruby#307's passthrough). Never
+          # set on main.
+          TEBAKO_TRACE_SMOKE: ${{ github.workspace }}/tebako-trace.log
         run: |
           set -euo pipefail
           # The magnus fixture gate (issue #192) compiles a magnus
