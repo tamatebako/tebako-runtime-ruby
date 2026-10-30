@@ -75,7 +75,7 @@
       "xcode": "16.1"
     },
     {
-      "host": "macos-14",
+      "host": "macos-15",
       "container": null,
       "os": "macos",
       "arch": "arm64",
