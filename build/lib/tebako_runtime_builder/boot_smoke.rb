@@ -216,13 +216,22 @@ module TebakoRuntimeBuilder
 
     # The trace dump behind TEBAKO_TRACE_SMOKE: the driver's trace (spec 25)
     # lands in the named file; after the run its tail is what a failed
-    # materialization answer looks like.
+    # materialization answer looks like. The tail alone drowned the seam
+    # (the exit-time dlcache walk floods the last-40 window), so the dump
+    # leads with the decision events — dlopen/materialize/exec/spawn and
+    # every error verdict — and closes with the raw tail.
     def dump_trace
       trace = ENV["TEBAKO_TRACE_SMOKE"]
       return unless trace && File.file?(trace)
 
-      puts "== tebako trace (the last 40 lines of #{trace}) =="
-      puts File.readlines(trace).last(40)
+      lines = File.readlines(trace)
+      decisions = lines.select do |line|
+        line.match?(/"op":"(dlopen|materialize|exec|spawn)"/) || line.include?('"verdict":"error')
+      end
+      puts "== tebako trace decisions (#{decisions.size} of #{lines.size} lines in #{trace}) =="
+      puts decisions.last(160)
+      puts "== tebako trace tail (the last 15 lines) =="
+      puts lines.last(15)
     end
 
     # The msys shared build (issue #40): the exe's PE imports resolve
