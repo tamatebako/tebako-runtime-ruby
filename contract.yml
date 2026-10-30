@@ -212,7 +212,11 @@ container_version: "0.16.2"
 # --export-dynamic when the unit carries it (tebako#952's driver arm then
 # finds tebako_preload_init), so runtimes built from this pin close the
 # in-exe libcrypto jail hole (tebako-runtime-ruby#126).
-link_unit_release: "v2.8.67"
+# v2.8.67 -> v2.8.68: the exe-shape family's engine-IO guard (tebako#965)
+# — a C ABI materialization's host writes no longer re-enter the armed
+# family (the phantom-cache class the v2.8.67 smoke proved), and a dlmap
+# spelling of a directory answers the host tree instead of EISDIR.
+link_unit_release: "v2.8.68"
 
 # The registry-render gate's reader pin (trr#241): the tamatebako/tebako
 # release whose CLI validates every accumulated registry mirror with
