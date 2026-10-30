@@ -1036,6 +1036,62 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
       end
     end
 
+    describe "the exe shape's own file-IO family (spec 22 §3.6)" do
+      # The §3.6 acceptance on a built runtime: the exe statically links
+      # libcrypto, whose BIO_new_file calls fopen64 directly — past every
+      # loader interposition — so a jailed run must deny its read of an
+      # ungranted host path, and the journal must carry the denial. The
+      # assertion is "the read is denied", never the error class: a PARSE
+      # error would mean the bytes were read, which IS the hole. The
+      # transition gate (ruby#151): the leg asserts only when the exe
+      # exports tebako_preload_init in its dynamic symbol table — the
+      # factory's --export-dynamic marks a family-carrying link, and the
+      # driver's dlsym arm reads it there. ELF-only: static preemption is
+      # an ELF mechanism (macOS's answer is the §2 micro dylib gaining the
+      # family's tuples — its own later step).
+      def family_carrying?(exe)
+        Open3.capture2e("nm", "-D", exe).first.include?("tebako_preload_init")
+      end
+
+      it "denies the in-exe libcrypto read of an ungranted host cert under TEBAKO_JAIL=deny, journaled" do
+        skip "the exe shape is ELF-only" unless smoke.platform.linux?
+        unless family_carrying?(smoke.executable)
+          skip "this runtime exports no tebako_preload_init — a pre-family link unit (the leg asserts from the §3.6 pin on)"
+        end
+
+        image = "#{smoke.executable}.tfs"
+        probe = <<~RUBY
+          require "openssl"
+          begin
+            OpenSSL::X509::Store.new.add_file("/etc/ssl/cert.pem")
+            puts "CERT-READ-REACHED-HOST"
+          rescue OpenSSL::X509::CertificateError
+            # A parse verdict means the bytes were READ — the hole itself.
+            puts "CERT-READ-REACHED-HOST"
+          rescue SystemCallError, OpenSSL::X509::StoreError => e
+            puts "CERT-READ-DENIED #{e.class}"
+          end
+        RUBY
+
+        Dir.mktmpdir("tebako-exe-shape-jail") do |scratch|
+          env = { "TEBAKO_JAIL" => "deny;#{scratch}:#{scratch}:rw",
+                  "TEBAKO_JAIL_JOURNAL" => File.join(scratch, "journal.log") }
+          env["TEBAKO_RUNTIME_IMAGE"] = image if File.file?(image)
+          # cwd rides inside the granted scratch (the jailed_exec leg's
+          # cwd-canonicalization lesson); the cert path is deliberately
+          # outside every grant.
+          out, err, status = Open3.capture3(env, smoke.executable, "-e", probe, chdir: scratch)
+          expect(out).to include("CERT-READ-DENIED"),
+                         "the in-exe cert read must be denied under a deny default, never reach the host:\n#{out}\n#{err}"
+          expect(out).not_to include("CERT-READ-REACHED-HOST")
+          journal = File.read(env["TEBAKO_JAIL_JOURNAL"])
+          expect(journal).to include("/etc/ssl"),
+                             "the denial must name the cert path in the audit journal:\n#{journal}"
+          expect(status).to be_success
+        end
+      end
+    end
+
     describe "the era-2 release card (spec 18 C2, gated pre-upload)" do
       # Host-side validation of the manifest entry's contract fields
       # BEFORE the artifacts leave the leg -- the 0.16.2 corrupt-manifest
