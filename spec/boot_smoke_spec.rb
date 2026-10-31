@@ -1074,8 +1074,16 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
         RUBY
 
         Dir.mktmpdir("tebako-exe-shape-jail") do |scratch|
-          env = { "TEBAKO_JAIL" => "deny;#{scratch}:#{scratch}:rw",
-                  "TEBAKO_JAIL_JOURNAL" => File.join(scratch, "journal.log") }
+          # The child is a bare runtime boot: the harness's own ruby env
+          # (RUBYOPT's bundler setup, the runner's GEM_HOME/GEM_PATH) must
+          # never reach it — under the jail those host reads are EPERM
+          # and the boot dies before the probe runs (the first red was
+          # exactly that). The boot_env scrub plus RUBYOPT, then the jail
+          # and the image.
+          env = described_class::ENV_SCRUBBED.to_h { |key| [key, nil] }
+          env["RUBYOPT"] = nil
+          env["TEBAKO_JAIL"] = "deny;#{scratch}:#{scratch}:rw"
+          env["TEBAKO_JAIL_JOURNAL"] = File.join(scratch, "journal.log")
           env["TEBAKO_RUNTIME_IMAGE"] = image if File.file?(image)
           # cwd rides inside the granted scratch (the jailed_exec leg's
           # cwd-canonicalization lesson); the cert path is deliberately
