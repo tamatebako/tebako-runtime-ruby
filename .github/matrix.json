@@ -44,25 +44,25 @@
   },
   "env": [
     {
-      "host": "ubuntu-22.04",
+      "host": "ubuntu-24.04",
       "container": "ubuntu-20.04",
       "os": "linux-gnu",
       "arch": "x86_64"
     },
     {
-      "host": "ubuntu-22.04-arm",
+      "host": "ubuntu-24.04-arm",
       "container": "ubuntu-20.04",
       "os": "linux-gnu",
       "arch": "arm64"
     },
     {
-      "host": "ubuntu-22.04",
+      "host": "ubuntu-24.04",
       "container": "alpine-3.17",
       "os": "linux-musl",
       "arch": "x86_64"
     },
     {
-      "host": "ubuntu-22.04-arm",
+      "host": "ubuntu-24.04-arm",
       "container": "alpine-3.17",
       "os": "linux-musl",
       "arch": "arm64"
