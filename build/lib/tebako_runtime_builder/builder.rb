@@ -55,6 +55,11 @@ module TebakoRuntimeBuilder
     end
 
     def run # rubocop:disable Metrics/MethodLength,Metrics/AbcSize -- the build's ordered stages, one call per line
+      TebakoRuntimeBuilder::BuildHelpers.with_env(floor_env) { run_stages }
+    end
+
+    # The build's ordered stages, one call per line (the run body).
+    def run_stages
       check_image_shape!
       assets = fetcher.fetch_assets(@ruby_version, @platform)
       puts "-- Building tebako runtime for ruby #{@ruby_version} " \
@@ -70,6 +75,22 @@ module TebakoRuntimeBuilder
       write_abi_sidecar
       write_contract_sidecar(assets)
       @output
+    end
+
+    # The macOS support floor rides the WHOLE build as
+    # MACOSX_DEPLOYMENT_TARGET — the CMake configure+build compile and
+    # link every object, and the exe's recorded LC_BUILD_VERSION minos is
+    # whatever clang defaults to on the build host. Unpinned, the stamp
+    # floats with the runner image (tebako-runtime-ruby#317: v0.17.5
+    # records 15.0 from the macos-15 fleet and refuses every 14.x host —
+    # v0.17.4 recorded 14.0 from macos-14). The pin is contract.yml's
+    # macos_deployment_target, uniform across arches, asserted at
+    # ci/check_symbol_provenance.sh. Off-macOS the env is empty and
+    # with_env changes nothing.
+    def floor_env
+      return {} unless @platform.macos?
+
+      { "MACOSX_DEPLOYMENT_TARGET" => contract.macos_deployment_target }
     end
 
     # The package name's era gate (tebako#716) lives in PackageName and

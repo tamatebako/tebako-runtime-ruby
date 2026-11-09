@@ -149,6 +149,20 @@ if [ -n "$REAL_ARCHIVE" ]; then
   fi
 fi
 
+# The support floor is a pinned product decision (contract.yml's
+# macos_deployment_target), never the runner image's accident — v0.17.5
+# floated to 15.0 on the macos-15 fleet and refused every 14.x host
+# (tebako-runtime-ruby#317). The recorded LC_BUILD_VERSION minos must BE
+# the pin.
+if command -v otool >/dev/null 2>&1 && otool -l "$EXE" 2>/dev/null | grep -q "LC_BUILD_VERSION\|LC_VERSION_MIN_MACOSX"; then
+  floor=$(sed -n 's/^macos_deployment_target: *"\([^"]*\)".*/\1/p' "$(cd "$(dirname "$0")/.." && pwd)/contract.yml")
+  [ -z "$floor" ] && fail "contract.yml carries no macos_deployment_target pin — the floor cannot float (tebako-runtime-ruby#317)"
+  minos="$(otool -l "$EXE" 2>/dev/null | awk '/cmd LC_VERSION_MIN_MACOSX|cmd LC_BUILD_VERSION/ {found=1} found && /^    minos / {print $2; exit}' || true)"
+  [ -z "$minos" ] && fail "otool -l on $EXE yielded no minos record — a Mach-O without a support floor cannot be gated"
+  [ "$minos" = "$floor" ] || fail "$EXE records minos $minos but contract.yml pins $floor — the macOS floor floated with the runner image (tebako-runtime-ruby#317)"
+  note "the exe's recorded support floor is the pinned $floor"
+fi
+
 if [ "$failures" -gt 0 ]; then
   echo "::error::provenance: $failures check(s) failed — the stub-shadow class (spec 18 S51)"
   exit 1
