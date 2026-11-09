@@ -27,6 +27,18 @@
 ---
 contract_version: 2
 container_version: "0.16.2"
+# The macOS support floor for the macOS legs — the value clang stamps as
+# the exe's LC_BUILD_VERSION minos. A PRODUCT decision, never the runner
+# image's accident: unpinned, the floor floats with the build host's OS,
+# and the macos-14 fleet's retirement moved it (v0.17.4 recorded 14.0;
+# v0.17.5, built on macos-15, records 15.0 and refuses every 14.x host —
+# tebako-runtime-ruby#317). 14.0 is the 0.17.x line's floor, applied to
+# the WHOLE build (configure's probes compile+link; the exe's final link
+# runs inside make), uniform across arches, asserted at the provenance
+# gate (ci/check_symbol_provenance.sh fails the leg when the recorded
+# minos is not this value). The python factory carries the same pin
+# (tebako-runtime-python#81).
+macos_deployment_target: "14.0"
 # The published link-unit pin: the tamatebako/tebako release whose
 # prebuilt link unit (driver + scoped tfs + the native closure, per
 # triplet) the legs CONSUME as a download instead of building from

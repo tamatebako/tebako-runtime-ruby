@@ -51,5 +51,19 @@ module TebakoRuntimeBuilder
     def link_unit_release
       @data.fetch("link_unit_release", "").to_s
     end
+
+    # The macOS support floor (the exe's LC_BUILD_VERSION minos) — a
+    # product decision, never the runner image's accident
+    # (tebako-runtime-ruby#317: v0.17.5 floated to 15.0 on the macos-15
+    # fleet and refused every 14.x host). Fail-closed when absent or
+    # empty — the macOS legs cannot build without the pin.
+    def macos_deployment_target
+      value = @data.fetch("macos_deployment_target", "").to_s
+      return value unless value.empty?
+
+      raise TebakoRuntimeBuilder::Error.new(
+        "#{@path} carries no macos_deployment_target pin — the macOS support floor is a product decision, never the runner image's accident (tebako-runtime-ruby#317)", 64
+      )
+    end
   end
 end

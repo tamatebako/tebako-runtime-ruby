@@ -13,6 +13,10 @@ properties:
     type: string
     pattern: '^\d+\.\d+\.\d+$'
     description: the toolchain container line the builds run inside (an axis independent of the artifact version)
+  macos_deployment_target:
+    type: string
+    pattern: '^\d+\.\d+$'
+    description: the macOS support floor stamped into the exe's LC_BUILD_VERSION minos (MACOSX_DEPLOYMENT_TARGET), uniform across arches and asserted at the provenance gate (tebako-runtime-ruby#317)
   link_unit_release:
     type: string
     pattern: '^$|^v\d+\.\d+\.\d+$'
