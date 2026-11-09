@@ -216,7 +216,7 @@ container_version: "0.16.2"
 # — a C ABI materialization's host writes no longer re-enter the armed
 # family (the phantom-cache class the v2.8.67 smoke proved), and a dlmap
 # spelling of a directory answers the host tree instead of EISDIR.
-link_unit_release: "v2.8.73"
+link_unit_release: "v2.8.74"
 
 # The registry-render gate's reader pin (trr#241): the tamatebako/tebako
 # release whose CLI validates every accumulated registry mirror with
