@@ -228,7 +228,14 @@ macos_deployment_target: "14.0"
 # — a C ABI materialization's host writes no longer re-enter the armed
 # family (the phantom-cache class the v2.8.67 smoke proved), and a dlmap
 # spelling of a directory answers the host tree instead of EISDIR.
-link_unit_release: "v2.8.74"
+# v2.8.74 -> v2.8.75: the unit's macOS binaries build floored —
+# MACOSX_DEPLOYMENT_TARGET=14.0 reaches the dwarfs-t closure and the
+# vendored C++ (tebako-runtime-ruby#323: v0.17.6's exe recorded minos
+# 14.0 and still hard-referenced macOS-15 libc++ symbols, dying at dyld
+# on 14.x hosts), and the product's new floor symbol gate proves the
+# link-level reality per release leg. A pair built from this pin boots
+# on the declared floor.
+link_unit_release: "v2.8.75"
 
 # The registry-render gate's reader pin (trr#241): the tamatebako/tebako
 # release whose CLI validates every accumulated registry mirror with
