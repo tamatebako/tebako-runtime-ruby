@@ -235,7 +235,13 @@ macos_deployment_target: "14.0"
 # on 14.x hosts), and the product's new floor symbol gate proves the
 # link-level reality per release leg. A pair built from this pin boots
 # on the declared floor.
-link_unit_release: "v2.8.75"
+# v2.8.75 -> v2.8.76: the tfs relative-cwd guard (tebako#1031,
+# tebako-runtime-ruby#326): a relative cwd spelling presented to the
+# armed in-exe IO family no longer answers as the VFS namespace root —
+# runtime lines 0.17.5+ died silently at native-extension builds without
+# it (mkmf's Dir glob read empty). Every runtime pair built from this
+# pin carries the guard.
+link_unit_release: "v2.8.76"
 
 # The registry-render gate's reader pin (trr#241): the tamatebako/tebako
 # release whose CLI validates every accumulated registry mirror with
