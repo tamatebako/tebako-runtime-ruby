@@ -33,8 +33,15 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 # Key 1E9377A2BA9EF27F ("Launchpad Toolchain builds") is the ppa's
 # published signer; the ppa ships gcc-11/g++-11 for focal amd64 AND arm64.
-curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x1E9377A2BA9EF27F" \
-  | gpg --dearmor -o /usr/share/keyrings/toolchainr.gpg
+for i in 1 2 3 4 5; do
+  if curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x1E9377A2BA9EF27F" \
+      | gpg --dearmor -o /usr/share/keyrings/toolchainr.gpg; then
+    break
+  fi
+  [ "$i" = 5 ] && { echo "::error::keyserver.ubuntu.com unreachable after 5 attempts"; exit 1; }
+  echo "::warning::keyserver fetch failed (attempt $i/5) — retrying in $((i*10))s"
+  sleep $((i*10))
+done
 echo "deb [signed-by=/usr/share/keyrings/toolchainr.gpg] http://ppa.launchpad.net/ubuntu-toolchain-r/test/ubuntu focal main" \
   > /etc/apt/sources.list.d/toolchainr.list
 apt-get update -qq
