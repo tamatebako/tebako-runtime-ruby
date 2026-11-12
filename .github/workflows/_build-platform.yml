@@ -197,7 +197,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .build/spec22-roll
-          key: spec22-src-roll-v2-${{ inputs.platform }}-${{ hashFiles('ruby-src/versions.yml', 'ruby-src/patches/**', 'ruby-src/schema/**', 'ruby-src/tools/**') }}
+          key: spec22-src-roll-v2-${{ inputs.platform }}-${{ hashFiles('ruby-src/versions.yml', 'ruby-src/patches/**', 'ruby-src/schema/**', 'ruby-src/tools/**', 'build/lib/tebako_runtime_builder/source_fetcher.rb') }}
 
       - name: Setup Ruby
         if: steps.roll-cache.outputs.cache-hit != 'true'
