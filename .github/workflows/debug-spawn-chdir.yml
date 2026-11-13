@@ -45,6 +45,18 @@ jobs:
       RB: ${{ inputs.ruby_version }}
       TOOLS: ${{ inputs.tebako_tools }}
     steps:
+      - name: Set up MSYS2
+        # the windows-2025-vs2026 image carries no runner-visible msys2 —
+        # shell: msys2 dies "msys2: command not found" without this (the
+        # metanorma feedstock's windows legs set it up for the same reason).
+        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2.32.0
+        with:
+          msystem: ucrt64
+          path-type: minimal
+          install: >-
+            curl
+            tar
+
       - name: Fetch the published pair + the tfs CLI (sha256-verified)
         shell: msys2 {0}
         run: |
