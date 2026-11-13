@@ -131,5 +131,18 @@ RUBY
           export MSYS2_ARG_CONV_EXCL='*' MSYS2_ENV_CONV_EXCL='*'
           stem="tebako-runtime-${LINE}-ruby-${RB}-windows-ucrt64"
           export TEBAKO_RUNTIME_IMAGE="$(cygpath -m "$PWD/$stem.tfs")"
-          "./$stem.exe" --tebako-image "$(cygpath -m "$PWD/probe.tfs"):-:/probe" --tebako-entry /run.rb
-          echo "probe-run exit: $?"
+          # tee to a file AND upload it: a previous rig run's exe stdout
+          # vanished under the msys2 wrapper (clean exit 0, nothing
+          # captured) — the artifact is the capture-proof channel.
+          "./$stem.exe" --tebako-image "$(cygpath -m "$PWD/probe.tfs"):-:/probe" --tebako-entry /run.rb 2>&1 | tee probe-output.txt
+          echo "probe-run exit: ${PIPESTATUS[0]}"
+
+      - name: Upload the probe output
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: spawn-chdir-probe-output
+          retention-days: 30
+          path: probe-output.txt
+          if-no-files-found: warn
+
