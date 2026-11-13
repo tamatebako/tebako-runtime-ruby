@@ -199,3 +199,31 @@ release'` route exists for back-compat only.
   the workspace ledger for the rest of the run. No delete, no upload —
   no wedge. FORCE_REBUILD keeps the replace path as-is; a missing name
   still uploads fresh and the completeness gate still fails on one.
+
+## Incident field notes (2026-11-13, the Apple PLA expiry)
+
+- Symptom: the v0.17.10 full publish (run 43387783522) failed every macOS
+  package leg (9 of 10; the tenth was still building when diagnosed) at the
+  notarize step, after codesign verified clean: `Error: HTTP status code:
+  403. A required agreement is missing or has expired.` The linux and
+  windows legs were unaffected; the publish stage correctly held (never a
+  partial release).
+- Root cause: Apple refreshed the Developer Program License Agreement
+  overnight — the same App Store Connect API key had notarized v0.17.9's
+  macOS legs green ~15 hours earlier, so the credentials were fine; the
+  legal agreement under them had lapsed. This is an account-level state,
+  not a key, cert, or workflow fault: nothing in CI can see it coming and
+  no retry fixes it.
+- Diagnosis path: all failures in one platform family, identical 403 text,
+  codesign green + notarize red. That signature IS the expired agreement —
+  do not rotate keys or touch the p12; they are not implicated.
+- Fix (owner-only, ~5 min): the Account Holder signs in at
+  appstoreconnect.apple.com and accepts the pending agreement (banner, or
+  Business → Agreements). Effective immediately. Then `gh run rerun <id>
+  --failed` once the run has no active jobs — the green linux/windows legs
+  are not rebuilt; only the failed macOS legs re-run, and the publish
+  stage proceeds on the full matrix.
+- Standing note: any 403 from the notary with "agreement" in the body is
+  this. Budget the blast radius as every macOS leg in every repo that
+  signs (runtimes, packed payloads, the product) until the account holder
+  accepts.
