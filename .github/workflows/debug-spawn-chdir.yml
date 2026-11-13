@@ -1,0 +1,113 @@
+name: debug-spawn-chdir
+
+# tebako-runtime-ruby#344's diagnostic: the v0.17.x windows runtimes fail
+# tebako-packages/metanorma's html-xml check with a silent exit 1, and the
+# suspect is the spawn chdir file-action arm (tamatebako/ruby#152/#155) on
+# the windows spawn path. The consumer check swallows the child's output,
+# so this rig reproduces the spawn IN ISOLATION on the published runtime
+# and prints everything.
+#
+# Three probes against the published windows pair, one variable at a time:
+#   A) a plain child spawn (no chdir)          — is spawn itself broken?
+#   B) spawn with chdir into a HOST tmpdir     — is chdir broken generally?
+#   C) spawn with chdir into the MOUNTED image — the #333 case: the arm
+#      must materialize the in-image dir to a host twin and rewrite the
+#      chdir. The failure lives here or nowhere.
+#
+# Dispatch-only; gates nothing; the log IS the evidence.
+
+on:
+  workflow_dispatch:
+    inputs:
+      line:
+        description: 'the runtime release line under test'
+        type: string
+        default: '0.17.10'
+      ruby_version:
+        description: 'the ruby series inside the pair'
+        type: string
+        default: '3.3.13'
+      tebako_tools:
+        description: 'the tebako CLI release providing tfs.exe'
+        type: string
+        default: 'v2.8.78'
+
+permissions:
+  contents: read
+
+jobs:
+  repro:
+    name: spawn-chdir repro (windows-ucrt64)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      LINE: ${{ inputs.line }}
+      RB: ${{ inputs.ruby_version }}
+      TOOLS: ${{ inputs.tebako_tools }}
+    steps:
+      - name: Fetch the published pair + the tfs CLI (sha256-verified)
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          base="https://github.com/tamatebako/tebako-runtime-ruby/releases/download/v${LINE}"
+          stem="tebako-runtime-${LINE}-ruby-${RB}-windows-ucrt64"
+          # the ruby factory ships per-asset sidecars
+          for f in "$stem" "$stem.tfs" "$stem.dll"; do
+            curl -sfLO "$base/$f"
+            curl -sfLO "$base/$f.sha256"
+            sha256sum -c "$f.sha256"
+          done
+          mv "$stem" "$stem.exe"
+          # the PE import resolves the ruby DLL only as <cpu>-ucrt-ruby<ABI>.dll
+          # beside the exe (the store-entry rule; abi 330 for 3.3.x)
+          abi="${RB%%.*}$(echo "$RB" | cut -d. -f2)0"
+          cp "$stem.dll" "x64-ucrt-ruby${abi}.dll"
+          # tfs.exe from the tebako product release (the press tool)
+          tbase="https://github.com/tamatebako/tebako/releases/download/${TOOLS}"
+          curl -sfLO "$tbase/tfs-${TOOLS#v}-windows-ucrt64.exe"
+          curl -sfLO "$tbase/tfs-${TOOLS#v}-windows-ucrt64.exe.sha256"
+          sha256sum -c "tfs-${TOOLS#v}-windows-ucrt64.exe.sha256"
+          ls -la
+          file "$stem.exe" 2>/dev/null || true
+
+      - name: Build the probe fixture image
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          mkdir -p fixture/probe
+          echo "marker-ok" > fixture/probe/marker.txt
+          cat > fixture/probe/run.rb <<'RUBY'
+          require "open3"
+          require "tmpdir"
+          puts "probe: host=#{RUBY_PLATFORM} ruby=#{RUBY_DESCRIPTION}"
+          puts "probe: mount visible: #{File.exist?("/probe/marker.txt")}"
+
+          # A) plain spawn, no chdir
+          out, err, st = Open3.capture3(RbConfig.ruby, "-e", "print 'A-ok'")
+          puts "A plain-spawn: status=#{st.exitstatus.inspect} out=#{out.inspect} err=#{err.inspect}"
+
+          # B) chdir into a HOST tmpdir (never touches the VFS)
+          Dir.mktmpdir do |d|
+            out, err, st = Open3.capture3(RbConfig.ruby, "-e", "print Dir.pwd", chdir: d)
+            puts "B host-chdir: status=#{st.exitstatus.inspect} out=#{out.inspect} err=#{err.inspect} (want pwd=#{d})"
+          end
+
+          # C) chdir into the MOUNTED image — the #333 case; the arm must
+          #    materialize /probe to a host twin and rewrite the chdir
+          out, err, st = Open3.capture3(RbConfig.ruby, "-e", "print Dir.pwd + ' marker=' + File.read('marker.txt')", chdir: "/probe")
+          puts "C mount-chdir: status=#{st.exitstatus.inspect} out=#{out.inspect} err=#{err.inspect}"
+          RUBY
+          # press the fixture (limnifs, the default format; the same
+          # invocation the metanorma payload build uses)
+          ./tfs-*.exe mkimage --format limnifs fixture --output probe.tfs
+          ls -la probe.tfs
+
+      - name: Run the three probes against the published runtime
+        shell: msys2 {0}
+        run: |
+          set -uo pipefail
+          export MSYS2_ARG_CONV_EXCL='*' MSYS2_ENV_CONV_EXCL='*'
+          stem="tebako-runtime-${LINE}-ruby-${RB}-windows-ucrt64"
+          export TEBAKO_RUNTIME_IMAGE="$(cygpath -m "$PWD/$stem.tfs")"
+          "./$stem.exe" --tebako-image "$(cygpath -m "$PWD/probe.tfs"):-:/probe" --tebako-entry /probe/run.rb
+          echo "probe-run exit: $?"
