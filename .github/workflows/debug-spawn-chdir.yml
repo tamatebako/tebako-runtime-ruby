@@ -99,27 +99,30 @@ jobs:
           echo "marker-ok" > fixture/marker.txt
           cat > fixture/run.rb <<'RUBY'
           require "open3"
-          puts "probe: host=#{RUBY_PLATFORM} ruby=#{RUBY_DESCRIPTION}"
+          # the windows exe's stdout does not reach the msys2 pipe reliably
+          # (two rig runs captured zero bytes off a clean exit 0) — the
+          # evidence channel is a HOST file (the jail is open by default;
+          # cwd is the host workspace), uploaded as the artifact.
+          out = File.open("probe-results.txt", "w")
+          at_exit { out.close }
+          say = ->(s) { out.puts(s); out.flush; puts s }
+          say.call "probe: host=#{RUBY_PLATFORM} ruby=#{RUBY_DESCRIPTION}"
           dir = File.expand_path(__dir__)
-          puts "probe: __dir__ = #{dir.inspect}"
+          say.call "probe: __dir__ = #{dir.inspect}"
           exe = File.join(dir, "tool.exe")
-          puts "probe: marker visible: #{File.exist?(File.join(dir, "marker.txt"))}"
-          puts "probe: tool exists: #{File.exist?(exe)} (#{exe})"
+          say.call "probe: marker visible: #{File.exist?(File.join(dir, "marker.txt"))}"
+          say.call "probe: tool exists: #{File.exist?(exe)} (#{exe})"
 
-          def probe(tag)
-            out, err, st = yield
-            puts "#{tag}: status=#{st.exitstatus.inspect} out=#{out.inspect[0,60]} err=#{err.inspect[0,140]}"
-          rescue => e
-            puts "#{tag}: RAISED #{e.class}: #{e.message}"
+          def probe(out, tag)
+            o, e, st = yield
+            out.puts "#{tag}: status=#{st.exitstatus.inspect} out=#{o.inspect[0,60]} err=#{e.inspect[0,140]}"
+          rescue => ex
+            out.puts "#{tag}: RAISED #{ex.class}: #{ex.message}"
           end
 
-          # A) plain spawn of the in-image exe — the exec-target
-          #    materialization path, no chdir
-          probe("A plain-spawn") { Open3.capture3(exe) }
-
-          # B) spawn with chdir into the MOUNT — the #333/#344 shape
-          #    (sass-embedded's Open3.popen3 into its gem dir)
-          probe("B chdir-spawn") { Open3.capture3(exe, chdir: dir) }
+          probe(out, "A plain-spawn") { Open3.capture3(exe) }
+          probe(out, "B chdir-spawn") { Open3.capture3(exe, chdir: dir) }
+          say.call "probe: complete"
           RUBY
           ./tfs-*.exe mkimage --format limnifs fixture --output probe.tfs
           ls -la probe.tfs
@@ -136,6 +139,7 @@ jobs:
           # captured) — the artifact is the capture-proof channel.
           "./$stem.exe" --tebako-image "$(cygpath -m "$PWD/probe.tfs"):-:/probe" --tebako-entry /run.rb 2>&1 | tee probe-output.txt
           echo "probe-run exit: ${PIPESTATUS[0]}"
+          ls -la probe-results.txt 2>/dev/null || echo "no probe-results.txt — the script never ran"
 
       - name: Upload the probe output
         if: always()
@@ -143,6 +147,8 @@ jobs:
         with:
           name: spawn-chdir-probe-output
           retention-days: 30
-          path: probe-output.txt
+          path: |
+            probe-output.txt
+            probe-results.txt
           if-no-files-found: warn
 
