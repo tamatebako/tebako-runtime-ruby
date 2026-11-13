@@ -1,20 +1,23 @@
 name: debug-spawn-chdir
 
-# tebako-runtime-ruby#344's diagnostic: the v0.17.x windows runtimes fail
-# tebako-packages/metanorma's html-xml check with a silent exit 1, and the
-# suspect is the spawn chdir file-action arm (tamatebako/ruby#152/#155) on
-# the windows spawn path. The consumer check swallows the child's output,
-# so this rig reproduces the spawn IN ISOLATION on the published runtime
-# and prints everything.
+# tebako-runtime-ruby#344's diagnostic, v2: the v0.17.x windows runtimes
+# fail tebako-packages/metanorma's html-xml check with a silent exit 1.
+# The v1 rig probed the spawn of RbConfig.ruby — invalid: the env image
+# carries NO bin/ruby(.exe) on ANY platform (verified locally on the
+# v0.17.10 macOS pair), so those probes measured an honest ENOENT, not
+# the defect. The real failing shape is a spawn of an exe that EXISTS in
+# a mounted payload image, with chdir into the mount (sass-embedded's
+# Open3.popen3 into its gem dir).
 #
-# Three probes against the published windows pair, one variable at a time:
-#   A) a plain child spawn (no chdir)          — is spawn itself broken?
-#   B) spawn with chdir into a HOST tmpdir     — is chdir broken generally?
-#   C) spawn with chdir into the MOUNTED image — the #333 case: the arm
-#      must materialize the in-image dir to a host twin and rewrite the
-#      chdir. The failure lives here or nowhere.
-#
-# Dispatch-only; gates nothing; the log IS the evidence.
+# This rig mounts a fixture holding a REAL native exe (the published
+# tfs.exe as fixture/tool.exe) and runs two probes, POSIX-proven green
+# on the same rig's macOS local run:
+#   A) plain spawn of the in-image exe     — the exec-target
+#      materialization path alone
+#   B) spawn with chdir into the mount     — the chdir arm stacked on it
+# The entry is mount-relative (/run.rb — the driver resolves entry
+# against the mount as <mount>/<entry>). Dispatch-only; the log is the
+# evidence.
 
 on:
   workflow_dispatch:
@@ -86,57 +89,47 @@ jobs:
         shell: msys2 {0}
         run: |
           set -euo pipefail
-          mkdir -p fixture/probe
-          echo "marker-ok" > fixture/probe/marker.txt
-          cat > fixture/probe/run.rb <<'RUBY'
+          # the spawn target must EXIST in the image: the published tfs.exe
+          # is a real native exe — carry it as the fixture's tool. Layout at
+          # the image ROOT: the in-image path is /run.rb, /tool.exe —
+          # mounted at /probe, the entry is the mount-relative /run.rb (the
+          # driver resolves entry against the mount as <mount>/<entry>).
+          mkdir -p fixture
+          cp "tfs-${TOOLS#v}-windows-ucrt64.exe" fixture/tool.exe
+          echo "marker-ok" > fixture/marker.txt
+          cat > fixture/run.rb <<'RUBY'
           require "open3"
-          require "tmpdir"
           puts "probe: host=#{RUBY_PLATFORM} ruby=#{RUBY_DESCRIPTION}"
-          puts "probe: mount visible (posix spelling): #{File.exist?("/probe/marker.txt")}"
-          realdir = File.expand_path(__dir__)
-          puts "probe: driver-reported __dir__ = #{realdir.inspect}"
-          puts "probe: mount visible (driver spelling): #{File.exist?(File.join(realdir, "marker.txt"))}"
-          puts "probe: RbConfig.ruby = #{RbConfig.ruby}"
+          dir = File.expand_path(__dir__)
+          puts "probe: __dir__ = #{dir.inspect}"
+          exe = File.join(dir, "tool.exe")
+          puts "probe: marker visible: #{File.exist?(File.join(dir, "marker.txt"))}"
+          puts "probe: tool exists: #{File.exist?(exe)} (#{exe})"
 
-          # every probe survives a raise — capture3 raises when the spawn
-          # itself fails (Errno::ENOENT et al), which is itself the datum
           def probe(tag)
             out, err, st = yield
-            puts "#{tag}: status=#{st.exitstatus.inspect} out=#{out.inspect} err=#{err.inspect}"
+            puts "#{tag}: status=#{st.exitstatus.inspect} out=#{out.inspect[0,60]} err=#{err.inspect[0,140]}"
           rescue => e
             puts "#{tag}: RAISED #{e.class}: #{e.message}"
           end
 
-          # A) plain spawn, no chdir
-          probe("A plain-spawn") { Open3.capture3(RbConfig.ruby, "-e", "print 'A-ok'") }
+          # A) plain spawn of the in-image exe — the exec-target
+          #    materialization path, no chdir
+          probe("A plain-spawn") { Open3.capture3(exe) }
 
-          # B) chdir into a HOST tmpdir (never touches the VFS)
-          Dir.mktmpdir do |d|
-            probe("B host-chdir") { Open3.capture3(RbConfig.ruby, "-e", "print Dir.pwd", chdir: d) }
-          end
-
-          # C) chdir into the MOUNTED image — the #333 case; the arm must
-          #    materialize /probe to a host twin and rewrite the chdir
-          probe("C mount-chdir") { Open3.capture3(RbConfig.ruby, "-e", "print Dir.pwd + ' marker=' + File.read('marker.txt')", chdir: "/probe") }
-
-          # D) the REAL-WORLD spelling: chdir into the mount via the path
-          #    the driver itself reports for an in-image file (this
-          #    script's own __dir__) — the form a gem's __dir__ produces.
-          #    On windows the VFS root spells A:/... — if the arm's
-          #    classification misses THAT spelling, C passes and D fails.
-          probe("D dir__-chdir") { Open3.capture3(RbConfig.ruby, "-e", "print Dir.pwd + ' marker=' + File.read('marker.txt')", chdir: realdir) }
-          RUBY
-          # press the fixture (limnifs, the default format; the same
-          # invocation the metanorma payload build uses)
+          # B) spawn with chdir into the MOUNT — the #333/#344 shape
+          #    (sass-embedded's Open3.popen3 into its gem dir)
+          probe("B chdir-spawn") { Open3.capture3(exe, chdir: dir) }
+RUBY
           ./tfs-*.exe mkimage --format limnifs fixture --output probe.tfs
           ls -la probe.tfs
 
-      - name: Run the three probes against the published runtime
+      - name: Run the spawn probes against the published runtime
         shell: msys2 {0}
         run: |
           set -uo pipefail
           export MSYS2_ARG_CONV_EXCL='*' MSYS2_ENV_CONV_EXCL='*'
           stem="tebako-runtime-${LINE}-ruby-${RB}-windows-ucrt64"
           export TEBAKO_RUNTIME_IMAGE="$(cygpath -m "$PWD/$stem.tfs")"
-          "./$stem.exe" --tebako-image "$(cygpath -m "$PWD/probe.tfs"):-:/probe" --tebako-entry /probe/run.rb
+          "./$stem.exe" --tebako-image "$(cygpath -m "$PWD/probe.tfs"):-:/probe" --tebako-entry /run.rb
           echo "probe-run exit: $?"
