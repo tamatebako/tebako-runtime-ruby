@@ -241,7 +241,7 @@ macos_deployment_target: "14.0"
 # runtime lines 0.17.5+ died silently at native-extension builds without
 # it (mkmf's Dir glob read empty). Every runtime pair built from this
 # pin carries the guard.
-link_unit_release: "v2.8.78"
+link_unit_release: "v2.8.79"
 
 # The registry-render gate's reader pin (trr#241): the tamatebako/tebako
 # release whose CLI validates every accumulated registry mirror with
