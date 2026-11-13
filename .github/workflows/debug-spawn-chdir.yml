@@ -97,6 +97,7 @@ jobs:
           mkdir -p fixture
           cp "tfs-${TOOLS#v}-windows-ucrt64.exe" fixture/tool.exe
           echo "marker-ok" > fixture/marker.txt
+          mkdir -p fixture/sub && echo "inner-ok" > fixture/sub/inner.txt
           cat > fixture/run.rb <<'RUBY'
           require "open3"
           # the windows exe's stdout does not reach the msys2 pipe reliably
@@ -121,7 +122,14 @@ jobs:
           end
 
           probe(out, "A plain-spawn") { Open3.capture3(exe) }
-          probe(out, "B chdir-spawn") { Open3.capture3(exe, chdir: dir) }
+          probe(out, "B chdir-spawn-root") { Open3.capture3(exe, chdir: dir) }
+
+          # C) chdir into a SUBDIRECTORY of the mount — the real-world
+          #    shape (a gem's bin/ dir is never the mount root). If B
+          #    fails and C passes, the defect is the mount-root edge
+          #    (the relative-path-is-empty case in the materialization).
+          sub = File.join(dir, "sub")
+          probe(out, "C chdir-spawn-subdir") { Open3.capture3(exe, chdir: sub) }
           say.call "probe: complete"
           RUBY
           ./tfs-*.exe mkimage --format limnifs fixture --output probe.tfs
