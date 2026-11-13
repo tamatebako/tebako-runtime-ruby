@@ -92,32 +92,39 @@ jobs:
           require "open3"
           require "tmpdir"
           puts "probe: host=#{RUBY_PLATFORM} ruby=#{RUBY_DESCRIPTION}"
-          puts "probe: mount visible: #{File.exist?("/probe/marker.txt")}"
+          puts "probe: mount visible (posix spelling): #{File.exist?("/probe/marker.txt")}"
+          realdir = File.expand_path(__dir__)
+          puts "probe: driver-reported __dir__ = #{realdir.inspect}"
+          puts "probe: mount visible (driver spelling): #{File.exist?(File.join(realdir, "marker.txt"))}"
+          puts "probe: RbConfig.ruby = #{RbConfig.ruby}"
+
+          # every probe survives a raise — capture3 raises when the spawn
+          # itself fails (Errno::ENOENT et al), which is itself the datum
+          def probe(tag)
+            out, err, st = yield
+            puts "#{tag}: status=#{st.exitstatus.inspect} out=#{out.inspect} err=#{err.inspect}"
+          rescue => e
+            puts "#{tag}: RAISED #{e.class}: #{e.message}"
+          end
 
           # A) plain spawn, no chdir
-          out, err, st = Open3.capture3(RbConfig.ruby, "-e", "print 'A-ok'")
-          puts "A plain-spawn: status=#{st.exitstatus.inspect} out=#{out.inspect} err=#{err.inspect}"
+          probe("A plain-spawn") { Open3.capture3(RbConfig.ruby, "-e", "print 'A-ok'") }
 
           # B) chdir into a HOST tmpdir (never touches the VFS)
           Dir.mktmpdir do |d|
-            out, err, st = Open3.capture3(RbConfig.ruby, "-e", "print Dir.pwd", chdir: d)
-            puts "B host-chdir: status=#{st.exitstatus.inspect} out=#{out.inspect} err=#{err.inspect} (want pwd=#{d})"
+            probe("B host-chdir") { Open3.capture3(RbConfig.ruby, "-e", "print Dir.pwd", chdir: d) }
           end
 
           # C) chdir into the MOUNTED image — the #333 case; the arm must
           #    materialize /probe to a host twin and rewrite the chdir
-          out, err, st = Open3.capture3(RbConfig.ruby, "-e", "print Dir.pwd + ' marker=' + File.read('marker.txt')", chdir: "/probe")
-          puts "C mount-chdir: status=#{st.exitstatus.inspect} out=#{out.inspect} err=#{err.inspect}"
+          probe("C mount-chdir") { Open3.capture3(RbConfig.ruby, "-e", "print Dir.pwd + ' marker=' + File.read('marker.txt')", chdir: "/probe") }
 
           # D) the REAL-WORLD spelling: chdir into the mount via the path
           #    the driver itself reports for an in-image file (this
           #    script's own __dir__) — the form a gem's __dir__ produces.
           #    On windows the VFS root spells A:/... — if the arm's
           #    classification misses THAT spelling, C passes and D fails.
-          real = File.expand_path(__dir__)
-          puts "probe: driver-reported __dir__ = #{real.inspect}"
-          out, err, st = Open3.capture3(RbConfig.ruby, "-e", "print Dir.pwd + ' marker=' + File.read('marker.txt')", chdir: real)
-          puts "D dir__-chdir: status=#{st.exitstatus.inspect} out=#{out.inspect} err=#{err.inspect}"
+          probe("D dir__-chdir") { Open3.capture3(RbConfig.ruby, "-e", "print Dir.pwd + ' marker=' + File.read('marker.txt')", chdir: realdir) }
           RUBY
           # press the fixture (limnifs, the default format; the same
           # invocation the metanorma payload build uses)
