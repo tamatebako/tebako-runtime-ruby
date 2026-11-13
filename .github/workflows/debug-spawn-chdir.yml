@@ -108,6 +108,16 @@ jobs:
           #    materialize /probe to a host twin and rewrite the chdir
           out, err, st = Open3.capture3(RbConfig.ruby, "-e", "print Dir.pwd + ' marker=' + File.read('marker.txt')", chdir: "/probe")
           puts "C mount-chdir: status=#{st.exitstatus.inspect} out=#{out.inspect} err=#{err.inspect}"
+
+          # D) the REAL-WORLD spelling: chdir into the mount via the path
+          #    the driver itself reports for an in-image file (this
+          #    script's own __dir__) — the form a gem's __dir__ produces.
+          #    On windows the VFS root spells A:/... — if the arm's
+          #    classification misses THAT spelling, C passes and D fails.
+          real = File.expand_path(__dir__)
+          puts "probe: driver-reported __dir__ = #{real.inspect}"
+          out, err, st = Open3.capture3(RbConfig.ruby, "-e", "print Dir.pwd + ' marker=' + File.read('marker.txt')", chdir: real)
+          puts "D dir__-chdir: status=#{st.exitstatus.inspect} out=#{out.inspect} err=#{err.inspect}"
           RUBY
           # press the fixture (limnifs, the default format; the same
           # invocation the metanorma payload build uses)
