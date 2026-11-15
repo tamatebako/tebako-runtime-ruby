@@ -65,13 +65,14 @@ RSpec.describe RegistryUpdate do
   # false carries no sidecar asset at all, an Exception makes the fetch
   # raise (an unreadable sidecar).
   def shard(ruby:, platform:, filename: nil, sha256: nil, tebako_version: version, bundle: nil, blksum: nil, # rubocop:disable Metrics/ParameterLists
-            per_file_assets: false, sidecar: true, blksum_sidecar: true)
+            per_file_assets: false, sidecar: true, blksum_sidecar: true, abi: nil)
     suffix = platform.start_with?("windows") ? ".exe" : ""
     filename ||= "tebako-runtime-#{tebako_version}-#{ruby}-#{platform}#{suffix}"
     sha256 ||= Digest::SHA256.hexdigest("BYTES-#{filename}")
     card = { "tebako_version" => tebako_version, "ruby_version" => ruby,
              "platform" => platform, "filename" => filename, "sha256" => sha256 }
     add_facets(card, filename, bundle, blksum, per_file_assets)
+    card["abi"] = abi if abi
     [spec_asset("#{filename}.manifest.json", JSON.generate(card)),
      *shard_sidecars(filename, sha256, bundle, blksum, sidecar, blksum_sidecar)]
   end
@@ -188,6 +189,28 @@ RSpec.describe RegistryUpdate do
                          .fetch("versions").find { |v| v["version"] == "3.4.10-9.9.9" }
                          .fetch("platforms").fetch("aarch64-macos")
     expect(row["blksum"]).to eq(pin)
+  end
+
+  # Registry MINOR 11 (tebako#1047): the shard's `abi` — the platform
+  # line the leg was built on — mirrors into the platform row verbatim;
+  # the resolver's download pick reads it for the pre-download exclusion
+  # (spec 05 §5).
+  it "mirrors the shard's abi line into the platform row" do
+    doc = YAML.safe_load(render(shards_of({ ruby: "3.4.10", platform: "macos-arm64", abi: "arm64-darwin-24" })))
+
+    row = doc["payloads"].find { |p| p["name"] == "ruby" }
+                         .fetch("versions").find { |v| v["version"] == "3.4.10-9.9.9" }
+                         .fetch("platforms").fetch("aarch64-macos")
+    expect(row["abi"]).to eq("arm64-darwin-24")
+  end
+
+  it "renders no abi key for a pre-field shard (the compat window)" do
+    doc = YAML.safe_load(render(shards_of({ ruby: "3.4.10", platform: "macos-arm64" })))
+
+    row = doc["payloads"].find { |p| p["name"] == "ruby" }
+                         .fetch("versions").find { |v| v["version"] == "3.4.10-9.9.9" }
+                         .fetch("platforms").fetch("aarch64-macos")
+    expect(row).not_to have_key("abi")
   end
 
   it "mirrors the image.blksum pin on bundle-era rows too" do
