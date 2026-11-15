@@ -58,7 +58,10 @@ RUNTIME_REPO = "tamatebako/tebako-runtime-ruby" unless defined?(RUNTIME_REPO)
 # names the shard tag it was rendered from in its own `release.ref`
 # (tebako#711 ask 1 — post-tebako-runtime-ruby#235 one version line unions
 # rows from several shard tags, which the version-level ref cannot name;
-# old readers ignore the unknown key per spec 37 §2's leniency rule). The
+# old readers ignore the unknown key per spec 37 §2's leniency rule), and
+# each row mirrors the shard's `abi` platform line verbatim when the shard
+# carries one (registry MINOR 11, tebako#1047 — the download pick's
+# pre-download exclusion key; a pre-field shard's row carries no key). The
 # merge is additive and write-once-friendly: existing versions keep their
 # rows (new shards win per triplet), `status: withdrawn` marks (the only
 # sanctioned hand-edit — spec 04 §2) survive every render, and `default:`
@@ -278,6 +281,14 @@ class RegistryUpdate # rubocop:disable Metrics/ClassLength
     if (blksum = entry.dig("image", "blksum"))
       row["blksum"] = { "filename" => blksum.fetch("filename"), "sha256" => blksum.fetch("sha256") }
     end
+    # Registry MINOR 11 (tebako#1047): the shard's `abi` — the platform
+    # line the leg was built on, stamped into the shard manifest at build
+    # time — mirrors into the row verbatim; the resolver's download pick
+    # excludes a non-matching row BEFORE any byte moves (spec 05 §5). A
+    # pre-field shard declares nothing and the row carries no key — the
+    # additive-key compat rule (absence is the window, never an
+    # exclusion of its own).
+    row["abi"] = entry["abi"] if entry["abi"]
     row
   end
 
