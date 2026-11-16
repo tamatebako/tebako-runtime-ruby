@@ -628,6 +628,16 @@ else(IS_DARWIN)
       # lib exports T clock_gettime); pin the two probes instead of
       # carrying a source patch.
       set(RUBY_ACCV_OVERRIDES "ac_cv_func_clock_gettime=yes ac_cv_func_clock_getres=yes")
+      # MSYS2's clangarm64 openssl is 4.x: the ENGINE API is removed for
+      # real (DH_get0_engine & co. gone from libcrypto), but the 4.x
+      # headers define no OPENSSL_NO_ENGINE for consumers to key on —
+      # ruby's bundled ext guards its DH_get0_engine call on exactly that
+      # macro, so the guard misfires and the shared-libruby link dies on
+      # the undefined symbol (trr#372; runs 43834410027 + 43833720669,
+      # the repo's 3.6.5 → 4.1.0 move). Define it here until the bundled
+      # ext learns the version guard. ucrt64 needs nothing until its
+      # openssl moves to 4.x.
+      string(CONCAT RUBY_C_FLAGS ${RUBY_C_FLAGS} " -DOPENSSL_NO_ENGINE=1")
     else()
       set(__TEBAKO_CXXRT_FLAG "-l:libstdc++.a")
     endif()
