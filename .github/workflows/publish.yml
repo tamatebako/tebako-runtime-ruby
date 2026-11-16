@@ -684,6 +684,113 @@ jobs:
               ;;
           esac
 
+      # tamatebako/tebako#1072: the product's default runtime line
+      # (tebako-resolve's DEFAULT_TEBAKO_VERSION) follows the publish —
+      # the factory proposes, the product owns (spec 00 §10: the crate
+      # constant stays the single owner; this step only opens the PR).
+      # Forward-only: a re-run of an older publish never drags the
+      # default back; an equal-or-newer default is a no-op. The merge
+      # rides the ordinary on-green rule — arming auto-merge is
+      # attempted, an arm failure warns and leaves the PR open (the
+      # product's protected main rejects an immediate merge while its
+      # checks run; that is the design, not a failure of this step).
+      - name: Propose the default-runtime bump to the product
+        if: ${{ always() && !cancelled() && !inputs.audit && steps.render.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ steps.fleet.outputs.token }}
+          REGISTRY_VERSION_INPUT: ${{ inputs.registry_version }}
+        run: |
+          set -euo pipefail
+          version="${REGISTRY_VERSION_INPUT:-}"
+          version="${version:-$(cat VERSION 2>/dev/null || true)}"
+          [ -n "$version" ] || { echo "::error::cannot name the default-runtime PR — no registry_version input and no VERSION file"; exit 1; }
+
+          work="$RUNNER_TEMP/tebako-product"
+          gh repo clone tamatebako/tebako "$work" -- --depth 1 --branch main
+          cd "$work"
+          file=crates/tebako-resolve/src/lib.rs
+          current="$(sed -n 's/^pub const DEFAULT_TEBAKO_VERSION: &str = "\(.*\)";$/\1/p' "$file")"
+          [ -n "$current" ] || { echo "::error::$file: DEFAULT_TEBAKO_VERSION not found in its expected shape"; exit 1; }
+          echo "product default: $current — just published: $version"
+
+          newest="$(printf '%s\n%s\n' "$current" "$version" | sort -V | tail -1)"
+          if [ "$current" = "$version" ] || [ "$newest" != "$version" ]; then
+            echo "default already at $current (>= the published $version) — nothing to propose"
+            exit 0
+          fi
+
+          branch="publish/v${version}-default-runtime"
+          git config user.name "tebako-ci"
+          git config user.email "tebako@ribose.com"
+          git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch" 2>/dev/null || true
+          git checkout -b "$branch" 2>/dev/null || git checkout "$branch"
+          sed -i "s/^pub const DEFAULT_TEBAKO_VERSION: &str = \".*\";$/pub const DEFAULT_TEBAKO_VERSION: \&str = \"${version}\";/" "$file"
+          git add "$file"
+          if git diff --cached --quiet; then
+            echo "$branch already carries exactly this bump — no push"
+          else
+            git commit -m "resolve: DEFAULT_TEBAKO_VERSION → ${version} (tamatebako/tebako#1072)"
+            git push --force-with-lease origin "$branch"
+          fi
+
+          probe() { gh pr list --repo tamatebako/tebako --head "$branch" --state open --json number --jq '.[0].number // empty'; }
+          if ! number="$(probe)"; then
+            echo "::error::could not query the product's open PRs for $branch — refusing to guess"
+            exit 1
+          fi
+          if [ -z "$number" ]; then
+            body="$RUNNER_TEMP/default-runtime-pr-body.md"
+            cat > "$body" <<EOF
+          The runtime factory published [v${version}](https://github.com/tamatebako/tebako-runtime-ruby/releases/tag/v${version});
+          the product's default runtime line follows it (tamatebako/tebako#1072).
+
+          The constant's single owner stays \`crates/tebako-resolve\`; this
+          PR is the factory's proposal, opened by publish.yml — no publish
+          can move the default silently, and no unrelated PR carries the
+          bump as a drive-by again.
+
+          Merged by the ordinary on-green rule: the product's CI runs the
+          acceptance surface against this line.
+          EOF
+            if ! create_out="$(gh pr create --repo tamatebako/tebako --base main --head "$branch" \
+                                --title "resolve: DEFAULT_TEBAKO_VERSION → ${version}" \
+                                --body-file "$body" 2>&1)"; then
+              case "$create_out" in
+                *"already exists"*)
+                  # The probe→create race: the push above already
+                  # delivered the bump to the branch the PR tracks.
+                  echo "$create_out"
+                  ;;
+                *)
+                  echo "$create_out" >&2
+                  exit 1
+                  ;;
+              esac
+            fi
+            number="$(probe)" || true
+            [ -n "${number:-}" ] || { echo "::error::$branch: the product PR was created but could not be re-resolved"; exit 1; }
+          fi
+
+          meta="$(gh pr view "$number" --repo tamatebako/tebako --json state,autoMergeRequest \
+              --jq 'if .state == "OPEN" then (if .autoMergeRequest then "armed" else "open" end) else .state end')" || {
+            echo "::error::could not read the product PR #${number}'s state"
+            exit 1
+          }
+          case "$meta" in
+            armed|MERGED)
+              echo "product PR #${number}: ${meta} — converged"
+              ;;
+            open)
+              if ! gh pr merge --repo tamatebako/tebako --auto --squash "$number"; then
+                echo "::warning::auto-merge arm failed for tamatebako/tebako#${number} — the PR stays open for the ordinary on-green merge"
+              fi
+              ;;
+            *)
+              echo "::error::product PR #${number} is in an unexpected state: ${meta}"
+              exit 1
+              ;;
+          esac
+
       # Immediacy, not correctness (tebako-packages/registry#5). The
       # official aggregate polls every six hours, so a publish stays
       # invisible to `tebako install` until the next tick. Fired only AFTER
