@@ -708,6 +708,11 @@ jobs:
           work="$RUNNER_TEMP/tebako-product"
           gh repo clone tamatebako/tebako "$work" -- --depth 1 --branch main
           cd "$work"
+          # A fresh gh clone carries no push credentials (the registry
+          # step's push rides actions/checkout's token config; there is no
+          # checkout of the product here) — the remote carries the App
+          # token explicitly. The token value is log-masked as a secret.
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/tamatebako/tebako.git"
           file=crates/tebako-resolve/src/lib.rs
           current="$(sed -n 's/^pub const DEFAULT_TEBAKO_VERSION: &str = "\(.*\)";$/\1/p' "$file")"
           [ -n "$current" ] || { echo "::error::$file: DEFAULT_TEBAKO_VERSION not found in its expected shape"; exit 1; }
