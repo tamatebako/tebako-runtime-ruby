@@ -407,6 +407,18 @@ jobs:
           app-id: ${{ vars.TEBAKO_CI_APP_ID }}
           private-key: ${{ secrets.TEBAKO_CI_APP_PRIVATE_KEY }}
           owner: tebako-packages
+      - name: Mint the product-repo token
+        # The no-owner fleet token is scoped to THIS repository (the
+        # action's default), so it 403s on tamatebako/tebako — the default
+        # -runtime bump's target. Least privilege: the product token names
+        # the product repo only.
+        id: fleet_product
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.TEBAKO_CI_APP_ID }}
+          private-key: ${{ secrets.TEBAKO_CI_APP_PRIVATE_KEY }}
+          owner: tamatebako
+          repositories: tebako
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -697,7 +709,7 @@ jobs:
       - name: Propose the default-runtime bump to the product
         if: ${{ always() && !cancelled() && !inputs.audit && steps.render.outcome == 'success' }}
         env:
-          GH_TOKEN: ${{ steps.fleet.outputs.token }}
+          GH_TOKEN: ${{ steps.fleet_product.outputs.token }}
           REGISTRY_VERSION_INPUT: ${{ inputs.registry_version }}
         run: |
           set -euo pipefail
