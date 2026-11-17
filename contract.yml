@@ -241,7 +241,14 @@ macos_deployment_target: "14.0"
 # runtime lines 0.17.5+ died silently at native-extension builds without
 # it (mkmf's Dir glob read empty). Every runtime pair built from this
 # pin carries the guard.
-link_unit_release: "v2.8.82"
+# v2.8.82 -> v2.8.83: the unit's driver rebinds dlopen/dlerror on macOS
+# (tebako#1080/#1081): darwin 23's dyld silently drops
+# DYLD_INSERT_LIBRARIES into a hardened-runtime image, so an ffi/fiddle
+# dlopen of an in-image library escaped to the host fs (the yeptris
+# LoadError class) — the unit now rebinds the two symbols in-process at
+# boot (indirect-symbol rewrite + add-image callback), no insertion
+# needed. Contract unchanged (2).
+link_unit_release: "v2.8.83"
 
 # The registry-render gate's reader pin (trr#241): the tamatebako/tebako
 # release whose CLI validates every accumulated registry mirror with
