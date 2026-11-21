@@ -174,10 +174,14 @@ The named gaps (recorded-not-pinned, by construction):
   NAMES, not versions; `--no-upgrade` stops mid-matrix drift). The
   resolved versions are recorded in the toolchain identity.
 - **MSYS2** rides the rolling repo: the action SHA pins the
-  checksum-verified base installer, and the in-leg `pacman -Syu` is the
-  single refresh — MSYS2 serves no snapshot mirror a `pacman -U` could
-  pin against (a snapshot URL 404s as the mirrors GC). The resolved
-  package set is recorded (`pacman -Q`, and its sha256 in the toolchain
+  checksum-verified base installer, but the package resolution floats.
+  The action's `update: true` stays on every msys leg — it owns the
+  runtime self-update termination dance (an in-leg `pacman -Syu` that
+  pulls msys2-runtime kills the shell mid-step, run 44916477809) — and
+  MSYS2 serves no snapshot mirror a `pacman -U` could pin against (a
+  snapshot URL 404s as the mirrors GC; a `--ignore` holdback of the
+  runtime is an unsupported partial upgrade). The resolved package set
+  is recorded (`pacman -Q` per leg, and its sha256 in the toolchain
   identity).
 - **Signing** rewrites the exe after `exe_sha256_presign` is recorded
   (macOS codesign, windows Authenticode) — timestamped by design. The
