@@ -718,16 +718,19 @@ jobs:
         with:
           msystem: ucrt64
           path-type: minimal
-          # RECORD-NOT-PIN (the windows reproducibility deviation): the
-          # action SHA above already pins the base installer
-          # (msys2-base-x86_64-20260611.sfx.exe, checksum-verified inside
-          # the action). `update: true` would ride the rolling MSYS2 repo
-          # here AND in the in-leg `pacman -Syu` below — two resolutions.
-          # MSYS2 serves no snapshot mirror a pacman -U could pin against
-          # (a snapshot URL 404s as the mirrors GC), so the single refresh
-          # stays in-leg and the resolved package set is RECORDED below
-          # (pacman -Q) into the leg's toolchain identity.
-          update: false
+          # RECORD-NOT-PIN (the windows reproducibility deviation):
+          # `update: true` STAYS — the action owns the runtime self-update
+          # termination dance; an in-leg `pacman -Syu` that pulls
+          # msys2-runtime kills the shell mid-step ("all MSYS2 processes
+          # including this terminal will be closed", run 44916477809).
+          # The action SHA above pins the checksum-verified base installer
+          # (msys2-base-x86_64-20260611.sfx.exe); the rolling package
+          # resolution is RECORDED below (pacman -Q) into the leg's
+          # toolchain identity — MSYS2 serves no snapshot mirror a
+          # pacman -U could pin against (a snapshot URL 404s as the
+          # mirrors GC), and a --ignore holdback of the runtime is an
+          # unsupported partial upgrade.
+          update: true
       - name: Install pacman packages
         if: steps.published.outputs.hit != 'true' && steps.staged.outputs.cache-hit != 'true' && matrix.env.os == 'windows' && matrix.env.arch == 'x86_64'
         shell: msys2 {0}
@@ -1127,16 +1130,19 @@ jobs:
         with:
           msystem: ${{ matrix.env.arch == 'arm64' && 'clangarm64' || 'ucrt64' }}
           path-type: minimal
-          # RECORD-NOT-PIN (the windows reproducibility deviation): the
-          # action SHA above already pins the base installer
-          # (msys2-base-x86_64-20260611.sfx.exe, checksum-verified inside
-          # the action). `update: true` would ride the rolling MSYS2 repo
-          # here AND in the in-leg `pacman -Syu` below — two resolutions.
-          # MSYS2 serves no snapshot mirror a pacman -U could pin against
-          # (a snapshot URL 404s as the mirrors GC), so the single refresh
-          # stays in-leg and the resolved package set is RECORDED below
-          # (pacman -Q) into the leg's toolchain identity.
-          update: false
+          # RECORD-NOT-PIN (the windows reproducibility deviation):
+          # `update: true` STAYS — the action owns the runtime self-update
+          # termination dance; an in-leg `pacman -Syu` that pulls
+          # msys2-runtime kills the shell mid-step ("all MSYS2 processes
+          # including this terminal will be closed", run 44916477809).
+          # The action SHA above pins the checksum-verified base installer
+          # (msys2-base-x86_64-20260611.sfx.exe); the rolling package
+          # resolution is RECORDED below (pacman -Q) into the leg's
+          # toolchain identity — MSYS2 serves no snapshot mirror a
+          # pacman -U could pin against (a snapshot URL 404s as the
+          # mirrors GC), and a --ignore holdback of the runtime is an
+          # unsupported partial upgrade.
+          update: true
 
       # The environment's packages ride pactoys' pacboy: a `:p` name
       # resolves against the ACTIVE msys2 environment, so the package
@@ -2341,9 +2347,11 @@ jobs:
         with:
           msystem: ${{ matrix.env.arch == 'arm64' && 'clangarm64' || 'ucrt64' }}
           path-type: minimal
-          # KEEPS update: true, deliberately (the dogfood job builds
-          # nothing shipped): its install step below runs `pacman -S`
-          # without -y/u and rides THIS update for a fresh package db.
+          # update: true here as on the shipped legs (the action owns the
+          # runtime self-update — RECORD-NOT-PIN there) — and this job
+          # needs it: its install step below runs `pacman -S` without -y/u
+          # and rides THIS update for a fresh package db. The dogfood
+          # builds nothing shipped.
           update: true
       # Only the gem-install leg needs a compiler (sassc's native ext
       # compiles through the fresh runtime's OWN mkmf — the same toolchain

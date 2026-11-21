@@ -429,33 +429,37 @@ RSpec.describe "build-platform reusable workflow" do
   end
 
   # RECORD-NOT-PIN (the windows reproducibility deviation): the setup-msys2
-  # action SHA pins the checksum-verified base installer, but its
-  # `update: true` would ride the rolling MSYS2 repo a second time (the
-  # in-leg `pacman -Syu` is the single refresh — MSYS2 serves no snapshot
-  # mirror to pin against). The shipped-artifact legs (link-unit staging
-  # + the ruby build legs) keep the action's update OFF and record the
-  # resolved package set via pacman -Q; the dogfood builds nothing
-  # shipped and keeps the action's update (its install step rides it).
-  it "keeps the setup-msys2 update off the shipped legs and records the pacman manifest" do
+  # action SHA pins the checksum-verified base installer, but the package
+  # resolution rides the rolling repo (MSYS2 serves no snapshot mirror to
+  # pin against). The action's `update: true` must stay EVERYWHERE — it
+  # owns the runtime self-update termination dance; an in-leg
+  # `pacman -Syu` that pulls msys2-runtime kills the shell mid-step
+  # (run 44916477809: "all MSYS2 processes including this terminal will be
+  # closed"). The shipped-artifact legs (link-unit staging + the ruby
+  # build legs) record the resolved package set via pacman -Q into the
+  # leg's toolchain identity — that record is the deviation's whole
+  # mitigation.
+  it "keeps the action-owned runtime self-update on every msys leg and records the pacman manifest" do
     text = File.read(workflow_path)
     jobs = workflow.fetch("jobs")
-    %w[link-unit build].each do |job_name|
-      steps = jobs.fetch(job_name).fetch("steps")
-      setup = steps.select { |step| step.fetch("uses", "").to_s.start_with?("msys2/setup-msys2@") }
+    %w[link-unit build dogfood].each do |job_name|
+      setup = jobs.fetch(job_name).fetch("steps")
+                  .select { |step| step.fetch("uses", "").to_s.start_with?("msys2/setup-msys2@") }
       expect(setup).not_to be_empty
       setup.each do |step|
-        expect(step.dig("with", "update")).to be(false),
-                                              "#{job_name}'s setup-msys2 rides the rolling repo (record-not-pin)"
+        expect(step.dig("with", "update")).to be(true),
+                                              "#{job_name}'s setup-msys2 must own the runtime self-update " \
+                                              "(an in-leg sync cannot survive it — run 44916477809)"
       end
-      install = steps.select { |step| step["name"].to_s == "Install pacman packages" }
+    end
+    %w[link-unit build].each do |job_name|
+      install = jobs.fetch(job_name).fetch("steps")
+                    .select { |step| step["name"].to_s == "Install pacman packages" }
       expect(install).not_to be_empty
       install.each do |step|
         expect(step.fetch("run")).to include("pacman -Syu", "pacman -Q")
       end
     end
-    dogfood_setup = jobs.fetch("dogfood").fetch("steps")
-                        .find { |step| step.fetch("uses", "").to_s.start_with?("msys2/setup-msys2@") }
-    expect(dogfood_setup.dig("with", "update")).to be(true)
     expect(text).to include("RECORD-NOT-PIN")
   end
 
