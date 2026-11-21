@@ -55,6 +55,25 @@ RSpec.describe TebakoRuntimeBuilder::ImageManifest do
     expect(identity["created"]).to match(/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\z/)
   end
 
+  # The reproducible-build contract (tfs-cli's mkimage convention): the
+  # stamp follows SOURCE_DATE_EPOCH when the leg exports it (the compute
+  # job flows the run's HEAD commit time), the epoch otherwise — never the
+  # wall clock. A malformed value is a named error, not a silent fallback.
+  it "stamps identity.created from SOURCE_DATE_EPOCH, or the epoch when unset" do
+    expect(manifest_for(gnu)["identity"]["created"]).to eq("1970-01-01T00:00:00Z")
+
+    TebakoRuntimeBuilder::BuildHelpers.with_env("SOURCE_DATE_EPOCH" => "1767225600") do
+      expect(manifest_for(gnu)["identity"]["created"]).to eq("2026-01-01T00:00:00Z")
+    end
+  end
+
+  it "refuses a malformed SOURCE_DATE_EPOCH by name" do
+    TebakoRuntimeBuilder::BuildHelpers.with_env("SOURCE_DATE_EPOCH" => "yesterday") do
+      expect { manifest_for(gnu) }
+        .to raise_error(TebakoRuntimeBuilder::Error, /SOURCE_DATE_EPOCH is malformed/)
+    end
+  end
+
   it "zeroes the digest pair per the spec 03 §7 fixed-point rule" do
     digest = manifest_for(gnu)["identity"]["digest"]
     expect(digest["blob_sha256"]).to eq("0" * 64)

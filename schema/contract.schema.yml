@@ -13,6 +13,20 @@ properties:
     type: string
     pattern: '^\d+\.\d+\.\d+$'
     description: the toolchain container line the builds run inside (an axis independent of the artifact version)
+  container_digests:
+    type: object
+    description: the immutable ghcr manifest digest per (toolchain container x arch) — the mutable container_version tag's recorded pin, proven live by the preflight job before any leg spends compute
+    additionalProperties:
+      type: object
+      properties:
+        amd64:
+          type: string
+          pattern: '^sha256:[0-9a-f]{64}$'
+        arm64:
+          type: string
+          pattern: '^sha256:[0-9a-f]{64}$'
+      required: [amd64, arm64]
+      additionalProperties: false
   macos_deployment_target:
     type: string
     pattern: '^\d+\.\d+$'

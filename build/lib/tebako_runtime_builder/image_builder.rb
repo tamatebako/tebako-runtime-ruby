@@ -68,8 +68,8 @@ module TebakoRuntimeBuilder
       "    rescue Errno::EROFS\n      " \
       "raise PermissionError.new(path, action) # tebako backport (bundler < 2.6.6)\n"
 
-    def initialize(platform, ruby_ver, stash_dir, data_src_dir, data_pre_dir, data_bin_file, deps_bin_dir, # rubocop:disable Metrics/ParameterLists,Metrics/MethodLength
-                   mount_point:, embed: true, mount_root_override: false, support_dlls: nil)
+    def initialize(platform, ruby_ver, stash_dir, data_src_dir, data_pre_dir, data_bin_file, deps_bin_dir, # rubocop:disable Metrics/ParameterLists,Metrics/MethodLength,Metrics/AbcSize
+                   mount_point:, embed: true, mount_root_override: false, support_dlls: nil, scrub_roots: [])
       @platform = platform
       @ruby_ver = ruby_ver
       @stash_dir = stash_dir
@@ -79,6 +79,11 @@ module TebakoRuntimeBuilder
       @deps_bin_dir = deps_bin_dir
       @mount_point = mount_point
       @embed = embed
+      # The build-tree roots deploy_rbconfig scrubs out of the shipped
+      # rbconfig's inert flag fields (the CMake project's DEPS dir, binary
+      # dir, and source dir — flowed as deploy-pass argv; empty for a bare
+      # invocation, which then rewrites the prefix lines only).
+      @scrub_roots = scrub_roots
       # The msys support-DLL stager (spec 22 §2.1): injectable so the spec
       # stages from a fake prefix; production resolves the toolchain
       # prefixes (SupportDlls.toolchain_prefixes).
@@ -214,7 +219,62 @@ module TebakoRuntimeBuilder
       staged
     end
 
+    # The shipped rbconfig.rb (lib/ruby/<api>/<arch>/rbconfig.rb) is written
+    # by configure/make against the BUILD host's absolute paths: prefix /
+    # RUBY_EXEC_PREFIX name the packaging prefix, and the inert compile-flag
+    # fields (RBCONFIG_FLAG_KEYS) carry -I/-L references into the build tree
+    # (.build/deps, the CMake binary dir, the repo's build/include). Both
+    # leak the build host into the shipped bytes — the reproducible-build
+    # diff (E1/E2) — and record paths that exist nowhere at runtime. The
+    # scrub: the two prefix lines go to the mount root verbatim (the value
+    # rbconfig's own TOPDIR self-anchors to at runtime — its
+    # File.dirname(__FILE__).chomp! suffix — so the fallback branch agrees),
+    # and the flag fields get every build root replaced by the mount root,
+    # longest root first so --prefix=<DATA_SRC_DIR> lands exactly. The
+    # result is deterministically inert: the interpreter's load paths are
+    # compiled into loadpath.o from the build-TREE rbconfig (the finalize
+    # pass), never read from this file, and mkmf ignores nonexistent -I/-L
+    # directories (the windows devkit dogfood already proves the shape —
+    # the paths it ships today dangle identically). Toolchain paths outside
+    # the build tree (homebrew's /opt/homebrew/... — pool-stable per arch)
+    # stay: they are provenance, not leakage.
+    def deploy_rbconfig # rubocop:disable Metrics/AbcSize -- the scrub's steps, one call per line
+      rbconfigs = Dir.glob(File.join(@data_src_dir, "lib", "ruby", "*", "*", "rbconfig.rb"))
+      if rbconfigs.empty?
+        raise TebakoRuntimeBuilder::Error.new(
+          "no rbconfig.rb under #{@data_src_dir}/lib/ruby — the layout tree is incomplete", 131
+        )
+      end
+
+      roots = ([@data_src_dir] + @scrub_roots).uniq.sort_by { |root| -root.length }
+      rbconfigs.each { |path| scrub_rbconfig!(path, roots) }
+      puts "   ... rbconfig scrubbed to the mount root #{@mount_point} (#{roots.length} build root(s)): " \
+           "#{rbconfigs.map { |path| path.sub("#{@data_src_dir}/", "") }.join(", ")}"
+    end
+
+    # The inert compile-flag fields deploy_rbconfig canonicalizes. Read at
+    # mkmf time only (gem native-extension builds); never consulted by the
+    # interpreter's own load paths.
+    RBCONFIG_FLAG_KEYS = %w[configure_args CFLAGS cflags CXXFLAGS cxxflags CPPFLAGS cppflags LDFLAGS DLDFLAGS
+                            RUST_LIB].freeze
+
     private
+
+    def scrub_rbconfig!(path, roots) # rubocop:disable Metrics/MethodLength
+      contents = File.read(path)
+      {
+        'CONFIG["prefix"]' => "  CONFIG[\"prefix\"] = (TOPDIR || DESTDIR + \"#{@mount_point}\")",
+        'CONFIG["RUBY_EXEC_PREFIX"]' => "  CONFIG[\"RUBY_EXEC_PREFIX\"] = \"#{@mount_point}\""
+      }.each do |key, line|
+        next if contents.gsub!(/^ *#{Regexp.escape(key)} = .*$/, line)
+
+        raise TebakoRuntimeBuilder::Error.new("#{path} carries no #{key} line to rewrite", 130)
+      end
+      contents.gsub!(/^ *CONFIG\["(?:#{RBCONFIG_FLAG_KEYS.join("|")})"\] = .*$/) do |line|
+        roots.reduce(line) { |scrubbed, root| scrubbed.gsub(root, @mount_point) }
+      end
+      File.write(path, contents)
+    end
 
     # Recreate the packaging environment from the stash
     def init
@@ -273,6 +333,7 @@ module TebakoRuntimeBuilder
       deploy_entrypoints
       deploy_preload
       deploy_layout
+      deploy_rbconfig
       TebakoRuntimeBuilder::Stripper.strip(@platform, @data_src_dir)
     end
 

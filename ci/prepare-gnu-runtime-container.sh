@@ -21,7 +21,20 @@
 # only the absorbed archive's provenance moves. Mirrors the ppa pattern
 # in tebako's ci/gnu-floor-build.sh (key + deb line, no API call — the
 # add-apt-repository launchpad lookup has hung on arm64 runners).
+#
+# The package versions are PINNED (the reproducible-build contract): an
+# unpinned install resolves whatever the PPA published that morning, and
+# the absorbed libstdc++.a's bytes float with it. Launchpad eventually
+# garbage-collects a superseded version — the install then fails LOUDLY
+# (E: Version ... not found), never silently drifting: bump the pin to
+# the PPA's current offer (both arches publish in lockstep):
+#   curl -fsSL http://ppa.launchpad.net/ubuntu-toolchain-r/test/ubuntu/dists/focal/main/binary-amd64/Packages.xz \
+#     | xz -dc | grep -A1 '^Package: g++-11$'
+# (The heavier fix — baking the toolchain into the container image —
+# waits on the tpkg-builder container generation, TODO.v2-1/13.)
 set -euo pipefail
+
+GCC11_PIN="11.5.0-10ubuntu1~20~ppa3"  # toolchain-r PPA, focal (2026-11-21; both arches)
 
 # Idempotent: a re-run in the same container finds the toolchain present.
 if compgen -G "/usr/lib/gcc/*-linux-gnu/11" > /dev/null; then
@@ -45,8 +58,9 @@ done
 echo "deb [signed-by=/usr/share/keyrings/toolchainr.gpg] http://ppa.launchpad.net/ubuntu-toolchain-r/test/ubuntu focal main" \
   > /etc/apt/sources.list.d/toolchainr.list
 apt-get update -qq
-apt-get install -y -qq --no-install-recommends gcc-11 g++-11
+apt-get install -y -qq --no-install-recommends "gcc-11=${GCC11_PIN}" "g++-11=${GCC11_PIN}"
 g++-11 --version | head -1
+echo "prepare-gnu-runtime-container: installed $(dpkg-query -W -f='${Version}' g++-11) (pinned: ${GCC11_PIN})"
 
 # Evidence for the leg log: the link driver must now resolve the
 # statically absorbed archive to gcc-11's (3.4.29) copy.

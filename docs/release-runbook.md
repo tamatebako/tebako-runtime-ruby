@@ -115,10 +115,19 @@ release'` route exists for back-compat only.
    naming every package that kept its previous bytes; the refresh lands on
    a FORCE_REBUILD publish after the backend recovers.
 8. **Payload assets are byte-immutable per name (owner-locked, learned
-   2026-08-23).** The build is not bit-reproducible, so a re-publish's
-   rebuilt package almost always differs from the published bytes — and
-   the delete+re-upload of a differing same-name asset is exactly what
-   wedges the name server-side (the 0.16.6 re-publish's 422 cycles).
+   2026-08-23).** A re-publish's rebuilt package can differ from the
+   published bytes — and the delete+re-upload of a differing same-name
+   asset is exactly what wedges the name server-side (the 0.16.6
+   re-publish's 422 cycles). The reproducibility pins (same-commit
+   `SOURCE_DATE_EPOCH`, digest-pinned toolchain containers, pinned
+   gcc/rustc, the rbconfig/dSYM scrubs) scope the determinism claim to
+   the PRE-SIGNING bytes: every contract sidecar carries
+   `built_from.exe_sha256_presign` + the leg's `built_from.toolchain`
+   identity for the E1/E2 re-run diff, macOS/windows signing rewrites
+   the exe after that digest by design, and the brew + MSYS2 package
+   sets are recorded-not-pinned (no snapshot mirror exists to pin
+   against). The immutability rule does not relax until E1/E2 proves
+   the pins on the current catalog.
    A plain re-publish KEEPS the published asset (a loud `::warning` names
    both shas), reverts its manifest entry to the published sha
    (byte-truthful), and settles the package stem for the rest of the run.
@@ -180,7 +189,8 @@ release'` route exists for back-compat only.
   `tebako-runtime-0.16.6-3.2.11-macos-x86_64.tfs` (publish job
   97169906686, 10:56:57Z), failing all four platform passes. The release
   already carried every payload asset from an earlier attempt; the
-  rebuild was not byte-identical (the build is not bit-reproducible), so
+  rebuild was not byte-identical (that line predates the reproducibility
+  pins — invariant 8 states today's scoped claim), so
   the byte-differs path delete+re-uploaded each changed same-name asset —
   GitHub wedged the names server-side (POST 422 `Validation Failed`
   cycles ~7 min apart, the known eventual-consistency flaw) until the

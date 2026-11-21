@@ -366,6 +366,132 @@ RSpec.describe "build-platform reusable workflow" do
     checkout = steps[checkout_index]
     expect(checkout.dig("with", "ref")).to eq("${{ inputs.harness_ref || 'main' }}")
   end
+
+  # The toolchain containers are the build toolchain itself — a mutable
+  # ghcr tag under an unchanged container_version would move every
+  # containerized leg's compiler silently. contract.yml's
+  # container_digests is the recorded pin: compute flows it, preflight
+  # proves recorded == live (the registry's Docker-Content-Digest header,
+  # via ghcr's anonymous-token flow) before any leg spends compute, and
+  # the container legs pull name:tag@digest. Locked structurally so a
+  # workflow edit can never drop the pin back to the bare tag.
+  it "pins the toolchain containers by digest, proven live at preflight" do
+    jobs = workflow.fetch("jobs")
+    compute = jobs.fetch("compute")
+    expect(compute.dig("outputs", "container-digests"))
+      .to eq("${{ steps.get-container-digests.outputs.container-digests }}")
+    step = compute.fetch("steps").find { |s| s["id"] == "get-container-digests" }
+    expect(step.fetch("run")).to include("container_digests")
+
+    preflight_steps = jobs.fetch("preflight-containers").fetch("steps")
+    preflight = preflight_steps.find { |s| s["name"].to_s.start_with?("Verify every referenced container manifest") }
+    expect(preflight.dig("env", "CONTAINER_DIGESTS")).to eq("${{ needs.compute.outputs.container-digests }}")
+    expect(preflight.fetch("run")).to include("Docker-Content-Digest", "ghcr.io/token", "moved")
+
+    container_build = jobs.fetch("build").fetch("steps")
+                          .find { |step| step["name"].to_s == "Build runtime using ci container" }
+    expect(container_build.dig("env", "CONTAINER_DIGESTS")).to eq("${{ needs.compute.outputs.container-digests }}")
+    expect(container_build.fetch("run")).to include("@${digest}")
+  end
+
+  # The run's single build timestamp (reproducible builds): compute
+  # derives ONE SOURCE_DATE_EPOCH from the HEAD commit and every leg
+  # stamps it — the image manifest's identity.created and the packed
+  # image's metadata reproduce on a same-commit re-run. Host legs read
+  # the job env; the container step passes it through docker's -e.
+  it "flows one SOURCE_DATE_EPOCH from compute into every build leg" do
+    jobs = workflow.fetch("jobs")
+    compute = jobs.fetch("compute")
+    expect(compute.dig("outputs", "source-date-epoch")).to eq("${{ steps.get-sde.outputs.epoch }}")
+    sde = compute.fetch("steps").find { |s| s["id"] == "get-sde" }
+    expect(sde.fetch("run")).to include("git log -1 --format=%ct")
+
+    build = jobs.fetch("build")
+    expect(build.dig("env", "SOURCE_DATE_EPOCH")).to eq("${{ needs.compute.outputs.source-date-epoch }}")
+    container_build = build.fetch("steps")
+                           .find { |step| step["name"].to_s == "Build runtime using ci container" }
+    expect(container_build.fetch("run")).to include("-e SOURCE_DATE_EPOCH")
+  end
+
+  # The macos legs once consumed the runner image's rustc, which floats
+  # with the image — a toolchain move under an unchanged pin. The in-leg
+  # pin (the same ci/prepare-rust-toolchain.sh the container legs run)
+  # closes it, fed the FLOWED ecosystem pin.
+  it "pins the ecosystem Rust toolchain in-leg on macos" do
+    steps = workflow.fetch("jobs").fetch("build").fetch("steps")
+    pin = steps.find { |step| step["name"].to_s == "Pin the ecosystem Rust toolchain (macos)" }
+    expect(pin).not_to be_nil
+    expect(pin["if"].to_s).to include("matrix.env.os == 'macos'")
+    expect(pin.dig("env", "RUST_VERSION")).to eq("${{ needs.compute.outputs.rust-version }}")
+    expect(pin.fetch("run")).to include("ci/prepare-rust-toolchain.sh")
+    names = steps.map { |step| step["name"].to_s }
+    expect(names.index("Pin the ecosystem Rust toolchain (macos)")).to be < names.index("Build runtime")
+  end
+
+  # RECORD-NOT-PIN (the windows reproducibility deviation): the setup-msys2
+  # action SHA pins the checksum-verified base installer, but its
+  # `update: true` would ride the rolling MSYS2 repo a second time (the
+  # in-leg `pacman -Syu` is the single refresh — MSYS2 serves no snapshot
+  # mirror to pin against). The shipped-artifact legs (link-unit staging
+  # + the ruby build legs) keep the action's update OFF and record the
+  # resolved package set via pacman -Q; the dogfood builds nothing
+  # shipped and keeps the action's update (its install step rides it).
+  it "keeps the setup-msys2 update off the shipped legs and records the pacman manifest" do
+    text = File.read(workflow_path)
+    jobs = workflow.fetch("jobs")
+    %w[link-unit build].each do |job_name|
+      steps = jobs.fetch(job_name).fetch("steps")
+      setup = steps.select { |step| step.fetch("uses", "").to_s.start_with?("msys2/setup-msys2@") }
+      expect(setup).not_to be_empty
+      setup.each do |step|
+        expect(step.dig("with", "update")).to be(false),
+                                              "#{job_name}'s setup-msys2 rides the rolling repo (record-not-pin)"
+      end
+      install = steps.select { |step| step["name"].to_s == "Install pacman packages" }
+      expect(install).not_to be_empty
+      install.each do |step|
+        expect(step.fetch("run")).to include("pacman -Syu", "pacman -Q")
+      end
+    end
+    dogfood_setup = jobs.fetch("dogfood").fetch("steps")
+                        .find { |step| step.fetch("uses", "").to_s.start_with?("msys2/setup-msys2@") }
+    expect(dogfood_setup.dig("with", "update")).to be(true)
+    expect(text).to include("RECORD-NOT-PIN")
+  end
+
+  # The leg's toolchain identity (ci/record-toolchain.sh, folded into the
+  # contract sidecar's built_from.toolchain) is composed beside the
+  # toolchain it names on EVERY build path — container, POSIX host,
+  # windows — so a shipped exe's provenance never depends on the leg
+  # shape. The container path must resolve rustc from the in-leg rustup
+  # bin dir (the recorder runs before PATH leads with it).
+  it "records the toolchain identity on all three build paths" do
+    steps = workflow.fetch("jobs").fetch("build").fetch("steps")
+    container = steps.find { |step| step["name"].to_s == "Build runtime using ci container" }
+    expect(container.fetch("run"))
+      .to include('TEBAKO_BUILD_TOOLCHAIN_JSON="$(PATH="/opt/cargo/bin:$PATH" sh /mnt/w/ci/record-toolchain.sh)"')
+    host = steps.find { |step| step["name"].to_s == "Build runtime" }
+    expect(host.fetch("run")).to include('TEBAKO_BUILD_TOOLCHAIN_JSON="$(sh ci/record-toolchain.sh)"')
+    windows = steps.find { |step| step["name"].to_s == "Build runtime on Windows" }
+    expect(windows.fetch("run")).to include('TEBAKO_BUILD_TOOLCHAIN_JSON="$(sh ci/record-toolchain.sh)"')
+    # The chain source's commit rides every path too (ruby_sha).
+    [container, host, windows].each do |step|
+      expect(step.fetch("run")).to include("TEBAKO_TC_RUBY_SHA")
+    end
+  end
+
+  # The link-unit source builds (the pin's miss path) compile the closure
+  # the exe links — their rustc must be the FLOWED ecosystem pin too, or
+  # a cache-miss leg links a runner-image toolchain the record never
+  # named.
+  it "pins the dtolnay toolchain to the flowed ecosystem pin on the link-unit source build" do
+    steps = workflow.fetch("jobs").fetch("link-unit").fetch("steps")
+    dtolnay = steps.select { |step| step.fetch("uses", "").to_s.start_with?("dtolnay/rust-toolchain@") }
+    expect(dtolnay).not_to be_empty
+    dtolnay.each do |step|
+      expect(step.dig("with", "toolchain")).to eq("${{ needs.compute.outputs.rust-version }}")
+    end
+  end
 end
 
 # The coordinator after spec 13 §2a's de-rendezvous (roadmap 85) and spec

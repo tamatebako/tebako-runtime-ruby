@@ -39,6 +39,7 @@ module TebakoRuntimeBuilder
       # Removes build artefacts, strip shared objects
       def strip(platform, src_dir)
         puts "   ... stripping the output"
+        strip_ds(src_dir)
         strip_bs(src_dir)
         strip_fi(platform, src_dir)
         strip_li(platform, src_dir)
@@ -59,6 +60,19 @@ module TebakoRuntimeBuilder
       end
 
       private
+
+      # The dSYM debug-info trees (macOS dsymutil output next to each
+      # extension bundle: *.bundle.dSYM/) — directories, so they ride their
+      # own sweep (strip_li walks files). Pure debug companions nothing
+      # loads at runtime; shipping them leaks the build host's paths into
+      # the image bytes and bloats every env image. The glob simply misses
+      # on platforms that never produce them.
+      def strip_ds(src_dir)
+        Dir.glob(File.join(src_dir, "**", "*.dSYM")).each do |dsym|
+          puts "   ... removing debug-info tree #{dsym.sub("#{src_dir}/", "")}"
+          FileUtils.rm_rf(dsym, secure: true)
+        end
+      end
 
       def get_files(platform)
         exe_suffix = platform.exe_suffix
