@@ -130,6 +130,68 @@ starvation this design exists to prevent.
   `tools/apply` writes into the rolled tree — the tree is content, and
   content is the cache key.
 
+## The artifact reproducibility pins (the E1/E2 contract)
+
+The roll contract above makes the SOURCE bytes deterministic; this
+section is the ARTIFACT side — what makes two runs of the same commit
+produce the same exe and `.tfs`, and how the claim is proven.
+
+The pins (each named in the leg's provenance, never implicit):
+
+- **`SOURCE_DATE_EPOCH`** — the compute job derives ONE epoch from the
+  HEAD commit (`git log -1 --format=%ct`) and every leg stamps it: the
+  image manifest's `identity.created` and the packed image's metadata
+  (tfs-cli's mkimage honors it; unset falls to epoch 0). A same-commit
+  re-run reproduces the stamp; the wall clock never enters an artifact.
+- **Container digests** — `contract.yml container_digests` records the
+  ghcr manifest digest per (container × arch); the preflight job proves
+  recorded == live before any leg spends compute, and the container legs
+  pull `name:tag@digest`. A retagged toolchain container fails the
+  preflight by name instead of moving the compiler under the matrix.
+- **Pinned compilers** — the linux-gnu leg installs
+  `gcc-11=${GCC11_PIN}`/`g++-11=${GCC11_PIN}` (the PPA's exact version
+  tokens) for the exe link; the rust toolchain is the FLOWED ecosystem
+  pin on EVERY leg that compiles Rust — the container legs and (since
+  the runner image's rustc floats with the image) the macos legs, via
+  `ci/prepare-rust-toolchain.sh`, and the link-unit source build via
+  dtolnay's `toolchain:` input.
+- **Host-path scrubs** — the deploy pass rewrites the shipped
+  `rbconfig.rb`'s build-host prefixes and flag values to the mount point
+  (never `CONFIG["build"]`/TOPDIR), and the deploy strip removes the
+  `.dSYM` trees (their UUIDs are per-build). Ruby's configure runs with
+  the canonical `--build`/`--host` triplet (Platform::CONFIGURE_TRIPLETS
+  owns the map; the darwin kernel major flows from
+  `macos_deployment_target`), so the recorded archdir never names the
+  build host's guess.
+- **The recorded provenance** — every contract sidecar's `built_from`
+  carries `exe_sha256_presign` (the pre-signing exe digest) and
+  `toolchain` (the leg's identity, composed by `ci/record-toolchain.sh`
+  beside the toolchain it names). The release shards fold both.
+
+The named gaps (recorded-not-pinned, by construction):
+
+- **brew** floats within a run's runner image (the Brewfile pins formula
+  NAMES, not versions; `--no-upgrade` stops mid-matrix drift). The
+  resolved versions are recorded in the toolchain identity.
+- **MSYS2** rides the rolling repo: the action SHA pins the
+  checksum-verified base installer, and the in-leg `pacman -Syu` is the
+  single refresh — MSYS2 serves no snapshot mirror a `pacman -U` could
+  pin against (a snapshot URL 404s as the mirrors GC). The resolved
+  package set is recorded (`pacman -Q`, and its sha256 in the toolchain
+  identity).
+- **Signing** rewrites the exe after `exe_sha256_presign` is recorded
+  (macOS codesign, windows Authenticode) — timestamped by design. The
+  reproducibility claim is scoped to the pre-signing bytes.
+
+The proof protocol (run post-merge by the release driver, never a CI
+gate): **E1** re-dispatches the same commit on ONE ref — the warm-cache
+arm, expected trivially identical. **E2** dispatches the same commit on
+a SECOND ref (THE SCOPE LAW below: a same-key cache never crosses refs,
+so the second ref pays the cold build) — the cold arm. The diff reads
+the shards: `built_from.exe_sha256_presign` per leg, plus the `.tfs`
+sidecar shas. A mismatch names its leg; the toolchain identity is the
+first suspect list.
+
 ## THE SCOPE LAW (why a green key still misses)
 
 `actions/cache` scopes entries to the ref that wrote them:

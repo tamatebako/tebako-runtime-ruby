@@ -27,6 +27,25 @@
 ---
 contract_version: 2
 container_version: "0.16.2"
+# The immutable side of the container line: the ghcr manifest digest per
+# (container × arch), recorded at pin time. ghcr tags are MUTABLE, so
+# container_version alone never pins the toolchain — the preflight job
+# proves recorded == live (the registry's Docker-Content-Digest header)
+# before any leg spends compute, and the container build legs pull
+# name:tag@digest. A deliberate toolchain bump edits the tag above AND
+# the digests here in the same commit. Read the live digest with ghcr's
+# anonymous-token flow:
+#   token=$(curl -fsSL "https://ghcr.io/token?scope=repository:tamatebako/tebako-<c>:pull" | jq -r .token)
+#   curl -fsSL -o /dev/null -D - -H "Authorization: Bearer $token" \
+#     -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json" \
+#     "https://ghcr.io/v2/tamatebako/tebako-<c>/manifests/<tag>" | grep -i docker-content-digest
+container_digests:
+  ubuntu-20.04:
+    amd64: "sha256:a3ee18989ab377b1b343f6b10dcc992a65c7976b98748310d2176d584b9bf4b8"
+    arm64: "sha256:77dca3e2cc4ff833c4fbf9ee5efdad5b396dee386c118b271b6395aafec11e85"
+  alpine-3.17:
+    amd64: "sha256:85781cd6ac76250e9630da63252caef5e814a04a4db2d59c9b7f52d6271248ba"
+    arm64: "sha256:1d363bc432d215de0f69ada2070e21962e77fbd03c9fa7ec57965126fe48feb6"
 # The macOS support floor for the macOS legs — the value clang stamps as
 # the exe's LC_BUILD_VERSION minos. A PRODUCT decision, never the runner
 # image's accident: unpinned, the floor floats with the build host's OS,

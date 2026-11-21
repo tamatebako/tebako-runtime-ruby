@@ -86,13 +86,19 @@ begin
     #       ARGV[10] -- MOUNT_ROOT_OVERRIDE ("1": the tarball carries the
     #                  loadpath patch — the layout gains the
     #                  mount_root_override grant, spec 17 §1)
-    unless ARGV.length == 11
+    #       ARGV[11..13] -- the rbconfig scrub roots (DEPS dir, the CMake
+    #                  binary dir, the CMake source dir): the build-tree
+    #                  absolute paths deploy_rbconfig canonicalizes out of
+    #                  the shipped rbconfig's inert flag fields
+    #                  (ImageBuilder#deploy_rbconfig).
+    unless ARGV.length == 14
       raise TebakoRuntimeBuilder::Error,
-            "build_pass deploy command expects 11 arguments, #{ARGV.length} has been provided."
+            "build_pass deploy command expects 14 arguments, #{ARGV.length} has been provided."
     end
     TebakoRuntimeBuilder::BuildPasses.deploy(ARGV[1], ARGV[2], ARGV[3], ARGV[4], ARGV[5], ARGV[6], ARGV[7],
                                              mount_point: ARGV[9], embed: ARGV[8] == "1",
-                                             mount_root_override: ARGV[10] == "1")
+                                             mount_root_override: ARGV[10] == "1",
+                                             scrub_roots: [ARGV[11], ARGV[12], ARGV[13]])
   when "overlay"
     #       ARGV[1] -- PASS2_TARBALL
     #       ARGV[2] -- PASS2_SHA256

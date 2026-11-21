@@ -109,6 +109,34 @@ RSpec.describe TebakoRuntimeBuilder::Platform do
     expect(described_class::TPKG_TRIPLETS.keys).to match_array(described_class::HOST_IDS.values)
   end
 
+  # The canonical --build/--host pin (the shipped rbconfig's
+  # CONFIG["build"]/build_os/archdir stops recording the build host's
+  # config.guess kernel release). config.sub maps every entry to itself;
+  # the darwin entries append the contract floor's kernel major
+  # (macos_deployment_target N ↔ darwin N+9), flowed by the builder.
+  it "names the canonical configure triplet for every host_id" do
+    {
+      %w[x86_64-linux-gnu x86_64] => "x86_64-pc-linux-gnu",
+      %w[aarch64-linux-gnu aarch64] => "aarch64-unknown-linux-gnu",
+      %w[x86_64-linux-musl x86_64] => "x86_64-pc-linux-musl",
+      %w[aarch64-linux-musl aarch64] => "aarch64-unknown-linux-musl",
+      %w[x64-mingw-ucrt x86_64] => "x86_64-w64-mingw32",
+      %w[aarch64-mingw-ucrt aarch64] => "aarch64-w64-mingw32"
+    }.each do |(ostype, arch), triplet|
+      expect(described_class.new(ostype, arch).configure_triplet).to eq(triplet)
+    end
+    expect(described_class::CONFIGURE_TRIPLETS.keys).to match_array(described_class::HOST_IDS.values)
+  end
+
+  it "appends the contract floor's kernel major on darwin and refuses the bare form" do
+    platform = described_class.new("arm64-darwin23", "arm64")
+    expect(platform.configure_triplet(darwin_major: 23)).to eq("aarch64-apple-darwin23")
+    expect(described_class.new("x86_64-darwin23", "x86_64").configure_triplet(darwin_major: 23))
+      .to eq("x86_64-apple-darwin23")
+    expect { platform.configure_triplet }
+      .to raise_error(TebakoRuntimeBuilder::Error) { |e| expect(e.error_code).to eq(112) }
+  end
+
   it "rejects unsupported operating systems" do
     expect { described_class.new("x86_64-freebsd", "x86_64").host_id }
       .to raise_error(TebakoRuntimeBuilder::Error)

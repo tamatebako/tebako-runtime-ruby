@@ -96,6 +96,27 @@ module TebakoRuntimeBuilder
 
     private
 
+    # identity.created, deterministic (the reproducible-build contract):
+    # SOURCE_DATE_EPOCH when the leg exports it (the compute job flows the
+    # run's HEAD commit time, so two runs of the same tree stamp the image
+    # identically), the epoch otherwise — the tfs-cli mkimage convention
+    # (unset → 0), so a local build is deterministic too. A malformed value
+    # is a named error, never a silent wall-clock fallback.
+    def created_timestamp
+      Time.at(sde_epoch).utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    end
+
+    def sde_epoch
+      sde = ENV.fetch("SOURCE_DATE_EPOCH", nil)
+      return 0 if sde.nil? || sde.empty?
+
+      Integer(sde, 10)
+    rescue ArgumentError
+      raise TebakoRuntimeBuilder::Error.new(
+        "SOURCE_DATE_EPOCH is malformed (#{sde.inspect} — whole seconds since the epoch)", 64
+      )
+    end
+
     def identity # rubocop:disable Metrics/MethodLength -- one declarative block per spec 03 §2.1; splitting it scatters the grammar
       {
         "schema_version" => 1,
@@ -106,7 +127,7 @@ module TebakoRuntimeBuilder
         "name" => "tebako-runtime-ruby",
         "version" => @tebako_version,
         "producer" => { "tool" => "tebako-runtime-ruby", "tool_version" => @tebako_version },
-        "created" => Time.now.utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "created" => created_timestamp,
         "source" => { "src_sha256" => @src_sha256 },
         "digest" => {
           "tree_hash" => "sha256:#{"0" * 64}",

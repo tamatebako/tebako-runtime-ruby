@@ -60,6 +60,10 @@
 #   [-DDEPS:STRING=<deps folder>]   (default: <binary dir>/deps)
 #   [-DLOG_LEVEL:STRING=error]
 #   [-DREMOVE_GLIBC_PRIVATE=ON]     (linux-gnu: build patchelf)
+#   [-DRUBY_CONFIGURE_TRIPLET:STRING=<canonical config.sub triplet>]
+#                                   (the ruby configure's --build AND --host,
+#                                    flowed from Platform::CONFIGURE_TRIPLETS;
+#                                    unset keeps autoconf's config.guess)
 
 cmake_minimum_required (VERSION 3.20)
 # Version 3.20 for cmake_path
@@ -682,6 +686,19 @@ message(STATUS "openssl Ruby option='${OPENSSL_RUBY_OPTION}'")
 message(STATUS "libyaml Ruby option='${LIBYAML_RUBY_OPTION}'")
 message(STATUS "shared Ruby option='${RUBY_SHARED_OPTION}'")
 
+# The canonical configure triplet (-DRUBY_CONFIGURE_TRIPLET from
+# builder.rb; Platform::CONFIGURE_TRIPLETS owns the map): ruby's configure
+# runs --build=<triplet> --host=<triplet> (identical, so cross_compiling
+# stays no) and the shipped rbconfig's CONFIG["build"]/build_os/archdir
+# record the pin — never the build host's config.guess kernel release
+# (aarch64-apple-darwin23.1.0 on a macOS 14 host floats to darwin24.x on
+# the macos-15 fleet; the in-image archdir spelled arm64-darwin23 vs
+# arm64-darwin24 with it). Bare invocations (no -D) keep autoconf's guess.
+set(RUBY_TRIPLE_OPTIONS "")
+if(DEFINED RUBY_CONFIGURE_TRIPLET)
+  set(RUBY_TRIPLE_OPTIONS "--build=${RUBY_CONFIGURE_TRIPLET} --host=${RUBY_CONFIGURE_TRIPLET}")
+endif()
+
 # The build-pass tooling (build/tools/build_pass.rb over build/lib) runs the
 # consumer-side steps the pre-patched source tree expects:
 #   prepare       -- substitute @TEBAKO_MLIBS@ in template/Makefile.in and
@@ -720,6 +737,7 @@ ExternalProject_Add(${RUBY_PRJ}
                                                         --disable-install-doc                 \
                                                         --with-static-linked-ext              \
                                                         --with-out-ext=${RUBY_WITHOUT_EXT}    \
+                                                        ${RUBY_TRIPLE_OPTIONS}                \
                                                         --prefix=${DATA_SRC_DIR}              \
                                                         ${C_FLAGS_DEST}=\"${RUBY_C_FLAGS}\"   \
                                                         LDFLAGS=\"${RUBY_L_FLAGS}\"              \
@@ -749,7 +767,7 @@ set(CMAKE_CXX_EXTENSIONS   OFF)
 # Packaged filesystem
 
 add_custom_target(packaged_filesystem
-  COMMAND ${RUBY_INTERP} ${CMAKE_SOURCE_DIR}/tools/build_pass.rb deploy ${RUBY_VER} ${RUBY_STASH_DIR} ${DATA_SRC_DIR} ${DATA_PRE_DIR} ${DATA_BIN_FILE} ${GEN_DIR}/local ${DEPS_BIN_DIR} $<BOOL:${TEBAKO_EMBED_IMAGE}> "${FS_MOUNT_POINT}" $<BOOL:${MOUNT_ROOT_OVERRIDE}>
+  COMMAND ${RUBY_INTERP} ${CMAKE_SOURCE_DIR}/tools/build_pass.rb deploy ${RUBY_VER} ${RUBY_STASH_DIR} ${DATA_SRC_DIR} ${DATA_PRE_DIR} ${DATA_BIN_FILE} ${GEN_DIR}/local ${DEPS_BIN_DIR} $<BOOL:${TEBAKO_EMBED_IMAGE}> "${FS_MOUNT_POINT}" $<BOOL:${MOUNT_ROOT_OVERRIDE}> ${DEPS} ${CMAKE_CURRENT_BINARY_DIR} ${CMAKE_CURRENT_SOURCE_DIR}
   DEPENDS setup
 )
 # The deploy pass writes ${DATA_BIN_FILE} (mkdwarfs) only for the embedded

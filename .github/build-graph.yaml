@@ -25,6 +25,7 @@ shared:
   - Gemfile.lock
   - VERSION                 # the tebako version (artifact names)
   - contract.yml            # the contract version (release cards)
+  - ci/record-toolchain.sh  # the toolchain-identity recorder every leg's contract sidecar folds
   - .github/matrix.json     # the version/env vocabularies
   - .github/build-graph.yaml # this model
   - .github/workflows/_build-platform.yml # the one per-platform build/publish unit
@@ -48,6 +49,7 @@ platforms:
     - .github/workflows/build-linux-musl.yml
   macos:
     - ci/link-unit-posix.sh
+    - ci/prepare-rust-toolchain.sh  # the in-leg pinned rustc (the runner image's floats with the image)
     - ci/check_symbol_provenance.sh
     - Brewfile
     - .github/workflows/build-macos.yml

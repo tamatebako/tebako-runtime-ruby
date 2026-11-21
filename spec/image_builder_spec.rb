@@ -346,5 +346,102 @@ RSpec.describe TebakoRuntimeBuilder::ImageBuilder do
 
       expect(Dir.children(bin)).to eq(["gem.cmd"])
     end
+
+    # The macOS dsymutil trees (*.bundle.dSYM/ next to each extension
+    # bundle) are pure debug companions — they leaked build-host paths
+    # into the image and rode every env image's bytes.
+    it "removes the dSYM debug-info trees and keeps the bundles" do
+      ext = File.join(data_src_dir, "lib", "ruby", "gems", "4.0.0", "extensions",
+                      "arm64-darwin", "4.0.0-static", "rbs-4.0.0")
+      FileUtils.mkdir_p(File.join(ext, "rbs_extension.bundle.dSYM", "Contents", "Resources"))
+      File.write(File.join(ext, "rbs_extension.bundle.dSYM", "Contents", "Resources", "DWARF"), "dwarf")
+      File.write(File.join(ext, "rbs_extension.bundle"), "mach-o")
+
+      TebakoRuntimeBuilder::Stripper.strip(TebakoRuntimeBuilder::Platform.new("arm64-darwin23", "arm64"),
+                                           data_src_dir)
+
+      expect(Dir.exist?(File.join(ext, "rbs_extension.bundle.dSYM"))).to be(false)
+      expect(File.file?(File.join(ext, "rbs_extension.bundle"))).to be(true)
+    end
+  end
+
+  # The shipped rbconfig is written against the build host's absolute
+  # paths; the scrub canonicalizes the two prefix lines to the mount root
+  # and rewrites the inert compile-flag fields' build-tree references to
+  # the same, longest root first (the reproducible-build contract). The
+  # toolchain provenance outside the build tree (homebrew) stays, and the
+  # fields the configure pin owns (CONFIG["build"]/build_os) are never
+  # touched.
+  describe "#deploy_rbconfig" do
+    # The fixture is one realistic shipped rbconfig — heredoc lines and
+    # all; splitting it would scatter the shape under test.
+    def write_shipped_rbconfig # rubocop:disable Metrics/MethodLength
+      dir = File.join(data_src_dir, "lib", "ruby", "4.0.0", "arm64-darwin23")
+      FileUtils.mkdir_p(dir)
+      path = File.join(dir, "rbconfig.rb")
+      File.write(path, <<~RBCONFIG)
+        module RbConfig
+          TOPDIR = File.dirname(__FILE__).chomp!("/lib/ruby/4.0.0/arm64-darwin23")
+          DESTDIR = '' unless defined? DESTDIR
+          CONFIG = {}
+          CONFIG["prefix"] = (TOPDIR || DESTDIR + "#{data_src_dir}")
+          CONFIG["configure_args"] = " '--without-gmp' '--prefix=#{data_src_dir}' 'cflags=-fPIC -I/ws/.build/deps/include -I/ws/build/include' 'LDFLAGS=-L/ws/.build/deps/lib -L/ws/.build/o' '--with-openssl-dir=/opt/homebrew/opt/openssl@3'"
+          CONFIG["RUBY_EXEC_PREFIX"] = "#{data_src_dir}"
+          CONFIG["build"] = "aarch64-apple-darwin23.1.0"
+          CONFIG["CFLAGS"] = "-fPIC -I/ws/.build/deps/include"
+          CONFIG["RUST_LIB"] = "/ws/.build/o/libtfs.rlib"
+        end
+      RBCONFIG
+      path
+    end
+
+    def scrub!(scrub_roots: ["/ws/.build/deps", "/ws/.build/o", "/ws/build"])
+      rv = TebakoRuntimeBuilder::RubyVersion.new("4.0.6")
+      platform = TebakoRuntimeBuilder::Platform.new("arm64-darwin23", "arm64")
+      described_class.new(platform, rv, File.join(@dir, "stash"), data_src_dir, File.join(@dir, "pre"),
+                          File.join(@dir, "out", "fs.bin"), File.join(@dir, "deps", "bin"),
+                          mount_point: "/__tfs__", embed: false, scrub_roots: scrub_roots)
+                     .deploy_rbconfig
+    end
+
+    it "rewrites the two prefix lines to the mount root" do
+      path = write_shipped_rbconfig
+      scrub!
+      contents = File.read(path)
+      expect(contents).to include('CONFIG["prefix"] = (TOPDIR || DESTDIR + "/__tfs__")')
+      expect(contents).to include('CONFIG["RUBY_EXEC_PREFIX"] = "/__tfs__"')
+    end
+
+    it "canonicalizes the flag fields' build-tree paths, longest root first" do
+      path = write_shipped_rbconfig
+      scrub!
+      contents = File.read(path)
+      expect(contents).not_to include("/ws/")
+      expect(contents).to include("'--prefix=/__tfs__'")
+      expect(contents).to include("cflags=-fPIC -I/__tfs__/include -I/__tfs__/include")
+      expect(contents).to include('CONFIG["RUST_LIB"] = "/__tfs__/libtfs.rlib"')
+    end
+
+    it "keeps toolchain provenance outside the build tree and the configure-pinned fields" do
+      path = write_shipped_rbconfig
+      scrub!
+      contents = File.read(path)
+      expect(contents).to include("--with-openssl-dir=/opt/homebrew/opt/openssl@3")
+      expect(contents).to include('CONFIG["build"] = "aarch64-apple-darwin23.1.0"')
+      expect(contents).to include('TOPDIR = File.dirname(__FILE__).chomp!("/lib/ruby/4.0.0/arm64-darwin23")')
+    end
+
+    it "fails closed when the layout tree carries no rbconfig" do
+      expect { scrub! }
+        .to raise_error(TebakoRuntimeBuilder::Error, /no rbconfig\.rb/)
+    end
+
+    it "fails closed when a prefix line is absent" do
+      path = write_shipped_rbconfig
+      File.write(path, File.read(path).sub(/^ *CONFIG\["prefix"\] = .*$/, ""))
+
+      expect { scrub! }
+        .to raise_error(TebakoRuntimeBuilder::Error, /carries no CONFIG\["prefix"\] line/)
+    end
   end
 end

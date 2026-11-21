@@ -27,6 +27,7 @@
 
 require "digest"
 require "fileutils"
+require "json"
 require "open3"
 require "yaml"
 
@@ -191,7 +192,8 @@ module TebakoRuntimeBuilder
               "-DTEBAKO_VERSION:STRING=#{@tebako_version}",
               "-DLOG_LEVEL:STRING=error",
               "-DFS_MOUNT_POINT:STRING=#{mount_root(tarball)}",
-              "-DMOUNT_ROOT_OVERRIDE:BOOL=#{mount_root_override(tarball)}"]
+              "-DMOUNT_ROOT_OVERRIDE:BOOL=#{mount_root_override(tarball)}",
+              "-DRUBY_CONFIGURE_TRIPLET:STRING=#{configure_triplet}"]
       if assets.length == 2
         (tarball_p2, sha256_p2) = assets[1]
         args += ["-DRUBY_TARBALL_P2:STRING=file://#{tarball_p2}", "-DRUBY_HASH_P2:STRING=#{sha256_p2}"]
@@ -265,6 +267,22 @@ module TebakoRuntimeBuilder
 
     def contract
       @contract ||= TebakoRuntimeBuilder::Contract.new(File.join(@repo_root, "contract.yml"))
+    end
+
+    # The canonical --build/--host triplet for the ruby configure
+    # (Platform::CONFIGURE_TRIPLETS owns the map — the shipped rbconfig's
+    # CONFIG["build"]/build_os/archdir pin, never the build host's
+    # config.guess). The darwin kernel major FLOWS from contract.yml's
+    # macos_deployment_target (macOS N ↔ darwin N+9: 11↔20 … 15↔24) — the
+    # same floor pin the macOS exe's LC_BUILD_VERSION stamps, so the
+    # recorded archdir and the recorded floor never disagree.
+    def configure_triplet
+      @configure_triplet ||=
+        if @platform.macos?
+          @platform.configure_triplet(darwin_major: contract.macos_deployment_target.split(".").first.to_i + 9)
+        else
+          @platform.configure_triplet
+        end
     end
 
     # The env image's L1 payload manifest (ImageManifest — spec 03 §1):
@@ -406,16 +424,52 @@ module TebakoRuntimeBuilder
     # mount_root is the SAME flow as -DFS_MOUNT_POINT (the tarball's
     # tebako-mount-root manifest — ONE source, memoized at configure);
     # built_from names the source release and every consumed tarball with
-    # its verified sha256 (msys consumes two: pass1 + pass2).
-    def write_contract_sidecar(assets)
+    # its verified sha256 (msys consumes two: pass1 + pass2), the
+    # PRE-SIGNING exe digest (the reproducibility anchor the E1/E2 re-run
+    # experiment diffs — macOS/windows signing rewrites the exe after this
+    # point by design, so the claim is scoped to the pre-signing bytes),
+    # and the leg's toolchain identity (TEBAKO_BUILD_TOOLCHAIN_JSON,
+    # composed by ci/record-toolchain.sh beside the toolchain it names;
+    # the uploader tolerates the additive nested map — it folds
+    # built_from verbatim).
+    # Public so the spec drives it against a fixture exe directly (the
+    # ImageBuilder deploy-pass precedent).
+    public
+
+    def write_contract_sidecar(assets) # rubocop:disable Metrics/AbcSize,Metrics/MethodLength -- the card's fields, one line each; splitting scatters the grammar
+      unless File.file?(output)
+        raise TebakoRuntimeBuilder::Error.new(
+          "the runtime executable #{output} does not exist — the finalize pass did not run", 105
+        )
+      end
+
+      built_from = {
+        "release" => @release,
+        "sources" => assets.map { |(path, sha256)| { "name" => File.basename(path), "sha256" => sha256 } },
+        "exe_sha256_presign" => Digest::SHA256.file(output).hexdigest
+      }
+      toolchain = toolchain_identity
+      built_from["toolchain"] = toolchain if toolchain
       card = CONTRACT_CARD.merge(
         "mount_root" => @mount_root,
-        "built_from" => {
-          "release" => @release,
-          "sources" => assets.map { |(path, sha256)| { "name" => File.basename(path), "sha256" => sha256 } }
-        }
+        "built_from" => built_from
       )
       File.write("#{output.sub(/\.exe\z/, "")}.contract.yaml", YAML.dump(card))
+    end
+
+    private
+
+    # The leg's toolchain identity, composed by the CI legs via
+    # ci/record-toolchain.sh. Unset/empty (a local build) omits the key —
+    # never a placeholder. Malformed JSON is a named error: the legs set
+    # the variable, so a parse failure is a wiring bug, not an absence.
+    def toolchain_identity
+      json = ENV.fetch("TEBAKO_BUILD_TOOLCHAIN_JSON", nil)
+      return nil if json.nil? || json.empty?
+
+      JSON.parse(json)
+    rescue JSON::ParserError => e
+      raise TebakoRuntimeBuilder::Error.new("TEBAKO_BUILD_TOOLCHAIN_JSON is not valid JSON: #{e.message}", 64)
     end
   end
 end

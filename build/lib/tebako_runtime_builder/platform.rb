@@ -205,6 +205,46 @@ module TebakoRuntimeBuilder
       "linux-musl-arm64" => "aarch64-linux-musl"
     }.freeze
 
+    # host_id → the canonical config.sub triplet the ruby configure runs
+    # with as BOTH --build and --host (identical strings keep
+    # cross_compiling=no — verified against the generated configure — while
+    # pinning the shipped rbconfig's CONFIG["build"]/build_os and the
+    # in-image archdir to a value independent of the build host's kernel
+    # release: unpinned, config.guess bakes aarch64-apple-darwin23.1.0 on a
+    # macOS 14 host and darwin24.x on the macos-15 fleet, and the archdir
+    # (arm64-darwin23 vs arm64-darwin24) floats with it). config.sub maps
+    # every entry here to itself, so the recorded value IS the pin. The
+    # darwin entries carry no kernel segment: the builder appends the
+    # contract floor's kernel major (macos_deployment_target N ↔ darwin
+    # N+9), flowed from contract.yml — never a second literal.
+    CONFIGURE_TRIPLETS = {
+      "linux-gnu-x86_64" => "x86_64-pc-linux-gnu",
+      "linux-gnu-arm64" => "aarch64-unknown-linux-gnu",
+      "linux-musl-x86_64" => "x86_64-pc-linux-musl",
+      "linux-musl-arm64" => "aarch64-unknown-linux-musl",
+      "macos-x86_64" => "x86_64-apple-darwin",
+      "macos-arm64" => "aarch64-apple-darwin",
+      "windows-ucrt64" => "x86_64-w64-mingw32",
+      "windows-ucrt-arm64" => "aarch64-w64-mingw32"
+    }.freeze
+
+    # This platform's canonical configure triplet. darwin_major: the macOS
+    # support floor's kernel major (the builder flows it from contract.yml);
+    # required on macOS, ignored elsewhere.
+    def configure_triplet(darwin_major: nil)
+      triplet = CONFIGURE_TRIPLETS.fetch(host_id) do
+        raise TebakoRuntimeBuilder::Error.new("no configure triplet for host_id '#{host_id}'", 112)
+      end
+      return triplet unless macos?
+
+      if darwin_major.nil?
+        raise TebakoRuntimeBuilder::Error.new(
+          "the darwin configure triplet needs the contract floor's kernel major (macos_deployment_target)", 112
+        )
+      end
+      "#{triplet}#{darwin_major}"
+    end
+
     # This platform's spec 03 §3 triplet (e.g. "x86_64-windows-ucrt").
     def tpkg_triplet
       TPKG_TRIPLETS.fetch(host_id) do
