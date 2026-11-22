@@ -1,0 +1,226 @@
+# Copyright (c) 2025-2026 [Ribose Inc](https://www.ribose.com).
+# All rights reserved.
+# This file is a part of tamatebako
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions
+# are met:
+# 1. Redistributions of source code must retain the above copyright
+#    notice, this list of conditions and the following disclaimer.
+# 2. Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+# ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
+# TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+# PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS
+# BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
+
+# reproduce — the public verification of the reproducible-build contract
+# (docs/build-chain.md's E1/E2 pins; docs/reproducible.md owns the claim's
+# scope and the per-leg status table). For ONE published release leg this
+# workflow:
+#
+#   1. era     — checks out the TAG's tree (cheap, no build spend) and
+#                decides the tag's era: a pre-arc tree carries no
+#                ci/record-toolchain.sh, cannot be rebuilt by the current
+#                workflow, and its image stamped wall-clock time — its
+#                bytes can never reproduce. The leg's host_id flows from
+#                the tag's own Platform module (the grammar's owner).
+#   2. rebuild — era=post only: calls _build-platform.yml with
+#                source_ref=<tag> (the tag's exact tree) and
+#                skip_codesign=true (the exe claim is scoped to the
+#                pre-signing bytes) and publish=false. THE RUN NEVER
+#                TOUCHES THE RELEASE — no upload, no sign, no registry.
+#   3. verdict — ci/reproduce-verdict.sh: the published-integrity floor
+#                (the leg's exe/image sha256-verified against their
+#                published sidecars — every era), then era=post the
+#                rebuilt-vs-published identity diff. A hard mismatch fails
+#                the run naming the artifact + both hashes and quoting the
+#                shard's built_from.toolchain. The verdict renders as the
+#                step summary + a JSON artifact.
+#
+# The weekly schedule is a drift WATCH: it self-dispatches a
+# workflow_dispatch run for the latest release's proven witness leg
+# (compute_matrix ignores the ruby/arch filters under a schedule event —
+# the dispatch indirection keeps every verification filter-honored). The
+# chain-gate checkouts (tamatebako/ruby, tamatebako/tebako) ride main BY
+# DESIGN: the watch tracks the CURRENT chain, and a red run means the
+# chain drifted from what the release was built against — the shard's
+# toolchain block is the suspect list.
+
+name: reproduce
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to verify (e.g. v0.17.15 — shard tags like v0.16.28-ruby4.0 work too)'
+        required: true
+        type: string
+      ruby_version:
+        description: 'The leg ruby version (e.g. 4.0.9 — must name a published leg of the tag)'
+        required: true
+        type: string
+      platform:
+        description: 'The leg platform'
+        type: choice
+        options:
+          - linux-gnu
+          - linux-musl
+          - macos
+          - windows
+        default: linux-gnu
+      arch:
+        description: 'The leg arch'
+        type: choice
+        options:
+          - x86_64
+          - arm64
+        default: x86_64
+  schedule:
+    # Weekly, Monday 03:17 UTC — the drift watch. Fires only from the
+    # default branch (GitHub schedule semantics): the watch activates with
+    # the merge, never from a PR.
+    - cron: '17 3 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  era:
+    name: Resolve the tag's era and the leg's host_id
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      era: ${{ steps.probe.outputs.era }}
+      host_id: ${{ steps.probe.outputs.host_id }}
+    steps:
+      - name: Checkout the tag's tree
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 1
+
+      # The host_id grammar's owner is the factory's Platform module —
+      # running the TAG's own copy keeps the flow era-correct by
+      # construction (never a re-derived mapping here).
+      - name: Setup Ruby (the platform vocabulary is Ruby)
+        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+        with:
+          ruby-version: '3.3'
+
+      - name: Probe the era and flow the host_id
+        id: probe
+        run: |
+          set -euo pipefail
+          # The era discriminator: the reproducible-build arc added
+          # ci/record-toolchain.sh — a tag whose tree lacks it cannot be
+          # rebuilt by the current workflow (the build steps invoke it).
+          if [ -f ci/record-toolchain.sh ]; then era=post; else era=pre; fi
+          echo "era=$era" >> "$GITHUB_OUTPUT"
+          host_id=$(ruby -Ibuild/lib -e 'require "tebako_runtime_builder/platform"; print TebakoRuntimeBuilder::Platform.host_id_for(ARGV[0], ARGV[1])' \
+            "${{ inputs.platform }}" "${{ inputs.arch }}")
+          echo "host_id=$host_id" >> "$GITHUB_OUTPUT"
+          echo "tag ${{ inputs.tag }}: era=$era host_id=$host_id"
+
+  rebuild:
+    name: Rebuild the leg from the tag's exact tree
+    needs: era
+    if: github.event_name == 'workflow_dispatch' && needs.era.outputs.era == 'post'
+    uses: ./.github/workflows/_build-platform.yml
+    # The called workflow declares these grants; a reusable workflow never
+    # elevates past its caller, so the full set flows from here even though
+    # publish=false spends none of the write scopes (no upload, no sign,
+    # no SLSA attest — the run never touches the release).
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      attestations: write
+    with:
+      platform: ${{ inputs.platform }}
+      ruby_filter: ${{ inputs.ruby_version }}
+      arch_filter: ${{ inputs.arch }}
+      source_ref: ${{ inputs.tag }}
+      skip_codesign: true
+      publish: false
+    secrets: inherit
+
+  verdict:
+    name: Verify the rebuilt bytes against the published leg
+    needs: [era, rebuild]
+    if: always() && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read  # gh release download (the published leg)
+      actions: read   # gh run download (this run's rebuilt artifact)
+    steps:
+      # The verdict logic rides the DISPATCH ref, never the tag — the tag
+      # is the subject under test, the verifier is ours.
+      - name: Checkout (the verdict script)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Ruby (the rebuilt contract card is YAML)
+        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+        with:
+          ruby-version: '3.3'
+
+      - name: Render the verdict
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+          RUBY_VERSION: ${{ inputs.ruby_version }}
+          PLATFORM: ${{ inputs.platform }}
+          ARCH: ${{ inputs.arch }}
+          HOST_ID: ${{ needs.era.outputs.host_id }}
+          ERA: ${{ needs.era.outputs.era }}
+          REBUILD_RESULT: ${{ needs.rebuild.result }}
+          REBUILD_RUN: ${{ needs.rebuild.outputs.run || '' }}
+        run: bash ci/reproduce-verdict.sh
+
+      - name: Upload the verdict (JSON)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: reproduce-verdict-${{ inputs.tag }}-${{ inputs.platform }}-${{ inputs.arch }}-${{ inputs.ruby_version }}
+          path: verdict.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  weekly-watch:
+    name: Dispatch the weekly drift watch
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: write  # gh workflow run (the self-dispatch)
+      contents: read  # gh release list
+    steps:
+      - name: Dispatch reproduce.yml for the latest release's witness leg
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # The latest NON-SHARD release tag (a catalog publish shards per
+          # ruby line — v0.16.28-ruby4.0, … — and those tags carry a suffix).
+          tag="$(gh release list --repo tamatebako/tebako-runtime-ruby --limit 100 --json tagName --jq '.[].tagName' \
+                 | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)"
+          [ -n "$tag" ] || { echo "::error::no non-shard release tag found"; exit 1; }
+          # The pinned witness leg — ruby 4.0.9 × linux-gnu × x86_64: the
+          # arc's E2 twin-run (runs 44983654950 + 45000701327) proved this
+          # leg byte-reproduces across runners. Repin when matrix.json's
+          # tidy vocabulary moves. The dispatched run is what goes red on
+          # drift; this job is green once the dispatch lands.
+          gh workflow run reproduce.yml --ref "${GITHUB_REF_NAME}" \
+            -f tag="$tag" -f ruby_version=4.0.9 -f platform=linux-gnu -f arch=x86_64
+          echo "::notice::dispatched reproduce.yml for $tag (ruby 4.0.9 × linux-gnu × x86_64)"
