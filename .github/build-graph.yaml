@@ -74,6 +74,8 @@ publish_only:
   - .github/workflows/publish.yml          # the release coordinator (dispatch-only)
   - .github/workflows/bump-source-pin.yml  # the pin-bump bot — its OUTPUT (a pin PR) triggers the builds
   - .github/workflows/probe-bare-launch.yml # the bare-machine launch probe (dispatch-only)
+  - .github/workflows/reproduce.yml         # the reproducibility verifier (dispatch/schedule-only; the rebuild call is publish=false by construction)
+  - ci/reproduce-verdict.sh                 # its verdict renderer — consumed by the verification flow, never read by a build leg
 
 # Never build inputs.
 ignore:

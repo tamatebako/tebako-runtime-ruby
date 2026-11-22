@@ -96,6 +96,25 @@ on:
         description: 'Host the release under this tag instead of v<VERSION> — a release object caps at 1000 assets, so a catalog publish shards per ruby line (v0.16.28-ruby4.0, …). Artifact names stay version-branded; only the tag moves. Empty = v<VERSION>.'
         type: string
         default: ''
+      # The reproduce.yml verification path (docs/reproducible.md) rebuilds
+      # a RELEASE TAG's exact tree: every repo-self checkout rides
+      # source_ref (empty = the caller's ref, the ordinary triggers
+      # unchanged). The chain-gate checkouts (tamatebako/ruby,
+      # tamatebako/tebako) stay pinned to main BY DESIGN — the weekly watch
+      # tracks the CURRENT chain, and a moved chain gate is exactly the
+      # drift the watch exists to name.
+      source_ref:
+        description: 'Rebuild the tree at this ref (branch/tag/SHA) instead of the caller ref — the reproduce.yml verification path. Empty = the caller ref.'
+        type: string
+        default: ''
+      # A verification rebuild must produce the PRE-SIGNING bytes: the
+      # exe's reproducibility claim is scoped to built_from.exe_sha256_presign
+      # (signing rewrites the exe after that digest by design), so both
+      # signing gates force-disarm under skip_codesign.
+      skip_codesign:
+        description: 'Force-disarm macOS/windows code signing for this run (the reproduce.yml verification rebuild compares pre-signing bytes)'
+        type: boolean
+        default: false
     # The coordinator (publish.yml) reads these for its release job's
     # AUDIT (the legs publish their own packages from their own publish
     # jobs — spec 13 §2a's de-rendezvous — so the coordinator never
@@ -307,8 +326,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # The dependency-tree walk git-diffs the event's before..after —
-          # full history, never the depth-1 default.
+          # source_ref: the reproduce.yml verification rebuilds a release
+          # tag's exact tree (empty = the caller's ref). Full history,
+          # never the depth-1 default: the dependency-tree walk git-diffs
+          # the event's before..after, and get-sde reads HEAD's commit time.
+          ref: ${{ inputs.source_ref || '' }}
           fetch-depth: 0
 
       - name: Setup Ruby
@@ -561,6 +583,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # source_ref: the reproduce.yml verification rebuilds a release
+          # tag's exact tree (empty = the caller's ref).
+          ref: ${{ inputs.source_ref || '' }}
           fetch-depth: 1
 
       # The pin hit: the published link unit is a verified download, not
@@ -907,6 +932,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # source_ref: the reproduce.yml verification rebuilds a release
+          # tag's exact tree (empty = the caller's ref).
+          ref: ${{ inputs.source_ref || '' }}
           fetch-depth: 1
           submodules: true
 
@@ -1479,7 +1507,10 @@ jobs:
         if: matrix.env.os == 'macos'
         shell: bash
         env:
-          APPLE_SIGNING_ENABLED: ${{ vars.APPLE_SIGNING_ENABLED }}
+          # inputs.skip_codesign force-disarms: the reproduce.yml
+          # verification rebuild compares the PRE-SIGNING bytes
+          # (built_from.exe_sha256_presign), so signing must not run.
+          APPLE_SIGNING_ENABLED: ${{ inputs.skip_codesign && 'false' || vars.APPLE_SIGNING_ENABLED }}
           APPLE_DEVELOPER_ID_P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
           APPLE_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -1572,7 +1603,10 @@ jobs:
         id: signgate
         shell: bash
         env:
-          WINDOWS_SIGNING_ENABLED: ${{ vars.WINDOWS_SIGNING_ENABLED }}
+          # inputs.skip_codesign force-disarms: the reproduce.yml
+          # verification rebuild compares the PRE-SIGNING bytes
+          # (built_from.exe_sha256_presign), so signing must not run.
+          WINDOWS_SIGNING_ENABLED: ${{ inputs.skip_codesign && 'false' || vars.WINDOWS_SIGNING_ENABLED }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
@@ -2150,6 +2184,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # source_ref: the reproduce.yml verification rebuilds a release
+          # tag's exact tree (empty = the caller's ref).
+          ref: ${{ inputs.source_ref || '' }}
           fetch-depth: 1
           submodules: true
 
@@ -2263,6 +2300,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # source_ref: the audit reads the same tree the (re)build ran
+          # from (empty = the caller's ref).
+          ref: ${{ inputs.source_ref || '' }}
 
       # The fleet identity (tebako-release#3): the audit's release reads
       # spend the tebako-fleet App's installation token, not the shared
