@@ -62,22 +62,33 @@ gh workflow run reproduce.yml \
 One dispatch verifies ONE published leg:
 
 1. **era** — checks out the tag's tree (no build spend), decides the era
-   (`ci/record-toolchain.sh` present?), and flows the leg's `host_id`
-   from the tag's own `Platform.host_id_for` (the grammar's single
-   owner).
-2. **rebuild** (era=post only) — calls `_build-platform.yml` with
-   `source_ref=<tag>` (every repo-self checkout rides it: the tag's exact
-   build scripts, pins, and matrix vocabulary), `skip_codesign=true`
-   (both signing gates force-disarm — the exe claim is pre-signing), and
-   `publish=false`. **The run never touches the release** — no upload, no
-   signature, no registry write; the leg's own gates (boot smoke,
-   spawn-edge acceptance) run in full, and the rebuilt bytes ship only as
-   a run artifact. The chain-gate checkouts (tamatebako/ruby,
-   tamatebako/tebako) ride `main` by design: the verification tracks the
-   CURRENT chain, and drift there is exactly what the watch exists to
-   name.
+   (`ci/record-toolchain.sh` present?), flows the leg's `host_id` from
+   the tag's own `Platform.host_id_for` (the grammar's single owner),
+   and resolves the tag's commit SHA.
+2. **rebuild** (era=post only) — dispatches the platform's thin trigger
+   (`build-<platform>.yml`, publish defaults to false) **on the tag ref**
+   and watches the run to completion. The tag's OWN pipeline definition
+   runs: its checkouts are the event ref, never an input, so no
+   cache-writing job ever builds an input-selected ref (the CodeQL
+   `actions/cache-poisoning/direct-cache` class — an earlier shape of
+   this workflow threaded such a ref into `_build-platform.yml` and was
+   flagged; the tag-ref dispatch removes the taint instead of gating
+   around it), and its cache writes land in the tag's own scope by the
+   scope law, never the default branch's. The leg's own gates (boot
+   smoke, spawn-edge acceptance) run in full, and the rebuilt bytes ship
+   only as a run artifact. Two consequences worth knowing:
+   - A signing platform signs in-leg during verification (macOS codesign
+     + notarize; Authenticode once spec 34 arms) — harmless: the exe
+     claim compares PRE-SIGNING digests from both sides' provenance
+     records, never a signed file's hash.
+   - Re-runs of the same tag restore the tag scope's build-prefix
+     entries — the first run of a tag is the cold arm, later runs the
+     warm arm (the E1/E2 asymmetry over time; the toolchain row still
+     records every run's current toolchain).
 3. **verdict** — `ci/reproduce-verdict.sh` renders the verdict table
-   (step summary) and a JSON verdict artifact (30-day retention).
+   (step summary) and a JSON verdict artifact (30-day retention). This
+   workflow holds no write grant at all — the verification can never
+   touch the release.
 
 The verdict rows:
 
@@ -85,7 +96,7 @@ The verdict rows:
 |---|---|---|
 | published exe/image ↔ `.sha256` sidecar | hard | the trust anchors verify the served bytes (every era) |
 | shard sha256 fields ↔ sidecars | hard | the shard (a mirror) has not drifted from the anchors |
-| rebuilt exe identity | hard | era=post: rebuilt exe vs `exe_sha256_presign` when the published exe is signed (presign ≠ published digest ⇒ signed leg), else vs the published exe digest directly; both diffs always report, the out-of-scope one informational |
+| rebuilt exe identity | hard | era=post: the shard's `built_from.exe_sha256_presign` vs the rebuilt contract card's — both pre-signing digests, immune to signing state on either side (falls back to the byte digests when a side carries no presign record); the exe file-hash diff reports informationally |
 | rebuilt image identity | hard | era=post: rebuilt `.tfs` vs the published image digest |
 | source roll sha256, toolchain, abi | informational | the rebuilt contract card vs the shard — a red identity row's cause-of-death evidence (a moved roll = the chain drifted; a moved toolchain = the suspect list) |
 
@@ -127,8 +138,8 @@ the witness leg's row current).
 | linux-musl × arm64 | published bytes (unsigned) | pending | — |
 | macos × x86_64 | pre-signing digest (codesign rewrites the published exe) | pending — the E3 twin-run; brew floats recorded-not-pinned | — |
 | macos × arm64 | pre-signing digest (codesign rewrites the published exe) | pending — the E3 twin-run; brew floats recorded-not-pinned | — |
-| windows × ucrt64 | published bytes (unsigned today; re-scopes to presign automatically once Authenticode arms) | **partial by construction** — MSYS2 recorded-not-pinned: identity claimed only while the pacman resolution stands (the PE timestamp is `SOURCE_DATE_EPOCH`-fixed) | — |
-| windows × ucrt-arm64 | published bytes (unsigned today; same re-scope) | partial by construction — as ucrt64 | — |
+| windows × ucrt64 | published bytes (unsigned today; the compare reads the presign record the day Authenticode arms) | **partial by construction** — MSYS2 recorded-not-pinned: identity claimed only while the pacman resolution stands (the PE timestamp is `SOURCE_DATE_EPOCH`-fixed) | — |
+| windows × ucrt-arm64 | published bytes (unsigned today; same presign handling) | partial by construction — as ucrt64 | — |
 
 Pre-arc tags (≤ v0.17.15) verify the published-integrity floor on every
 leg; their images stamped wall-clock time, so no identity claim exists
@@ -143,10 +154,12 @@ for them and none is made.
    tamatebako/ruby roll drifted since the release (the chain gate rides
    `main`); a moved **toolchain** names the floating piece (runner image,
    brew, MSYS2).
-3. Re-dispatch on ONE ref (the scope law — `actions/cache` never shares
-   across refs; a same-key restore from the default branch is a warm arm,
-   a cold scope pays the full build; both are valid evidence, and the
-   verdict is identical either way).
-4. The rebuild is byte-honest by construction: `publish=false` means no
-   asset of the release can be created, replaced, or deleted by a
-   verification run.
+3. Re-runs of the same tag restore the tag's own cache scope (the first
+   run of a tag is cold, later runs warm) — both are valid evidence, and
+   the verdict is identical either way; the toolchain row records every
+   run's current toolchain regardless.
+4. The rebuild is byte-honest by construction: reproduce.yml holds no
+   write grant and the dispatched trigger's publish defaults to false —
+   no asset of the release can be created, replaced, or deleted by a
+   verification run, and the tag build's cache writes land in the tag's
+   own scope, never the default branch's.

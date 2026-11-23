@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # ci/reproduce-verdict.sh — the verdict half of .github/workflows/reproduce.yml.
 # Verifies ONE published release leg against (a) its own trust anchors and
-# (b) this run's rebuild of the same leg from the tag's exact tree, then
-# renders the verdict table (the step summary) and verdict.json (the
-# workflow uploads it as an artifact).
+# (b) the dispatched tag-ref build of the same leg (the rebuild job
+# watched it), then renders the verdict table (the step summary) and
+# verdict.json (the workflow uploads it as an artifact).
 #
 # What is checked, in order:
 #   1. PUBLISHED INTEGRITY (every era): the leg's exe / image download from
@@ -12,16 +12,16 @@
 #      fields are proven IN SYNC with those sidecars (the shard is a
 #      mirror, never the anchor).
 #   2. REBUILT IDENTITY (era=post only — the tag's tree carries the
-#      reproducible-build arc): the exe + image rebuilt in THIS run are
-#      hashed from the leg's runtime-packages artifact and diffed:
-#        - exe: when the shard's built_from.exe_sha256_presign differs from
-#          the published exe digest, the published exe is a SIGNED
-#          post-image (macOS codesign today; windows Authenticode once
-#          spec 34 arms) and the hard compare scopes to the presign
-#          digest — signing rewrites the exe after that digest by design.
-#          Otherwise the leg shipped unsigned and the hard compare is
-#          against the published bytes directly. Both diffs are always
-#          reported (the out-of-scope one informational).
+#      reproducible-build arc): the exe + image from the tag-ref build's
+#      runtime-packages artifact are hashed and diffed:
+#        - exe: both sides' PRE-SIGNING digests are compared — the
+#          shard's built_from.exe_sha256_presign vs the rebuilt contract
+#          card's — so the claim is immune to signing state on either
+#          side (a macOS verification leg signs its rebuilt exe in-leg:
+#          the exe FILE hash would prove nothing there). When a side
+#          carries no presign record, the compare falls back to the exe
+#          bytes' own digests. The file-hash diff against the published
+#          exe is always reported informationally.
 #        - image: rebuilt .tfs vs the published image digest, always hard.
 #      A hard mismatch fails the run naming the artifact + both hashes and
 #      quoting the shard's built_from.toolchain block verbatim (the first
@@ -41,7 +41,8 @@
 # Required env: GH_TOKEN, TAG, RUBY_VERSION, PLATFORM, ARCH, HOST_ID
 # (flowed from the tag's own Platform.host_id_for by the era job — never
 # re-derived here), ERA (pre|post), REBUILD_RESULT (the rebuild job's
-# result), REBUILD_RUN (the rebuild's compute run output), GITHUB_RUN_ID,
+# result), REBUILD_RUN_ID (the dispatched tag-ref build run this verdict
+# diffs; empty when the rebuild never dispatched), GITHUB_RUN_ID,
 # GITHUB_STEP_SUMMARY. Writes verdict.json in the cwd. Exit 0 = no hard
 # row failed; 1 = a hard row failed or the inputs/release are incoherent
 # (every failure is a named ::error:: first).
@@ -212,28 +213,28 @@ if [ "$ERA" = "pre" ]; then
   if [ "$failures" -eq 0 ]; then finish 0 green; else finish 1 red; fi
 fi
 
+build_run_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${REBUILD_RUN_ID:-unknown}"
 case "$REBUILD_RESULT" in
   success) : ;;
   failure|cancelled)
-    row "rebuild job" "success" "$REBUILD_RESULT" fail "the tag-tree rebuild went red — see this run's rebuild job log"
-    die "the rebuild job $REBUILD_RESULT — no rebuilt bytes to diff (the published-integrity rows above still stand)"
+    row "tag build run" "success" "$REBUILD_RESULT" fail "the tag-ref build went red — $build_run_url"
+    die "the tag build $REBUILD_RESULT — no rebuilt bytes to diff (the published-integrity rows above still stand): $build_run_url"
     ;;
   *)
-    row "rebuild job" "success" "$REBUILD_RESULT" fail "era=post but the rebuild job did not run to success — a workflow-logic fault, not drift"
+    row "tag build run" "success" "$REBUILD_RESULT" fail "era=post but the rebuild job did not run to success — a workflow-logic fault, not drift"
     die "era=post yet rebuild result is '$REBUILD_RESULT'"
     ;;
 esac
 
-if [ "${REBUILD_RUN:-}" != "true" ]; then
-  die "the rebuild's compute stage ran with run='${REBUILD_RUN:-}': the (ruby $RUBY_VERSION, $PLATFORM, $ARCH) leg does not exist at $TAG (deferred in its matrix.json, or filtered out)"
-fi
+[ -n "$REBUILD_RUN_ID" ] ||
+  die "era=post but REBUILD_RUN_ID is empty — the rebuild job's dispatch never resolved a run"
 
 artifact="runtime-packages-${PLATFORM}-${ARCH}-${RUBY_VERSION}"
-echo "== downloading this run's rebuilt artifact: $artifact"
-if ! gh run download "$GITHUB_RUN_ID" --repo "$REPO" --name "$artifact" --dir rebuilt; then
-  echo "::error::artifact $artifact not found on this run; the run carries:"
-  gh api "repos/$REPO/actions/runs/$GITHUB_RUN_ID/artifacts" --jq '.artifacts[].name' || true
-  die "no rebuilt artifact $artifact — the leg did not upload (a red leg gates the upload by design)"
+echo "== downloading the tag build's rebuilt artifact: $artifact (run $REBUILD_RUN_ID)"
+if ! gh run download "$REBUILD_RUN_ID" --repo "$REPO" --name "$artifact" --dir rebuilt; then
+  echo "::error::artifact $artifact not found on run $REBUILD_RUN_ID; the run carries:"
+  gh api "repos/$REPO/actions/runs/$REBUILD_RUN_ID/artifacts" --jq '.artifacts[].name' || true
+  die "no rebuilt artifact $artifact — the (ruby $RUBY_VERSION, $PLATFORM, $ARCH) leg does not exist at $TAG (deferred in its matrix.json), or its build never uploaded (a red leg gates the upload by design)"
 fi
 [ -f rebuilt/.leg-complete ] ||
   die "the rebuilt artifact lacks .leg-complete — the leg's gates did not all pass, so its bytes prove nothing"
@@ -246,34 +247,41 @@ rebuilt_img="rebuilt/$(basename "$img_name")"
 rebuilt_exe_sha="$(sha256sum "$rebuilt_exe" | cut -d' ' -f1)"
 rebuilt_img_sha="$(sha256sum "$rebuilt_img" | cut -d' ' -f1)"
 
-# The exe row's scope (see the header): a shard whose presign digest differs
-# from the published exe digest records a SIGNED leg — the hard compare is
-# the presign digest; otherwise the leg shipped unsigned and the published
-# bytes themselves are the claim. Both diffs always report.
-if [ -n "$presign" ] && [ "$presign" != "$exe_sha" ]; then
-  exe_scope="pre-signing digest (the published exe is signed — signing rewrites the bytes after this digest by design)"
-  exe_expected="$presign"
-else
-  exe_scope="published exe digest (the leg shipped unsigned — the published bytes are the claim)"
-  exe_expected="$exe_sha"
+# The rebuilt contract card rides the artifact post-arc. The exe claim
+# reads its presign digest when present: a SIGNED exe's file hash proves
+# nothing (signing rewrote the bytes), and a macOS verification leg signs
+# in-leg — the claim must be immune to signing state on either side.
+card="rebuilt/$(basename "$exe_name").contract.yaml"
+card_json=""
+card_presign=""
+if [ -s "$card" ]; then
+  card_json="$(ruby -ryaml -rjson -e 'print JSON.generate(YAML.load_file(ARGV[0]))' "$card")"
+  card_presign="$(printf '%s' "$card_json" | jq -r '.built_from.exe_sha256_presign // empty')"
 fi
-if [ "$rebuilt_exe_sha" = "$exe_expected" ]; then
-  row "rebuilt exe identity" "$exe_expected" "$rebuilt_exe_sha" pass "$exe_scope"
-else
-  hard_mismatch "$exe_name" "$exe_expected" "$rebuilt_exe_sha"
-  row "rebuilt exe identity" "$exe_expected" "$rebuilt_exe_sha" fail "$exe_scope"
-fi
+
 if [ -n "$presign" ]; then
-  if [ "$exe_expected" = "$presign" ]; then
-    other="$exe_sha"; other_note="the published (signed) exe — expected to differ: signing rewrote the bytes after the presign digest"
-  else
-    other="$presign"; other_note="the shard's built_from.exe_sha256_presign — equals the published digest on this unsigned leg"
-  fi
-  if [ "$rebuilt_exe_sha" = "$other" ]; then
-    row "rebuilt exe vs the other digest" "$other" "$rebuilt_exe_sha" info "$other_note"
-  else
-    row "rebuilt exe vs the other digest" "$other" "$rebuilt_exe_sha" info "$other_note (differs)"
-  fi
+  exe_expected="$presign"
+  exe_scope="pre-signing digest (built_from.exe_sha256_presign — signing rewrites the exe after this digest by design)"
+else
+  exe_expected="$exe_sha"
+  exe_scope="published exe digest (this shard's era carries no presign record)"
+fi
+rebuilt_claim="$rebuilt_exe_sha"
+[ -n "$card_presign" ] && rebuilt_claim="$card_presign"
+if [ "$rebuilt_claim" = "$exe_expected" ]; then
+  row "rebuilt exe identity" "$exe_expected" "$rebuilt_claim" pass "$exe_scope"
+else
+  hard_mismatch "$exe_name" "$exe_expected" "$rebuilt_claim"
+  row "rebuilt exe identity" "$exe_expected" "$rebuilt_claim" fail "$exe_scope"
+fi
+
+# The file-hash diff is informational: equal on unsigned legs (the file
+# hash IS the claim there), expected to differ when a side signed its exe.
+if [ "$rebuilt_exe_sha" = "$exe_sha" ]; then
+  row "rebuilt exe file hash ↔ published exe" "$exe_sha" "$rebuilt_exe_sha" info "the served bytes themselves (unsigned leg — the file hash is the claim)"
+else
+  row "rebuilt exe file hash ↔ published exe" "$exe_sha" "$rebuilt_exe_sha" info \
+    "differs — expected when a side signed its exe (the identity claim rides the presign digests above); investigate otherwise"
 fi
 
 if [ "$rebuilt_img_sha" = "$img_sha" ]; then
@@ -284,10 +292,7 @@ else
 fi
 
 # --- provenance (informational) ------------------------------------------
-card="rebuilt/$(basename "$exe_name").contract.yaml"
-[ -s "$card" ] || card=""
-if [ -n "$card" ]; then
-  card_json="$(ruby -ryaml -rjson -e 'print JSON.generate(YAML.load_file(ARGV[0]))' "$card")"
+if [ -n "$card_json" ]; then
   card_src_sha="$(printf '%s' "$card_json" | jq -r '.built_from.sources[0].sha256 // empty')"
   card_toolchain="$(printf '%s' "$card_json" | jq -c '.built_from.toolchain // empty')"
   if [ -n "$shard_src_sha" ] && [ "$card_src_sha" = "$shard_src_sha" ]; then
