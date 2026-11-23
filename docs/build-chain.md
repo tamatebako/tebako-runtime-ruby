@@ -197,13 +197,14 @@ sidecar shas. A mismatch names its leg; the toolchain identity is the
 first suspect list.
 
 The per-release verification surface is `.github/workflows/reproduce.yml`
-(docs/reproducible.md owns the claim per leg and the era table): it
-rebuilds ONE published leg from the tag's exact tree via the
-`source_ref` input, with both signing gates force-disarmed
-(`skip_codesign` — the exe claim is scoped to the pre-signing bytes) and
-`publish=false` (the run can never touch the release), then fails the
-run on any byte-identity mismatch. It runs weekly as the drift watch and
-on dispatch for any tag.
+(docs/reproducible.md owns the claim per leg and the era table): for ONE
+published leg it dispatches the platform's thin trigger ON THE RELEASE
+TAG's ref (the tag's own pipeline definition runs — checkouts are the
+event ref, never an input, so no cache-writing job ever builds an
+input-selected ref; the run's cache writes land in the tag's own scope
+by THE SCOPE LAW below, never the default branch's), watches the build,
+and fails on any byte-identity mismatch. It runs weekly as the drift
+watch and on dispatch for any tag.
 
 ## THE SCOPE LAW (why a green key still misses)
 
@@ -290,11 +291,6 @@ published-pin path remains.
   tamatebako/ruby branch, so the harness iterates UNMERGED next to its
   probe PR — never merge a harness PR just to run it.
 - `audit: true` — publish-shaped verification with no build spend.
-- `source_ref` / `skip_codesign` (`_build-platform.yml` inputs) — the
-  reproduce.yml verification path: rebuild a release tag's exact tree
-  with both signing gates force-disarmed (the exe claim is scoped to the
-  pre-signing bytes). Never set them on a publish run — a release must
-  build from its own ref and sign its own bytes.
 - `CACHE_VER` — see the contract above; bump ONLY for recipe shape
   changes, and say why in the comment (the history is recorded there).
 

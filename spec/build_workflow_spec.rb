@@ -275,47 +275,20 @@ RSpec.describe "build-platform reusable workflow" do
     expect(inputs).not_to have_key("force_rebuild")
   end
 
-  # The reproduce.yml verification path (docs/reproducible.md): a
-  # verification dispatch rebuilds a RELEASE TAG's exact tree, so the
-  # reusable workflow takes source_ref (empty = the caller's ref, the
-  # ordinary triggers unchanged) and skip_codesign (the rebuilt exe must
-  # stay the PRE-SIGNING bytes the shard's built_from.exe_sha256_presign
-  # names — both signing gates force-disarm). Locked here so a drift
-  # fails loudly.
-  it "accepts source_ref and skip_codesign as workflow_call inputs" do
+  # reproduce.yml (docs/reproducible.md) verifies a release tag by
+  # dispatching the thin trigger ON THE TAG's ref — never by threading an
+  # input-selected ref into this workflow's checkouts. The first
+  # verification shape did exactly that (a source_ref input), and CodeQL's
+  # actions/cache-poisoning/direct-cache gate flagged it: an input-derived
+  # checkout ref inside these cache-writing jobs lets a dispatch leave
+  # input-selected bytes in the default branch's cache scope. The
+  # analyzer and the security semantics agree; this workflow therefore
+  # takes no "build from an arbitrary ref" input. Locked here so the
+  # class cannot return.
+  it "takes no source_ref or skip_codesign input (the CodeQL cache-poisoning class must not return)" do
     inputs = workflow.dig(true, "workflow_call", "inputs") # YAML 1.1: the `on:` key parses as boolean true
-    expect(inputs.dig("source_ref", "type")).to eq("string")
-    expect(inputs.dig("source_ref", "default")).to eq("")
-    expect(inputs.dig("skip_codesign", "type")).to eq("boolean")
-    expect(inputs.dig("skip_codesign", "default")).to be(false)
-  end
-
-  # Every repo-self checkout (compute/link-unit/build/publish/audit, and
-  # any future one) rides source_ref — the rebuild must run the tag's own
-  # build scripts. The chain-gate checkouts (they name a `repository:` —
-  # tamatebako/ruby, tamatebako/tebako, dwarfs-rs) stay pinned to their
-  # refs BY DESIGN: the weekly watch tracks the CURRENT chain, and a moved
-  # chain gate is the drift the watch exists to name.
-  it "threads source_ref into every repo-self checkout (never the chain gates)" do
-    self_checkouts = workflow.fetch("jobs").flat_map { |_name, job| job.fetch("steps", []) }
-                             .select do |step|
-      step.fetch("uses", "").to_s.start_with?("actions/checkout@") &&
-        !step.fetch("with", {}).key?("repository")
-    end
-    expect(self_checkouts.length).to eq(5)
-    self_checkouts.each do |step|
-      expect(step.dig("with", "ref")).to eq("${{ inputs.source_ref || '' }}"),
-                                         "a repo-self checkout does not thread source_ref " \
-                                         "(the tag rebuild would silently build the caller's tree)"
-    end
-  end
-
-  it "force-disarms both signing gates under skip_codesign" do
-    text = File.read(workflow_path)
-    expect(text).to include("APPLE_SIGNING_ENABLED: ${{ inputs.skip_codesign && 'false' || " \
-                            "vars.APPLE_SIGNING_ENABLED }}")
-    expect(text).to include("WINDOWS_SIGNING_ENABLED: ${{ inputs.skip_codesign && 'false' || " \
-                            "vars.WINDOWS_SIGNING_ENABLED }}")
+    expect(inputs).not_to have_key("source_ref")
+    expect(inputs).not_to have_key("skip_codesign")
   end
 
   it "exposes the compute matrices and version as workflow_call outputs for the coordinator" do

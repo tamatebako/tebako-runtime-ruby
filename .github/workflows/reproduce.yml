@@ -30,31 +30,36 @@
 #
 #   1. era     — checks out the TAG's tree (cheap, no build spend) and
 #                decides the tag's era: a pre-arc tree carries no
-#                ci/record-toolchain.sh, cannot be rebuilt by the current
-#                workflow, and its image stamped wall-clock time — its
-#                bytes can never reproduce. The leg's host_id flows from
-#                the tag's own Platform module (the grammar's owner).
-#   2. rebuild — era=post only: calls _build-platform.yml with
-#                source_ref=<tag> (the tag's exact tree) and
-#                skip_codesign=true (the exe claim is scoped to the
-#                pre-signing bytes) and publish=false. THE RUN NEVER
-#                TOUCHES THE RELEASE — no upload, no sign, no registry.
+#                ci/record-toolchain.sh, so the current workflow cannot
+#                rebuild it, and its image stamped wall-clock time — its
+#                bytes can never reproduce. The leg's host_id and the
+#                tag's commit SHA flow from here.
+#   2. rebuild — era=post only: dispatches the platform's thin trigger
+#                (build-<platform>.yml) ON THE TAG REF and watches the run
+#                to completion. The tag's OWN pipeline definition runs:
+#                its checkouts are the event ref (never an input — an
+#                input-selected ref inside the reusable workflow's
+#                cache-writing jobs is the CodeQL
+#                actions/cache-poisoning/direct-cache class this file must
+#                never reintroduce), and its cache writes land in the
+#                TAG's own cache scope, never the default branch's.
+#                publish defaults to false and this workflow holds no
+#                write grant — the run can never touch the release.
 #   3. verdict — ci/reproduce-verdict.sh: the published-integrity floor
 #                (the leg's exe/image sha256-verified against their
 #                published sidecars — every era), then era=post the
-#                rebuilt-vs-published identity diff. A hard mismatch fails
-#                the run naming the artifact + both hashes and quoting the
-#                shard's built_from.toolchain. The verdict renders as the
-#                step summary + a JSON artifact.
+#                rebuilt-vs-published identity diff (the exe claim
+#                compares PRE-SIGNING digests from both sides' provenance
+#                records, so a signing leg proves the same bytes an
+#                unsigned one does). A hard mismatch fails the run naming
+#                the artifact + both hashes and quoting the shard's
+#                built_from.toolchain. The verdict renders as the step
+#                summary + a JSON artifact.
 #
 # The weekly schedule is a drift WATCH: it self-dispatches a
 # workflow_dispatch run for the latest release's proven witness leg
-# (compute_matrix ignores the ruby/arch filters under a schedule event —
-# the dispatch indirection keeps every verification filter-honored). The
-# chain-gate checkouts (tamatebako/ruby, tamatebako/tebako) ride main BY
-# DESIGN: the watch tracks the CURRENT chain, and a red run means the
-# chain drifted from what the release was built against — the shard's
-# toolchain block is the suspect list.
+# (the era/verdict jobs honor inputs only under workflow_dispatch — the
+# dispatch indirection keeps every verification filter-honored).
 
 name: reproduce
 
@@ -103,6 +108,7 @@ jobs:
     outputs:
       era: ${{ steps.probe.outputs.era }}
       host_id: ${{ steps.probe.outputs.host_id }}
+      source_sha: ${{ steps.probe.outputs.source_sha }}
     steps:
       - name: Checkout the tag's tree
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -118,42 +124,79 @@ jobs:
         with:
           ruby-version: '3.3'
 
-      - name: Probe the era and flow the host_id
+      - name: Probe the era and flow the leg identity
         id: probe
         run: |
           set -euo pipefail
           # The era discriminator: the reproducible-build arc added
           # ci/record-toolchain.sh — a tag whose tree lacks it cannot be
-          # rebuilt by the current workflow (the build steps invoke it).
+          # rebuilt by the current pipeline (the build steps invoke it).
           if [ -f ci/record-toolchain.sh ]; then era=post; else era=pre; fi
           echo "era=$era" >> "$GITHUB_OUTPUT"
           host_id=$(ruby -Ibuild/lib -e 'require "tebako_runtime_builder/platform"; print TebakoRuntimeBuilder::Platform.host_id_for(ARGV[0], ARGV[1])' \
             "${{ inputs.platform }}" "${{ inputs.arch }}")
           echo "host_id=$host_id" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "tag ${{ inputs.tag }}: era=$era host_id=$host_id"
 
   rebuild:
-    name: Rebuild the leg from the tag's exact tree
+    name: Dispatch + watch the tag's own build
     needs: era
     if: github.event_name == 'workflow_dispatch' && needs.era.outputs.era == 'post'
-    uses: ./.github/workflows/_build-platform.yml
-    # The called workflow declares these grants; a reusable workflow never
-    # elevates past its caller, so the full set flows from here even though
-    # publish=false spends none of the write scopes (no upload, no sign,
-    # no SLSA attest — the run never touches the release).
+    runs-on: ubuntu-24.04
+    # The watched build runs the full leg: a cold build is ~75 min; the
+    # tag scope's warm restores shorten re-runs. A timeout fails this job
+    # and the verdict reports the build run red.
+    timeout-minutes: 170
     permissions:
-      contents: write
-      packages: write
-      id-token: write
-      attestations: write
-    with:
-      platform: ${{ inputs.platform }}
-      ruby_filter: ${{ inputs.ruby_version }}
-      arch_filter: ${{ inputs.arch }}
-      source_ref: ${{ inputs.tag }}
-      skip_codesign: true
-      publish: false
-    secrets: inherit
+      actions: write # gh workflow run (the tag-ref dispatch) + gh run list/watch
+    outputs:
+      run_id: ${{ steps.dispatch.outputs.run_id }}
+    steps:
+      - name: Dispatch the platform trigger on the tag ref
+        id: dispatch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+          PLATFORM: ${{ inputs.platform }}
+          RUBY_VERSION: ${{ inputs.ruby_version }}
+          ARCH: ${{ inputs.arch }}
+          SOURCE_SHA: ${{ needs.era.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          repo=tamatebako/tebako-runtime-ruby
+          wf="build-${PLATFORM}.yml"
+          t0="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          # The thin trigger's publish input defaults to false — the
+          # dispatched run builds + gates + uploads a run artifact, and
+          # NEVER touches the release.
+          gh workflow run "$wf" --repo "$repo" --ref "$TAG" \
+            -f ruby_filter="$RUBY_VERSION" -f arch_filter="$ARCH"
+          echo "::notice::dispatched $wf on $TAG (ruby $RUBY_VERSION × $ARCH) — waiting for the run to appear"
+          run_id=""
+          for _ in $(seq 1 30); do
+            sleep 10
+            # Created after T0, on the tag's commit, by a dispatch: this
+            # run. (A concurrent dispatch on the same tag carries
+            # identical inputs, so taking the first match is benign.)
+            run_id="$(gh run list --repo "$repo" --workflow "$wf" --limit 20 \
+                      --json databaseId,headSha,event,createdAt \
+                      --jq "map(select(.createdAt > \"$t0\" and .headSha == \"$SOURCE_SHA\" and .event == \"workflow_dispatch\")) | .[0].databaseId // empty")"
+            [ -n "$run_id" ] && break
+          done
+          [ -n "$run_id" ] || { echo "::error::the dispatched $wf run never appeared on $TAG"; exit 1; }
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "::notice::watching run $run_id — https://github.com/$repo/actions/runs/$run_id"
+
+      - name: Watch the build run to completion
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ steps.dispatch.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          # --exit-status: a red build fails this job, and the verdict
+          # job (always()) reports the run red with its link.
+          gh run watch "$RUN_ID" --repo tamatebako/tebako-runtime-ruby --exit-status --interval 60
 
   verdict:
     name: Verify the rebuilt bytes against the published leg
@@ -163,7 +206,7 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read  # gh release download (the published leg)
-      actions: read   # gh run download (this run's rebuilt artifact)
+      actions: read   # gh run download (the build run's artifact)
     steps:
       # The verdict logic rides the DISPATCH ref, never the tag — the tag
       # is the subject under test, the verifier is ours.
@@ -185,7 +228,7 @@ jobs:
           HOST_ID: ${{ needs.era.outputs.host_id }}
           ERA: ${{ needs.era.outputs.era }}
           REBUILD_RESULT: ${{ needs.rebuild.result }}
-          REBUILD_RUN: ${{ needs.rebuild.outputs.run || '' }}
+          REBUILD_RUN_ID: ${{ needs.rebuild.outputs.run_id || '' }}
         run: bash ci/reproduce-verdict.sh
 
       - name: Upload the verdict (JSON)
