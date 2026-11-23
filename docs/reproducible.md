@@ -136,10 +136,10 @@ the witness leg's row current).
 | linux-gnu × arm64 | published bytes (unsigned) | pending (same containerized recipe as the proven leg) | — |
 | linux-musl × x86_64 | published bytes (unsigned) | pending | — |
 | linux-musl × arm64 | published bytes (unsigned) | pending | — |
-| macos × x86_64 | pre-signing digest (codesign rewrites the published exe) | pending — the E3 twin-run; brew floats recorded-not-pinned | — |
-| macos × arm64 | pre-signing digest (codesign rewrites the published exe) | pending — the E3 twin-run; brew floats recorded-not-pinned | — |
-| windows × ucrt64 | published bytes (unsigned today; the compare reads the presign record the day Authenticode arms) | **partial by construction** — MSYS2 recorded-not-pinned: identity claimed only while the pacman resolution stands (the PE timestamp is `SOURCE_DATE_EPOCH`-fixed) | — |
-| windows × ucrt-arm64 | published bytes (unsigned today; same presign handling) | partial by construction — as ucrt64 | — |
+| macos × x86_64 | pre-signing digest (codesign rewrites the published exe) | pending — the arm64 E3 pair found the rss gemspec's writer-fingerprint leak (#384), a deploy-recipe class every macos leg shares; normalized to the shipped rubygems at deploy (#385), re-run pending; brew floats recorded-not-pinned | — |
+| macos × arm64 | pre-signing digest (codesign rewrites the published exe) | pending — the E3 twin-run found the rss gemspec's writer-fingerprint leak (#384: `s.rubygems_version` 3.4.20 vs 4.0.2 across the pair); normalized to the shipped rubygems at deploy (#385), re-run pending; brew floats recorded-not-pinned | runs [45115623412](https://github.com/tamatebako/tebako-runtime-ruby/actions/runs/45115623412) + [45115627353](https://github.com/tamatebako/tebako-runtime-ruby/actions/runs/45115627353) (the finding) |
+| windows × ucrt64 | published bytes (unsigned today; the compare reads the presign record the day Authenticode arms) | **partial by construction** — MSYS2 recorded-not-pinned: identity claimed only while the pacman resolution stands (the PE timestamp is `SOURCE_DATE_EPOCH`-fixed). The E4 twin-run found the only other leak: the extension-compile `mkmf.log` debris (#384 — 7 shipped build logs embedding random ccXXXXXX.o temp names); swept at the deploy strip (#385), re-run pending | runs [45115688483](https://github.com/tamatebako/tebako-runtime-ruby/actions/runs/45115688483) + [45115693211](https://github.com/tamatebako/tebako-runtime-ruby/actions/runs/45115693211) (the finding) |
+| windows × ucrt-arm64 | published bytes (unsigned today; same presign handling) | partial by construction — as ucrt64 (the same E4 pair found the debris class; the sweep runs on every leg, re-run pending) | — |
 
 Pre-arc tags (≤ v0.17.15) verify the published-integrity floor on every
 leg; their images stamped wall-clock time, so no identity claim exists

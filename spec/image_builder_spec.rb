@@ -363,6 +363,27 @@ RSpec.describe TebakoRuntimeBuilder::ImageBuilder do
       expect(Dir.exist?(File.join(ext, "rbs_extension.bundle.dSYM"))).to be(false)
       expect(File.file?(File.join(ext, "rbs_extension.bundle"))).to be(true)
     end
+
+    # The extension-compile build logs are build-time diagnostics nothing
+    # reads at runtime — and mkmf's ccXXXXXX.o temp names are random per
+    # run (the E4 twin-run image diff, tebako-runtime-ruby#384). The
+    # Makefile/extconf.rb shape stays (byte-stable, and not a log).
+    it "removes the build logs and keeps the ext sources and makefiles" do
+      ext = File.join(data_src_dir, "lib", "ruby", "gems", "4.0.0", "gems", "fiddle-1.1.8", "ext", "fiddle")
+      FileUtils.mkdir_p(ext)
+      %w[mkmf.log extconf.log config.log].each { |name| File.write(File.join(ext, name), "ccjTzDAj.o") }
+      File.write(File.join(ext, "extconf.rb"), "create_makefile")
+      File.write(File.join(ext, "Makefile"), "all:")
+
+      TebakoRuntimeBuilder::Stripper.strip(TebakoRuntimeBuilder::Platform.new("x64-mingw-ucrt", "x86_64"),
+                                           data_src_dir)
+
+      %w[mkmf.log extconf.log config.log].each do |name|
+        expect(File.exist?(File.join(ext, name))).to be(false)
+      end
+      expect(File.file?(File.join(ext, "extconf.rb"))).to be(true)
+      expect(File.file?(File.join(ext, "Makefile"))).to be(true)
+    end
   end
 
   # The shipped rbconfig is written against the build host's absolute
@@ -442,6 +463,73 @@ RSpec.describe TebakoRuntimeBuilder::ImageBuilder do
 
       expect { scrub! }
         .to raise_error(TebakoRuntimeBuilder::Error, /carries no CONFIG\["prefix"\] line/)
+    end
+  end
+
+  # The shipped gemspecs' writer fingerprint (the E3 finding,
+  # tebako-runtime-ruby#384): s.rubygems_version records whichever
+  # rubygems wrote the stub — the .gem's packaged-by version or the host
+  # setup-ruby's — so it is normalized to the rubygems the image SHIPS,
+  # read from the tree's own rubygems.rb (never a hardcode).
+  # s.installed_by_version already records the shipped rubygems on both
+  # run paths and stays untouched.
+  describe "#deploy_gemspecs" do
+    def write_shipped_rubygems(version: "4.0.20")
+      dir = File.join(data_src_dir, "lib", "ruby", "4.0.0")
+      FileUtils.mkdir_p(dir)
+      File.write(File.join(dir, "rubygems.rb"), "module Gem\n  VERSION = \"#{version}\"\nend\n")
+    end
+
+    def write_gemspec(relative, rubygems_version)
+      path = File.join(data_src_dir, "lib", "ruby", "gems", "4.0.0", "specifications", relative)
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, <<~GEMSPEC)
+        # stub: rss 0.3.2 ruby lib
+        Gem::Specification.new do |s|
+          s.name = "rss".freeze
+          s.rubygems_version = "#{rubygems_version}".freeze
+          s.installed_by_version = "4.0.20".freeze
+        end
+      GEMSPEC
+      path
+    end
+
+    it "normalizes every shipped gemspec to the shipped rubygems version" do
+      write_shipped_rubygems
+      bundled = write_gemspec("rss-0.3.2.gemspec", "3.4.20")
+      default = write_gemspec(File.join("default", "json-2.9.1.gemspec"), "4.0.2")
+
+      builder_for("4.0.6").deploy_gemspecs
+
+      [bundled, default].each do |path|
+        expect(File.read(path)).to include('s.rubygems_version = "4.0.20".freeze')
+      end
+      expect(File.read(bundled)).to include('s.installed_by_version = "4.0.20".freeze')
+      expect(File.read(bundled)).to include('s.name = "rss".freeze')
+    end
+
+    it "leaves a spec already recording the shipped version byte-identical" do
+      write_shipped_rubygems
+      spec = write_gemspec("rss-0.3.2.gemspec", "4.0.20")
+      before = File.read(spec)
+
+      builder_for("4.0.6").deploy_gemspecs
+
+      expect(File.read(spec)).to eq(before)
+    end
+
+    it "fails closed when the layout tree carries no gemspecs" do
+      write_shipped_rubygems
+
+      expect { builder_for("4.0.6").deploy_gemspecs }
+        .to raise_error(TebakoRuntimeBuilder::Error, /no \*\.gemspec/)
+    end
+
+    it "fails closed when the shipped rubygems version cannot be read" do
+      write_gemspec("rss-0.3.2.gemspec", "3.4.20")
+
+      expect { builder_for("4.0.6").deploy_gemspecs }
+        .to raise_error(TebakoRuntimeBuilder::Error, /exactly one rubygems\.rb/)
     end
   end
 end

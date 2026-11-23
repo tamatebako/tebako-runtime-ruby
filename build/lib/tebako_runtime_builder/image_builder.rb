@@ -252,6 +252,33 @@ module TebakoRuntimeBuilder
            "#{rbconfigs.map { |path| path.sub("#{@data_src_dir}/", "") }.join(", ")}"
     end
 
+    # The shipped gemspecs' tool-identity leak (tebako-runtime-ruby#384's
+    # E3 finding): s.rubygems_version records the rubygems that WROTE the
+    # stub — the .gem's packaged-by version when the built ruby's
+    # installer generated it (rss-0.3.2: 4.0.2), the host setup-ruby's
+    # when the run's path let the host tooling regenerate it (3.4.20 on
+    # the twin). The field is a writer fingerprint rubygems never reads
+    # at runtime (compatibility consults required_rubygems_version), so
+    # every shipped gemspec is normalized to the rubygems the image
+    # SHIPS — the built interpreter's own, read from the tree's
+    # rubygems.rb (the single owner, never a hardcode).
+    # s.installed_by_version already records the shipped rubygems on both
+    # paths and stays untouched. Fail-closed like the rbconfig scrub: a
+    # tree with no gemspecs (or an unparseable shipped version) is an
+    # incomplete layout, never a pass-through.
+    def deploy_gemspecs
+      version = shipped_rubygems_version
+      gemspecs = Dir.glob(File.join(@data_src_dir, "lib", "ruby", "gems", "*", "specifications", "**", "*.gemspec"))
+      if gemspecs.empty?
+        raise TebakoRuntimeBuilder::Error.new(
+          "no *.gemspec under #{@data_src_dir}/lib/ruby/gems — the layout tree is incomplete", 131
+        )
+      end
+
+      gemspecs.each { |path| normalize_gemspec!(path, version) }
+      puts "   ... #{gemspecs.length} gemspec(s) record the shipped rubygems #{version}"
+    end
+
     # The inert compile-flag fields deploy_rbconfig canonicalizes. Read at
     # mkmf time only (gem native-extension builds); never consulted by the
     # interpreter's own load paths.
@@ -259,6 +286,37 @@ module TebakoRuntimeBuilder
                             RUST_LIB].freeze
 
     private
+
+    # The rubygems the image ships: the VERSION constant of the tree's own
+    # lib/ruby/<api>/rubygems.rb — exactly one must exist (the deploy pass
+    # runs against one interpreter's layout).
+    def shipped_rubygems_version # rubocop:disable Metrics/MethodLength
+      candidates = Dir.glob(File.join(@data_src_dir, "lib", "ruby", "*", "rubygems.rb"))
+      unless candidates.length == 1
+        raise TebakoRuntimeBuilder::Error.new(
+          "expected exactly one rubygems.rb under #{@data_src_dir}/lib/ruby (found #{candidates.length}) — " \
+          "the layout tree is incomplete", 131
+        )
+      end
+
+      match = File.read(candidates.first).match(/^\s*VERSION = "([0-9][0-9A-Za-z.-]*)"/)
+      unless match
+        raise TebakoRuntimeBuilder::Error.new(
+          "#{candidates.first} declares no Gem::VERSION — cannot name the shipped rubygems", 131
+        )
+      end
+      match[1]
+    end
+
+    # Rewrite just the version literal of the writer-fingerprint line,
+    # preserving the line's shape (the generated stubs' ".freeze suffix
+    # and indentation); a spec already recording the shipped version is
+    # left byte-identical.
+    def normalize_gemspec!(path, version)
+      contents = File.read(path)
+      replaced = contents.gsub(/^(\s*\w+\.rubygems_version = )"[^"]*"/, "\\1\"#{version}\"")
+      File.write(path, replaced) unless replaced == contents
+    end
 
     def scrub_rbconfig!(path, roots) # rubocop:disable Metrics/MethodLength
       contents = File.read(path)
@@ -323,7 +381,7 @@ module TebakoRuntimeBuilder
       candidates.uniq.sort
     end
 
-    def deploy(stub_dir)
+    def deploy(stub_dir) # rubocop:disable Metrics/MethodLength -- the deploy's ordered stages, one call per line
       puts "-- Running deploy script"
 
       check_toolchain_ruby!
@@ -334,6 +392,7 @@ module TebakoRuntimeBuilder
       deploy_preload
       deploy_layout
       deploy_rbconfig
+      deploy_gemspecs
       TebakoRuntimeBuilder::Stripper.strip(@platform, @data_src_dir)
     end
 

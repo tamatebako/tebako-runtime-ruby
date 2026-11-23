@@ -34,11 +34,19 @@ module TebakoRuntimeBuilder
   module Stripper
     DELETE_EXTENSIONS = %w[o lo obj a la lib].freeze
 
+    # The build-log basenames the extension compiles leave next to each
+    # ext/ (the audit of the shipped images, tebako-runtime-ruby#384:
+    # every leg carries ~7 mkmf.log — bigdecimal, debug, fiddle, nkf,
+    # racc, rbs, win32ole/syslog; the autoconf-flavored pair rides the
+    # same glob class for the exts that produce them).
+    BUILD_LOG_BASENAMES = %w[mkmf.log extconf.log config.log].freeze
+
     class << self
       # Strip
       # Removes build artefacts, strip shared objects
       def strip(platform, src_dir)
         puts "   ... stripping the output"
+        strip_bl(src_dir)
         strip_ds(src_dir)
         strip_bs(src_dir)
         strip_fi(platform, src_dir)
@@ -60,6 +68,25 @@ module TebakoRuntimeBuilder
       end
 
       private
+
+      # The extension-compile build logs (BUILD_LOG_BASENAMES): build-time
+      # diagnostics nothing reads at runtime — mkmf's Logging writes the
+      # file during extconf, the extension loader loads the built
+      # .so/.bundle, and a rebuild re-runs extconf rather than reading the
+      # log. Shipping them leaks the compile's temp names into the image
+      # bytes: mkmf's ccXXXXXX.o object names are random per run (the E4
+      # twin-run image diff, tebako-runtime-ruby#384 — the two mkmf.log
+      # files were the whole windows diff set beside the manifest hash
+      # they moved). Same sweep class as the dSYM debris below. The glob
+      # simply misses on trees that carry none.
+      def strip_bl(src_dir)
+        BUILD_LOG_BASENAMES.each do |basename|
+          Dir.glob(File.join(src_dir, "**", basename)).each do |log|
+            puts "   ... removing build log #{log.sub("#{src_dir}/", "")}"
+            FileUtils.rm(log)
+          end
+        end
+      end
 
       # The dSYM debug-info trees (macOS dsymutil output next to each
       # extension bundle: *.bundle.dSYM/) — directories, so they ride their
