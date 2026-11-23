@@ -157,8 +157,13 @@ The pins (each named in the leg's provenance, never implicit):
   dtolnay's `toolchain:` input.
 - **Host-path scrubs** — the deploy pass rewrites the shipped
   `rbconfig.rb`'s build-host prefixes and flag values to the mount point
-  (never `CONFIG["build"]`/TOPDIR), and the deploy strip removes the
-  `.dSYM` trees (their UUIDs are per-build). Ruby's configure runs with
+  (never `CONFIG["build"]`/TOPDIR), normalizes every shipped gemspec's
+  `s.rubygems_version` to the rubygems the image ships (read from the
+  tree's own `rubygems.rb` — the E3 twin-run's writer-fingerprint leak,
+  #384), and the deploy strip removes the `.dSYM` trees and the
+  extension-compile build logs (`mkmf.log`/`extconf.log`/`config.log` —
+  mkmf's ccXXXXXX.o temp names are random per run, #384's E4 finding).
+  Ruby's configure runs with
   the canonical `--build`/`--host` triplet (Platform::CONFIGURE_TRIPLETS
   owns the map; the darwin kernel major flows from
   `macos_deployment_target`), so the recorded archdir never names the
