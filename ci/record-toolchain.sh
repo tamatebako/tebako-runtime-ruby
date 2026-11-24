@@ -17,6 +17,15 @@
 #                         nothing from it enters the artifact anymore)
 #   cc / cxx / ld       — first --version lines of the default toolchain
 #   rustc               — the pinned rustc's --version line (the YJIT legs)
+#   cpu / hw_model      — the build host's silicon (darwin legs: sysctl
+#                         machdep.cpu.brand_string / hw.model). Codegen
+#                         provenance, not decoration: Apple clang's
+#                         aarch64-darwin default -target-cpu is the HOST
+#                         chip, and the hosted macOS fleet's silicon is
+#                         the one toolchain input no other field records
+#                         (tebako-runtime-ruby#390's E5 audit gap — the
+#                         twin runs' job APIs named only the "macos-15"
+#                         label).
 #   container           — the pinned name:tag@sha256 ref (container legs;
 #                         TEBAKO_TC_CONTAINER flows it from the host — the
 #                         digest the preflight asserted against contract.yml)
@@ -49,6 +58,10 @@ add cc "$(first_line "${CC:-cc}" --version)"
 add cxx "$(first_line "${CXX:-c++}" --version)"
 add ld "$(first_line ld --version)"
 add rustc "$(first_line rustc --version)"
+if [ "$(uname -s)" = "Darwin" ]; then
+  add cpu "$(first_line sysctl -n machdep.cpu.brand_string)"
+  add hw_model "$(first_line sysctl -n hw.model)"
+fi
 add container "${TEBAKO_TC_CONTAINER:-}"
 [ -n "${ImageOS:-}" ] && add runner "${ImageOS}-${ImageVersion:-unknown}"
 if command -v brew >/dev/null 2>&1 && [ -f Brewfile ]; then

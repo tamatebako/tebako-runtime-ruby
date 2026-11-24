@@ -155,6 +155,27 @@ The pins (each named in the leg's provenance, never implicit):
   the runner image's rustc floats with the image) the macos legs, via
   `ci/prepare-rust-toolchain.sh`, and the link-unit source build via
   dtolnay's `toolchain:` input.
+- **darwin codegen + link pins** (`Platform::CONFIGURE_CPU_PINS` /
+  `CONFIGURE_DLD_PINS`, flowed by the builder as `-DRUBY_CPU_PIN` /
+  `-DRUBY_DLD_PIN` and spliced into the ruby configure by
+  `build/CMakeLists.txt`; the E5 twin-run, #390) — two darwin-specific
+  drift classes closed at the flag level. `-mcpu=apple-m1` on
+  macos-arm64: Apple clang's aarch64 default `-target-cpu` is the build
+  host's own chip, so codegen drifts with whatever silicon the hosted
+  fleet hands the leg, and can emit instructions the contract floor
+  (macOS 14 ⇒ M1) lacks; apple-m1 is the floor and runs on every later
+  chip (macos-x86_64 pins nothing — its default target-cpu is a fixed
+  conservative model, never the host chip). `-Wl,-S` on the darwin
+  bundle links: the new ld derives an MH_BUNDLE's `LC_UUID` from a hash
+  of the link content, which includes the N_OSO debug stabs recording
+  each object file's mtime — two cold builds of the same tree therefore
+  produce extension bundles differing in `LC_UUID` and in the ad-hoc
+  CDHash that covers it (the E5 drift, 6 of 7 drifted bundles).
+  Stripping the stabs AT LINK makes the hashed content exactly the
+  shipped bytes — the same determinism the exe already gets from its
+  `ld_classic` link (`MAINLIBS` carries `-Wl,-ld_classic`, whose UUID
+  hash ignores stab mtimes). The bundles lose nothing: DWARF never
+  ships in them (the deploy strip removes it anyway).
 - **Host-path scrubs** — the deploy pass rewrites the shipped
   `rbconfig.rb`'s build-host prefixes and flag values to the mount point
   (never `CONFIG["build"]`/TOPDIR), normalizes every shipped gemspec's
@@ -199,6 +220,17 @@ The named gaps (recorded-not-pinned, by construction):
 - **Signing** rewrites the exe after `exe_sha256_presign` is recorded
   (macOS codesign, windows Authenticode) — timestamped by design. The
   reproducibility claim is scoped to the pre-signing bytes.
+- **bigdecimal's `.text` on darwin** (recorded-not-pinned, #390): Apple
+  clang 16's loop vectorizer rolls equal-cost SIMD lane/register choices
+  per compiler invocation on bigdecimal.c — 49 distinct objects of 50
+  in-job recompiles on ONE runner (the E5 probe twin, runs 45359686216 +
+  45359692782; `-fno-vectorize` stabilizes, `-fno-slp-vectorize`/`-O2`/
+  `-frandom-seed` do not; clang 15 is byte-stable 20/20 on the same
+  flags). The variants are semantically equivalent and the runtime is
+  unaffected, but the macos-arm64 bundle bytes carry the roll until the
+  upstream fix lands or a per-TU `-fno-vectorize` patch is taken (the
+  perf tradeoff is the owner's call — the flag sweeps are recorded in
+  #390). Every other object in the tree is byte-stable across runners.
 
 The proof protocol (run post-merge by the release driver, never a CI
 gate): **E1** re-dispatches the same commit on ONE ref — the warm-cache
@@ -377,6 +409,8 @@ the recorded expectation deliberately, in its own PR.
 - Legs/routing: `.github/build-graph.yaml` + `scripts/compute_matrix.rb`.
 - Version/env vocabulary: `.github/matrix.json`.
 - Source pin + asset naming: `build/lib/tebako_runtime_builder/source_fetcher.rb`.
+- Configure pins (triplet, `-mcpu`, dldflags): `build/lib/tebako_runtime_builder/platform.rb`
+  (`CONFIGURE_TRIPLETS` / `CONFIGURE_CPU_PINS` / `CONFIGURE_DLD_PINS`).
 - Toolchain container version: `contract.yml`.
 - msys support-DLL set: `build/lib/tebako_runtime_builder/support_dlls.rb`.
 - This architecture: `docs/build-chain.md`. The release process:

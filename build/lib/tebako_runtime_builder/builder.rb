@@ -193,7 +193,15 @@ module TebakoRuntimeBuilder
               "-DLOG_LEVEL:STRING=error",
               "-DFS_MOUNT_POINT:STRING=#{mount_root(tarball)}",
               "-DMOUNT_ROOT_OVERRIDE:BOOL=#{mount_root_override(tarball)}",
-              "-DRUBY_CONFIGURE_TRIPLET:STRING=#{configure_triplet}"]
+              "-DRUBY_CONFIGURE_TRIPLET:STRING=#{configure_triplet}",
+              # The reproducibility pins (Platform owns the values —
+              # CONFIGURE_CPU_PINS / CONFIGURE_DLD_PINS): the darwin
+              # -mcpu floor against the hosted fleet's silicon drift and
+              # the bundle-link -Wl,-S against ld's mtime-tainted UUID
+              # (tebako-runtime-ruby#390). Empty on unpinned platforms —
+              # the CMake side splices only non-empty values.
+              "-DRUBY_CPU_PIN:STRING=#{@platform.configure_cpu_pin}",
+              "-DRUBY_DLD_PIN:STRING=#{@platform.configure_dld_pin}"]
       if assets.length == 2
         (tarball_p2, sha256_p2) = assets[1]
         args += ["-DRUBY_TARBALL_P2:STRING=file://#{tarball_p2}", "-DRUBY_HASH_P2:STRING=#{sha256_p2}"]

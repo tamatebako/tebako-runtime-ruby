@@ -245,6 +245,52 @@ module TebakoRuntimeBuilder
       "#{triplet}#{darwin_major}"
     end
 
+    # host_id → the -mcpu pin flowed into the ruby build's cflags (the
+    # builder splices it via -DRUBY_CPU_PIN; empty means compile with the
+    # toolchain's own default). Only macos-arm64 pins: Apple clang's
+    # aarch64-darwin default -target-cpu is the BUILD HOST's chip, so
+    # codegen drifts with whatever silicon the hosted fleet hands the leg
+    # (and can emit instructions the contract floor — macOS 14, M1 —
+    # lacks). apple-m1 IS the floor; code tuned for it runs on every
+    # later chip. macos-x86_64 pins nothing: the x86_64 darwin default
+    # target-cpu is a fixed conservative model (core2), never the host
+    # chip. The linux legs' gcc defaults are likewise fixed baselines
+    # (x86-64 / armv8-a), not host-derived.
+    CONFIGURE_CPU_PINS = {
+      "macos-arm64" => "-mcpu=apple-m1"
+    }.freeze
+
+    # This platform's -mcpu pin for the ruby build's cflags (empty = the
+    # toolchain default). See CONFIGURE_CPU_PINS for the why.
+    def configure_cpu_pin
+      CONFIGURE_CPU_PINS.fetch(host_id, "")
+    end
+
+    # host_id → the extra DLDFLAGS flowed into the ruby configure (the
+    # builder splices it via -DRUBY_DLD_PIN; empty means no DLDFLAGS
+    # override — configure then defaults DLDFLAGS to LDFLAGS, the
+    # long-standing behavior). darwin pins -Wl,-S for BOTH arches: the
+    # new ld derives a bundle's LC_UUID from a hash of the link content,
+    # and that content includes the N_OSO debug stabs recording each
+    # object file's mtime — so two cold builds of the same tree produce
+    # extension bundles differing in LC_UUID (and the ad-hoc CDHash over
+    # it), the tebako-runtime-ruby#390 E5 twin-run drift. -S strips the
+    # debug symbols AT LINK, so the hashed content is exactly the shipped
+    # bytes and the UUID becomes a pure content hash — the same
+    # determinism the exe already gets from its ld_classic link (its
+    # MAINLIBS carry -Wl,-ld_classic). The bundles lose nothing: DWARF
+    # never ships in them (the Stripper removes it anyway).
+    CONFIGURE_DLD_PINS = {
+      "macos-arm64" => "-Wl,-S",
+      "macos-x86_64" => "-Wl,-S"
+    }.freeze
+
+    # This platform's DLDFLAGS pin for the ruby configure (empty = no
+    # override). See CONFIGURE_DLD_PINS for the why.
+    def configure_dld_pin
+      CONFIGURE_DLD_PINS.fetch(host_id, "")
+    end
+
     # This platform's spec 03 §3 triplet (e.g. "x86_64-windows-ucrt").
     def tpkg_triplet
       TPKG_TRIPLETS.fetch(host_id) do

@@ -137,6 +137,43 @@ RSpec.describe TebakoRuntimeBuilder::Platform do
       .to raise_error(TebakoRuntimeBuilder::Error) { |e| expect(e.error_code).to eq(112) }
   end
 
+  # The reproducibility pins the builder flows into the ruby build
+  # (-DRUBY_CPU_PIN / -DRUBY_DLD_PIN): the -mcpu floor against Apple
+  # clang's host-cpu default on aarch64-darwin, and the bundle-link
+  # -Wl,-S against the new ld's mtime-tainted LC_UUID hash
+  # (tebako-runtime-ruby#390's E5 twin-run drift). Empty everywhere the
+  # toolchain default is already host-independent.
+  it "pins -mcpu=apple-m1 on macos-arm64 only" do
+    expect(described_class.new("arm64-darwin24", "arm64").configure_cpu_pin).to eq("-mcpu=apple-m1")
+    {
+      %w[x86_64-darwin23 x86_64] => nil,
+      %w[x86_64-linux-gnu x86_64] => nil,
+      %w[aarch64-linux-gnu aarch64] => nil,
+      %w[aarch64-linux-musl aarch64] => nil,
+      %w[x64-mingw-ucrt x86_64] => nil,
+      %w[aarch64-mingw-ucrt aarch64] => nil
+    }.each_key do |(ostype, arch)|
+      expect(described_class.new(ostype, arch).configure_cpu_pin).to eq("")
+    end
+    expect(described_class::CONFIGURE_CPU_PINS.keys - described_class::HOST_IDS.values).to be_empty
+  end
+
+  it "pins -Wl,-S on the darwin bundle links only" do
+    expect(described_class.new("arm64-darwin24", "arm64").configure_dld_pin).to eq("-Wl,-S")
+    expect(described_class.new("x86_64-darwin23", "x86_64").configure_dld_pin).to eq("-Wl,-S")
+    {
+      %w[x86_64-linux-gnu x86_64] => nil,
+      %w[aarch64-linux-gnu aarch64] => nil,
+      %w[x86_64-linux-musl x86_64] => nil,
+      %w[aarch64-linux-musl aarch64] => nil,
+      %w[x64-mingw-ucrt x86_64] => nil,
+      %w[aarch64-mingw-ucrt aarch64] => nil
+    }.each_key do |(ostype, arch)|
+      expect(described_class.new(ostype, arch).configure_dld_pin).to eq("")
+    end
+    expect(described_class::CONFIGURE_DLD_PINS.keys - described_class::HOST_IDS.values).to be_empty
+  end
+
   it "rejects unsupported operating systems" do
     expect { described_class.new("x86_64-freebsd", "x86_64").host_id }
       .to raise_error(TebakoRuntimeBuilder::Error)
