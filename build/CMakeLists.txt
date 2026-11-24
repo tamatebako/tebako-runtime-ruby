@@ -751,6 +751,30 @@ if(DEFINED RUBY_CONFIGURE_TRIPLET)
   set(RUBY_TRIPLE_OPTIONS "--build=${RUBY_CONFIGURE_TRIPLET} --host=${RUBY_CONFIGURE_TRIPLET}")
 endif()
 
+# The reproducibility pins flowed from the builder (-DRUBY_CPU_PIN /
+# -DRUBY_DLD_PIN; Platform::CONFIGURE_CPU_PINS / CONFIGURE_DLD_PINS own
+# the values and the platform scoping — darwin only today):
+#   RUBY_CPU_PIN — the -mcpu floor against Apple clang's host-cpu
+#     default on aarch64-darwin: codegen otherwise drifts with whatever
+#     silicon the hosted fleet hands the leg (and can emit instructions
+#     the macOS 14 / M1 contract floor lacks — tebako-runtime-ruby#390).
+#   RUBY_DLD_PIN — -Wl,-S on darwin: the new ld derives a bundle's
+#     LC_UUID from a hash of the link content, which includes the N_OSO
+#     debug stabs' per-build object mtimes — the E5 twin-run bundle
+#     drift. Stripping the stabs AT LINK makes the UUID a hash of the
+#     shipped bytes, the same determinism the exe's ld_classic link
+#     already has. Carried as an explicit DLDFLAGS override: configure
+#     defaults DLDFLAGS to LDFLAGS when unset, so the override restates
+#     RUBY_L_FLAGS and appends the pin. Empty pins splice NOTHING —
+#     every other platform keeps the toolchain/configure defaults.
+if(DEFINED RUBY_CPU_PIN AND NOT RUBY_CPU_PIN STREQUAL "")
+  string(CONCAT RUBY_C_FLAGS ${RUBY_C_FLAGS} " ${RUBY_CPU_PIN}")
+endif()
+set(RUBY_DLD_OPTION "")
+if(DEFINED RUBY_DLD_PIN AND NOT RUBY_DLD_PIN STREQUAL "")
+  set(RUBY_DLD_OPTION "DLDFLAGS=\"${RUBY_L_FLAGS} ${RUBY_DLD_PIN}\"")
+endif()
+
 # The build-pass tooling (build/tools/build_pass.rb over build/lib) runs the
 # consumer-side steps the pre-patched source tree expects:
 #   prepare       -- substitute @TEBAKO_MLIBS@ in template/Makefile.in and
@@ -793,6 +817,7 @@ ExternalProject_Add(${RUBY_PRJ}
                                                         --prefix=${DATA_SRC_DIR}              \
                                                         ${C_FLAGS_DEST}=\"${RUBY_C_FLAGS}\"   \
                                                         LDFLAGS=\"${RUBY_L_FLAGS}\"              \
+                                                        ${RUBY_DLD_OPTION}                       \
                                                         LIBS=\"${RUBY_LIBS}\"                    \
                                                         ${RUBY_ACCV_OVERRIDES}"
   COMMAND ${RUBY_INTERP} ${CMAKE_SOURCE_DIR}/tools/build_pass.rb postconfigure ${OSTYPE_TXT} ${RUBY_SOURCE_DIR} ${DEPS_LIB_DIR} ${RUBY_VER}
