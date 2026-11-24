@@ -42,7 +42,11 @@ How a runtime release ships under the multi-staged hierarchy. Written after the
 3. The merge push fires the four triggers with publish=true. Their legs
    publish the tidy set in-leg (write-once names each leg owns) and sign
    them; the coordinator's release job audits the whole matrix and lands
-   the registry PR.
+   the registry PR. The per-platform acceptance jobs then install the
+   PUBLISHED pair through the pinned tebako CLI and run the boot smoke's
+   native_open probe against the installed bytes (the macos-14 leg is
+   the tebako#1125 entitlement class's stripping-platform canary —
+   docs/build-chain.md's signing-profile section owns the story).
 4. Fire the era baseline when you want the full catalog:
 
    ```sh

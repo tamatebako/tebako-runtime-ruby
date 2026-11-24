@@ -1,26 +1,71 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Spec 31 §3/§5: the macOS runtime signing profile (fixed pair, pinned
+  Spec 31 §3/§5: the macOS runtime signing profile (fixed set, pinned
   here until spec 31 §2's manifest derivation lands).
 
+  allow-dyld-environment-variables — THE LOAD-BEARING GRANT
+    (tebako#1125's class; the tebako-runtime-r#5 precedent). The spec 22
+    tier-1 visibility design re-execs the exe with the driver-armed
+    DYLD_INSERT_LIBRARIES, and the in-image libtfs_preload.dylib is the
+    ONLY path by which an UNPATCHED native extension (a third-party C
+    extension doing plain libc IO — leptris' libxml2 fopen()ing its
+    in-image RelaxNG schema, metanorma-standoc#1416) sees the VFS.
+    Ruby itself never notices the omission: the interpreter is patched
+    and reads through tebako_fs_* — but the hardened runtime strips
+    every DYLD_* variable at launch without this grant, the re-exec'd
+    incarnation runs shimless, and every unpatched native open of an
+    in-image path dies ENOENT on the host filesystem ("cannot open
+    schema file"). The macos-15 runners TOLERATE the omission (their
+    dyld keeps the variables), which is how the published 0.17.15 pair
+    shipped green with the defect — so no CI runner can police this
+    class: ci/macos-sign-notarize-runtime.sh asserts the embedded
+    profile statically, by key name, and publish.yml's macos-14
+    acceptance leg is the exec canary (macOS 14 strips).
+    disable-library-validation governs only WHICH dylibs may load, never
+    WHETHER dyld honors the environment — the pair is not redundant.
   disable-library-validation — EVERY runtime slice: a hardened-runtime
     process by default refuses unsigned dylibs, and the driver
     materializes in-image native extensions (.bundle) to the host for
     dlopen; they carry no Developer ID signature of their own (§1.4).
-  allow-jit — YJIT/ZJIT map executable memory at runtime (MAP_JIT on
-    arm64). Harmless on a ruby built without a JIT: the entitlement is
-    a grant, never a requirement.
+  allow-jit — kept: the MAP_JIT grant. Harmless on a ruby built without
+    a JIT consumer of MAP_JIT: the entitlement is a grant, never a
+    requirement.
+  allow-unsigned-executable-memory (ruby#386) — the grant ruby's JIT
+    actually needs. What it allows: a hardened-runtime process may
+    execute machine code it wrote into PLAIN anonymous (non-MAP_JIT)
+    pages; without it the kernel kills the first instruction fetch from
+    such a page — SIGKILL, CODESIGNING "Invalid Page". Why this ruby
+    needs it: YJIT and ZJIT (one shared allocator, jit.c) do W^X by
+    mprotect(PROT_READ|PROT_WRITE <-> PROT_READ|PROT_EXEC) over a plain
+    PROT_NONE reservation — there is no MAP_JIT anywhere in yjit/,
+    zjit/, or jit.c, so allow-jit never applies to ruby's JIT arena.
+    That is the 0.17.15 darwin-23 incident: the signed exe (pair only)
+    died SIGKILL under a yjit-armed load at the first entry into JIT
+    code.
+    Why shipping the grant is the honest call: YJIT/ZJIT are opt-in
+    (the yjit/zjit arms, off by default), so the grant changes nothing
+    for a non-JIT boot; the alternative is compiling YJIT out of macOS
+    runtimes, silently stripping a headline ruby feature to satisfy a
+    policy only hardened-runtime hosts enforce. The hardened runtime
+    itself stays on; this loosens exactly one of its W^X rules, for
+    this one signed process — the standard shape Apple notarizes for
+    mprotect-style JIT engines.
 
-  Keep the two <true/> values on their own lines: the embedding check
-  in ci/macos-sign-notarize-runtime.sh counts them (macOS 15 emits the
-  embedded plist single-line, so it greps for <true/>, not key names).
+  Keep the four <true/> values on their own lines: the embedding check
+  in ci/macos-sign-notarize-runtime.sh counts them AND greps each key
+  name (macOS 15 emits the embedded plist single-line, so it greps for
+  <true/>, not key lines).
 -->
 <plist version="1.0">
 <dict>
+  <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+  <true/>
   <key>com.apple.security.cs.disable-library-validation</key>
   <true/>
   <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
   <true/>
 </dict>
 </plist>

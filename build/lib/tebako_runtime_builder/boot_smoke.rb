@@ -50,10 +50,12 @@ module TebakoRuntimeBuilder
     autoload :InterposeFixture, File.expand_path("boot_smoke/interpose_fixture", __dir__)
     autoload :MagnusFixture,    File.expand_path("boot_smoke/magnus_fixture", __dir__)
 
-    SCENARIOS = %w[boot stat io bundler locks native_ext loader_interpose class_e_exec yjit zjit magnus_ext].freeze
+    SCENARIOS = %w[boot stat io bundler locks native_ext loader_interpose class_e_exec native_open yjit zjit
+                   magnus_ext].freeze
     # The scenarios that boot with the spec-22 probe fixture image mounted
-    # at /probe (class L's libraries + class E's jar ride the same image).
-    INTERPOSE_SCENARIOS = %w[loader_interpose class_e_exec].freeze
+    # at /probe (class L's libraries, class E's jar, and the tebako#1125
+    # native-open pair ride the same image).
+    INTERPOSE_SCENARIOS = %w[loader_interpose class_e_exec native_open].freeze
     BOOT_TIMEOUT = 60
     IMAGE_SUFFIXES = %w[.tfs .dwarfs].freeze
     # Sidecar markers the artifact set carries next to the executable (the
@@ -165,6 +167,42 @@ module TebakoRuntimeBuilder
     # which fails the regex just the same.
     def expected_ca_roots_detail
       @platform.msys? ? MATERIALIZED_CERT_DETAIL : "unset"
+    end
+
+    # The leg's recorded expectation for the native-open raw-open checks
+    # (tebako#1125): the file-IO interpose family's in-process delivery
+    # is platform truth, DERIVED here like the JIT expectations — ELF
+    # links the family into the exe (libtfs_preload.a exe-shape, dynamic
+    # preemption), so the raw open is served on every linux leg ("ok");
+    # the macOS interpreter process carries no family today (the
+    # boot-head micro interpose dylib covers dlopen/dlerror only, the
+    # preload shim is armed for child processes only, and ruby's fs TU
+    # has no preload-shim re-exec — R's tebako_r_main.c shape), so the
+    # raw open answers "unsupported" there. The record is fail-closed
+    # BOTH ways: the day the product delivers the family into the macOS
+    # interpreter process (the rebind module gaining the file-IO
+    # tuples, or the fs TU gaining R's re-exec), the macOS legs go RED
+    # here until this record flips deliberately in the same PR.
+    # TEBAKO_SMOKE_EXPECT_NATIVE_OPEN overrides the derivation for probe
+    # rounds.
+    def expected_native_open_state
+      ENV.fetch("TEBAKO_SMOKE_EXPECT_NATIVE_OPEN", nil) || (@platform.macos? ? "unsupported" : "ok")
+    end
+
+    # The leg's expectation for the boot-head insertion sense
+    # (tebako#1125's root — the entitlement plane): on macOS the
+    # freshly built exe must boot with the micro interpose dylib
+    # INSERTED ("ok") on every leg — a signed leg carries the
+    # allow-dyld-environment-variables grant (ci/runtime.entitlements,
+    # statically asserted in-leg by ci/macos-sign-notarize-runtime.sh),
+    # an unsigned leg is not hardened and dyld honors the insertion,
+    # and macOS 15's dyld tolerates the omission either way. The
+    # stripping class (macOS 14 + a hardened profile without the grant —
+    # the published 0.17.15 pair) is the published-pair acceptance's
+    # macos-14 canary to police, never a build-leg state. Off macOS
+    # there is no dyld insertion to sense ("unsupported").
+    def expected_boot_head_insertion_state
+      @platform.macos? ? "ok" : "unsupported"
     end
 
     # Boot the runtime once with the named scenario preloaded; returns the

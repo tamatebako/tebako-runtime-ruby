@@ -952,6 +952,66 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
       end
     end
 
+    describe "the unpatched native extension raw-open surface (tebako#1125)" do
+      # The entitlement class's runtime probe: an UNPATCHED C extension
+      # (the fixture's NativeOpenExt — the leptris/libxml2 shape,
+      # metanorma-standoc#1416) opens in-image files through plain libc
+      # open(2)/read(2). Ruby's own patched IO stays green either way,
+      # so every pre-existing scenario passed on a shimless boot. The
+      # raw-open checks assert against the leg's DERIVED expectation
+      # (BootSmoke#expected_native_open_state — the file-IO interpose
+      # family's platform truth): served on ELF (the exe-shape family's
+      # preemption), the recorded gap on macOS today (the micro
+      # interpose dylib covers dlopen only; the product's in-process
+      # file-IO delivery flips the record when it lands — the drift
+      # turns these examples red until it does, deliberately).
+      #
+      # The boot_head_insertion example is the entitlement plane's own
+      # gate (tebako#1125's root; the tebako-runtime-r#5 precedent): on
+      # a hardened-runtime macOS exe signed without
+      # allow-dyld-environment-variables, dyld strips the driver's
+      # DYLD_INSERT_LIBRARIES at the boot-head re-exec and the micro
+      # dylib never loads — the published 0.17.15 darwin-23 incident.
+      # The macos-15 runners' dyld tolerates the omission, so no CI
+      # runner polices the class at exec time: the arch-independent
+      # backstop is ci/macos-sign-notarize-runtime.sh's static
+      # embedded-profile assertion, and the published-bytes proof is
+      # publish.yml's macos-14 acceptance leg. POSIX-only (windows
+      # class L is its own phase).
+      let(:run) { smoke.run("native_open") }
+
+      it "loads the unpatched probe extension (the driver's materialization works shimless)" do
+        skip "the native-open scenario is POSIX-only (windows class L is its own phase)" if smoke.platform.msys?
+
+        expect(run).to be_booted, boot_failure(run)
+        expect(run.state("native_open_ext_load")).to eq("ok"), "detail: #{run.detail("native_open_ext_load")}"
+      end
+
+      it "raw-opens an ENV-image file per the leg's interpose-family expectation (the leptris shape)" do
+        skip "the native-open scenario is POSIX-only (windows class L is its own phase)" if smoke.platform.msys?
+
+        expect(run).to be_booted, boot_failure(run)
+        expect(run.state("env_image_raw_open")).to eq(smoke.expected_native_open_state),
+                                                   "detail: #{run.detail("env_image_raw_open")}"
+      end
+
+      it "raw-opens a payload-image file per the leg's interpose-family expectation" do
+        skip "the native-open scenario is POSIX-only (windows class L is its own phase)" if smoke.platform.msys?
+
+        expect(run).to be_booted, boot_failure(run)
+        expect(run.state("payload_image_raw_open")).to eq(smoke.expected_native_open_state),
+                                                       "detail: #{run.detail("payload_image_raw_open")}"
+      end
+
+      it "boots with the micro interpose dylib inserted (the entitlement plane, macOS)" do
+        skip "the native-open scenario is POSIX-only (windows class L is its own phase)" if smoke.platform.msys?
+
+        expect(run).to be_booted, boot_failure(run)
+        expect(run.state("boot_head_insertion")).to eq(smoke.expected_boot_head_insertion_state),
+                                                    "detail: #{run.detail("boot_head_insertion")}"
+      end
+    end
+
     describe "the exec interposition (spec 22, class E)" do
       # The Class-B gem adapters' (jing/mn2pdf/mnconvert) deletion gate: a
       # spawned JVM reads a VFS-resident jar through the inherited preload
