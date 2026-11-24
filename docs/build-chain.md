@@ -323,8 +323,57 @@ toolchain prefix lacks a member), `ImageManifest` declares exactly that
 set, and the boot smoke judges the chain (declaration, in-image
 presence, PATH lead) against it via `TEBAKO_SMOKE_EXPECT_SUPPORT_DLLS`.
 
+## The macOS signing profile (the entitlement grants)
+
+`ci/runtime.entitlements` pins the fixed hardened-runtime profile every
+macOS exe is signed with (spec 31 §3/§5 — the pinned set until §2's
+manifest derivation lands). Four grants, each load-bearing:
+
+- **allow-dyld-environment-variables** (tebako#1125's class; the
+  tebako-runtime-r#5 precedent) — dyld honors the driver's
+  `DYLD_INSERT_LIBRARIES` at the boot-head self re-exec. Without it the
+  insertion is stripped SILENTLY and every unpatched native extension
+  (a third-party C extension doing plain libc open of an in-image path
+  — leptris' libxml2 shape) dies ENOENT on the host filesystem, while
+  ruby's own patched IO stays green: the published 0.17.15 pair shipped
+  exactly that defect, GREEN on every leg, because macOS 15's dyld
+  tolerates the omission and no CI runner runs a stripping macOS. So
+  the profile is asserted STATICALLY in-leg by
+  `ci/macos-sign-notarize-runtime.sh` — count the `<true/>` values AND
+  grep each key by name (a count alone passes a wrong-keyed profile) —
+  and publish.yml's macos-14 acceptance leg is the stripping-platform
+  exec canary, with the boot smoke's `boot_head_insertion` sense (the
+  micro interpose dylib in dyld's own loaded-image list) carrying the
+  named verdict.
+- **disable-library-validation** — the driver materializes in-image
+  native extensions to the host for dlopen; they carry no Developer ID
+  signature of their own.
+- **allow-jit** — the MAP_JIT grant; ruby's JITs never use MAP_JIT, but
+  a grant is a permission, never a requirement.
+- **allow-unsigned-executable-memory** (ruby#386) — YJIT/ZJIT do W^X by
+  mprotect over a plain PROT_NONE reservation (no MAP_JIT anywhere in
+  yjit/, zjit/, or jit.c); without the grant the kernel SIGKILLs the
+  first instruction fetch from the JIT arena — the 0.17.15 darwin-23
+  incident.
+
+The dyld grant is the entitlement PLANE of tebako#1125's fix, and its
+sufficiency boundary is recorded, not implied: the insertion it
+restores arms CHILD processes with the file-IO preload shim, while the
+macOS INTERPRETER process itself carries no file-IO interpose family
+today (the boot-head micro dylib covers dlopen/dlerror only; the shim's
+in-process dlopen is interpose-inert; ruby's fs TU has no preload-shim
+re-exec — R's tebako_r_main.c shape). The boot smoke's `native_open`
+scenario pins that platform truth fail-closed: the raw-open checks
+answer "ok" on linux (the exe-shape `libtfs_preload.a` preempts
+in-process) and "unsupported" on macOS until the product delivers the
+family into the interpreter process (the rebind module gaining the
+file-IO tuples, or the fs TU gaining R's re-exec) — the delivery flips
+the recorded expectation deliberately, in its own PR.
+
 ## Where each value lives (SSOT)
 
+- macOS entitlement profile: `ci/runtime.entitlements` (asserted in-leg
+  by `ci/macos-sign-notarize-runtime.sh`).
 - Legs/routing: `.github/build-graph.yaml` + `scripts/compute_matrix.rb`.
 - Version/env vocabulary: `.github/matrix.json`.
 - Source pin + asset naming: `build/lib/tebako_runtime_builder/source_fetcher.rb`.

@@ -1477,7 +1477,7 @@ jobs:
           ls -l "$exe" "$img"
 
       # Spec 31 §5/§8.4: sign (Developer ID Application, hardened
-      # runtime, the ci/runtime.entitlements pair) + notarize the macOS
+      # runtime, the ci/runtime.entitlements set) + notarize the macOS
       # runtime exe IN-LEG, before the S51 provenance check and the boot
       # smoke — every downstream gate, and the publish stage's .sha256
       # sidecar, anchors the exact SIGNED bytes (sign-then-hash is
@@ -1486,7 +1486,9 @@ jobs:
       # armed + a missing secret is a fast named failure). The exe is
       # left quarantine-marked: the boot smoke — with its JIT canaries —
       # then runs under Gatekeeper's exact download path, proving the
-      # allow-jit/disable-library-validation pair on the signed exe.
+      # entitlement set on the signed exe (the enumeration lives in
+      # ci/runtime.entitlements, asserted by the sign script — never
+      # re-spelled here).
       - name: Sign + notarize the runtime exe (macos, spec 31)
         if: matrix.env.os == 'macos'
         shell: bash

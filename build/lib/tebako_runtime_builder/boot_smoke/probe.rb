@@ -128,6 +128,47 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
     report("named_error") { named_error_check }
   end
 
+  # tebako#1125 (the tebako-runtime-r#5 class, the ruby surface): an
+  # UNPATCHED native extension — the fixture's NativeOpenExt, the
+  # leptris/libxml2 shape — opens an in-image file through plain libc
+  # open(2)/read(2). Ruby's own File API is tebako-patched and reads
+  # through tebako_fs_* no matter what; the ONLY thing serving the raw
+  # syscall is the file-IO interpose family. Its delivery differs by
+  # platform:
+  #
+  # - ELF: the family is linked INTO the exe (libtfs_preload.a exe-shape,
+  #   exported dynamically) — the exe's own interposed open/stat/...
+  #   preempt libc's for every subsequently loaded bundle. In-process
+  #   coverage, always on: the raw-open checks answer "ok" on every
+  #   linux leg.
+  # - macOS: the interpreter process gets NO file-IO interpose today.
+  #   The boot-head self-insert re-exec carries the micro interpose
+  #   dylib (dlopen/dlerror tuples only), and the preload shim is armed
+  #   for CHILD processes — never inserted into the interpreter itself
+  #   (ruby's fs TU has no preload-shim re-exec — R's tebako_r_main.c
+  #   shape — and the in-process dlopen of the shim is interpose-inert).
+  #   The raw-open checks report "unsupported" there until the product
+  #   delivers the family into the interpreter process (the rebind
+  #   module gaining the file-IO tuples, or the fs TU gaining R's
+  #   re-exec). The recorded expectation (the spec) fails on ANY drift,
+  #   either way — that flip is the delivery's tripwire.
+  #
+  # The boot_head_insertion check is the entitlement plane's own sense
+  # (tebako#1125's root): the boot-head self-insert's micro dylib in the
+  # loaded image list. A hardened-runtime exe signed without
+  # allow-dyld-environment-variables has the insertion STRIPPED by dyld
+  # on macOS 14 (the published 0.17.15 profile — proven on darwin-23:
+  # the same exe, re-signed with the grant, inserts; without it, not).
+  # macOS 15's dyld tolerates the omission, which is why no macos-15 CI
+  # runner can police the class — this check rides every leg so the
+  # published-pair acceptance's macos-14 canary has a named verdict.
+  def self.native_open
+    report("native_open_ext_load") { native_open_ext_load_check }
+    report("env_image_raw_open") { native_raw_open_check(STUB) }
+    report("payload_image_raw_open") { native_raw_open_check(native_open_marker_path) }
+    report("boot_head_insertion") { boot_head_insertion_check }
+  end
+
   # Spec 22 class E (§3): exec interposition — a spawned JVM reads a
   # VFS-resident jar through the inherited preload shim + TEBAKO_TFS_MOUNTS
   # (the handoff env), with no gem adapter extracting anything. The jar
@@ -184,7 +225,8 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
     report("magnus_fixture") { magnus_fixture_check }
   end
 
-  SCENARIO_NAMES = %w[boot stat io bundler locks native_ext loader_interpose class_e_exec yjit zjit magnus_ext].freeze
+  SCENARIO_NAMES = %w[boot stat io bundler locks native_ext loader_interpose class_e_exec native_open yjit zjit
+                      magnus_ext].freeze
 
   def self.run
     scenario = ENV.fetch("TEBAKO_BOOT_PROBE", "")
@@ -229,7 +271,14 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
   # semantics, red under EITHER expectation), "enabled". The enabled arm
   # also asserts the +YJIT description marker: a YJIT runtime whose
   # ruby -v hides the fact fails here (the marker is the user-visible
-  # diagnosability the phase-0 audit asked for).
+  # diagnosability the phase-0 audit asked for). It then EXECUTES
+  # JIT-compiled code (jit_exec_check, ruby#386): the state senses never
+  # leave the interpreter, so a runtime whose JIT arena the kernel
+  # refuses to execute — macOS hardened runtime without
+  # allow-unsigned-executable-memory kills the first instruction fetch
+  # from YJIT's mprotect-W^X pages, SIGKILL CODESIGNING "Invalid Page",
+  # the 0.17.15 darwin-23 incident — passed them clean and died only
+  # under load.
   def self.yjit_check
     return "not-compiled" unless defined?(RubyVM::YJIT)
     return "disabled" unless RubyVM::YJIT.enabled?
@@ -238,6 +287,7 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
       raise "YJIT enabled but RUBY_DESCRIPTION lacks the +YJIT marker: #{RUBY_DESCRIPTION}"
     end
 
+    jit_exec_check
     "enabled"
   end
 
@@ -259,7 +309,30 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
       raise "ZJIT enabled but RUBY_DESCRIPTION lacks the +ZJIT marker: #{RUBY_DESCRIPTION}"
     end
 
+    jit_exec_check
     "enabled"
+  end
+
+  # ruby#386: actually ENTER JIT-compiled code. YJIT and ZJIT share the
+  # one allocator (upstream jit.c): a plain PROT_NONE reservation, W^X by
+  # mprotect, no MAP_JIT — so on a hardened-runtime macOS host whose
+  # signature lacks allow-unsigned-executable-memory the kernel kills the
+  # first instruction fetch from a JIT page (SIGKILL, CODESIGNING
+  # "Invalid Page"). A hot loop far past the compile threshold forces
+  # compilation and entry: on such a host the probe dies HERE, loud, at
+  # smoke time — never latent under user load. Surviving with the right
+  # total is the exec proof; the compile-count stats stay unread (their
+  # shape is upstream-versioned, the total is not).
+  def self.jit_exec_check
+    total = 0
+    10_000.times { |i| total = jit_probe_iseq(i) }
+    raise "JIT exec probe computed #{total}, expected 29998 — the JIT did not run the loop" unless total == 29_998
+  end
+
+  # The probe iseq for jit_exec_check: a plain method (never a lambda —
+  # YJIT compiles method iseqs on every engine line the factory ships).
+  def self.jit_probe_iseq(num)
+    (num * 3) + 1
   end
 
   # Windows CA roots (0.16.6): the exe's boot shim exports SSL_CERT_FILE
@@ -695,6 +768,113 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
     end
 
     error.message
+  end
+
+  # --- tebako#1125 (native-open) checks -----------------------------------
+
+  # The fixture's marker file in the payload image (InterposeFixture's
+  # MARKER_NAME — the two homes spell the name independently, like
+  # probe_library_path).
+  def self.native_open_marker_path
+    File.join(PROBE_MOUNT, "lib", "native-open-marker.txt")
+  end
+
+  # The unpatched extension's own load: dln_load materializes the
+  # .bundle through the DRIVER's loader interposition, which works
+  # shimless (the cext_self_dlopen leg proves the path) — so a shimless
+  # boot still reaches the raw-open checks, and their ENOENT is the
+  # stripping verdict, never a load artifact.
+  def self.native_open_ext_load_check
+    posix_only!
+    ext = RbConfig::CONFIG["DLEXT"]
+    path = File.join(PROBE_MOUNT, "lib", "native_open_ext.#{ext}")
+    require path
+    raise "NativeOpenExt undefined after a green require of #{path}" unless defined?(NativeOpenExt)
+
+    "loaded #{path}"
+  end
+
+  # The check itself (tebako#1125): NativeOpenExt.read_file rides plain
+  # libc open(2)/read(2) — the ONLY consumer of the file-IO interpose
+  # family in this process. The oracle is ruby's patched File.read of
+  # the SAME path (tebako_fs_*, interpose-independent): the interposed
+  # read must serve byte-identically what the patched API serves.
+  #
+  # The platform truth (the scenario comment): ELF delivers the family
+  # in-process (exe-shape preemption) and a SystemCallError there is a
+  # BROKEN runtime — reported "fail" by name. macOS delivers nothing
+  # into the interpreter process today — an ENOENT there is the recorded
+  # gap, reported "unsupported" so the spec pins it fail-closed and the
+  # product's delivery (the rebind gaining the file-IO tuples, or the
+  # fs TU gaining R's preload-shim re-exec) trips the expectation the
+  # day it lands.
+  def self.native_raw_open_check(path)
+    native_open_ext_load_check
+    raw = NativeOpenExt.read_file(path)
+    patched = File.read(path)
+    unless raw == patched
+      raise "the interposed open(2)/read(2) of #{path} returned #{raw.bytesize} bytes, " \
+            "the patched File.read #{patched.bytesize} — the interpose serves different bytes"
+    end
+
+    "bytes=#{raw.bytesize} byte-identical via open(2) (#{path})"
+  rescue SystemCallError => e
+    native_raw_open_error(path, e)
+  end
+
+  # The raw-open failure verdict by platform (the check's comment owns
+  # the platform truth): an ENOENT on macOS is the recorded gap —
+  # reported "unsupported" so the spec pins it fail-closed; the same
+  # error on ELF is a BROKEN runtime — a named fail.
+  def self.native_raw_open_error(path, error)
+    if macos_host?
+      raise NotImplementedError,
+            "no file-IO interpose family in the macOS interpreter process " \
+            "(raw open(2) of #{path} died #{error.class}: #{error.message}) — the micro interpose dylib covers " \
+            "dlopen only and ruby's fs TU has no preload-shim re-exec; tebako#1125's macOS half awaits " \
+            "the product's in-process delivery"
+    end
+
+    raise "raw open(2) of #{path} died #{error.class}: #{error.message} — the exe-shape file-IO interpose " \
+          "family did not serve (tebako#1125's class)"
+  end
+
+  # The entitlement plane's own sense (tebako#1125's root, macOS only):
+  # the boot-head self-insert's micro interpose dylib in the process's
+  # loaded image list. dyld strips the driver's DYLD_INSERT_LIBRARIES at
+  # the self re-exec on macOS 14 for a hardened-runtime exe lacking
+  # allow-dyld-environment-variables — silently, by design — so the
+  # sense enumerates the images through dyld's own API (_dyld_image_*
+  # via fiddle; the names are dyld's, nothing interposed is consulted).
+  def self.boot_head_insertion_check
+    macos_only!
+    names = loaded_image_names
+    micro = names.find { |name| name.include?("tebako-interpose/") }
+    unless micro
+      raise "the micro interpose dylib is not among the #{names.length} loaded images — dyld stripped the " \
+            "driver's DYLD_INSERT_LIBRARIES at the boot-head re-exec (a hardened-runtime exe signed " \
+            "without allow-dyld-environment-variables, on a stripping macOS — tebako#1125's class)"
+    end
+
+    "inserted: #{micro}"
+  end
+
+  # The process's loaded image names through dyld's own API
+  # (_dyld_image_count/_dyld_get_image_name via fiddle — the names are
+  # dyld's own, nothing interposed is consulted).
+  def self.loaded_image_names
+    require "fiddle"
+    libsystem = Fiddle.dlopen("/usr/lib/libSystem.B.dylib")
+    count = Fiddle::Function.new(libsystem["_dyld_image_count"], [], Fiddle::TYPE_UINT32_T).call
+    name_at = Fiddle::Function.new(libsystem["_dyld_get_image_name"], [Fiddle::TYPE_UINT32_T], Fiddle::TYPE_VOIDP)
+    (0...count).map { |index| name_at.call(index).to_s }
+  end
+
+  def self.macos_only!
+    return if macos_host?
+
+    raise NotImplementedError, "the boot-head insertion sense is a macOS contract " \
+                               "(host_os=#{RbConfig::CONFIG["host_os"]})"
   end
 
   def self.posix_only!
