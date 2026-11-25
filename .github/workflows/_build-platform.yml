@@ -134,7 +134,11 @@ env:
   # 6: the arm64 ac_cv clock-probe pin (build/CMakeLists.txt) — v5's
   # save-always captured a fresh-but-unpinned configure whose config.cache
   # still says HAVE_CLOCK_GETTIME=no; evict it so the env pin is unshadowed.
-  CACHE_VER: 6
+  # 7: the msys libyaml deps-stage build (tebako-runtime-ruby#392) — the
+  # exe's bytes gain the deps-built archive by construction, and a
+  # stamp-restored pre-fix tree would skip the ruby link and ship
+  # msys2-built libyaml objects instead (the E1/E2 drift class).
+  CACHE_VER: 7
   VERBOSE: no
   RUNTIME_REPO: tamatebako/tebako-runtime-ruby
 
@@ -738,13 +742,17 @@ jobs:
           # pacman/pacboy fetches die on mirror stalls (the "Operation too
           # slow" killer) — bounded retry, same contract as the release-asset
           # GETs; a killed attempt can leave the db lock behind.
+          # libyaml is deliberately ABSENT (tebako-runtime-ruby#392): the
+          # rolling repo dropped libyaml.a in 0.2.6-1, so the deps stage
+          # now builds it from source into deps/lib — the archive is never
+          # the package's contents again.
           for attempt in 1 2 3 4; do
             rm -f /var/lib/pacman/db.lck
             pacman -Syu --needed --noconfirm git tar bison flex pactoys && \
               pacboy sync --needed --noconfirm cmake:p diffutils:p          \
                 dlfcn:p ninja:p                                             \
                 gtest:p autotools:p ncurses:p ruby:p toolchain:p openssl:p  \
-                make:p libyaml:p libxslt:p && break
+                make:p libxslt:p && break
             [ "$attempt" -lt 4 ] && sleep $((2 ** attempt)) || exit 1
           done
           # The rolling-resolution record (see Setup MSys above): the exact
@@ -1156,13 +1164,17 @@ jobs:
           # pacman/pacboy fetches die on mirror stalls (the "Operation too
           # slow" killer) — bounded retry, same contract as the release-asset
           # GETs; a killed attempt can leave the db lock behind.
+          # libyaml is deliberately ABSENT (tebako-runtime-ruby#392): the
+          # rolling repo dropped libyaml.a in 0.2.6-1, so the deps stage
+          # now builds it from source into deps/lib — the archive is never
+          # the package's contents again.
           for attempt in 1 2 3 4; do
             rm -f /var/lib/pacman/db.lck
             pacman -Syu --needed --noconfirm git tar bison flex pactoys && \
               pacboy sync --needed --noconfirm cmake:p diffutils:p          \
                 dlfcn:p ninja:p                                             \
                 gtest:p autotools:p ncurses:p ruby:p toolchain:p openssl:p  \
-                make:p libyaml:p libxslt:p && break
+                make:p libxslt:p && break
             [ "$attempt" -lt 4 ] && sleep $((2 ** attempt)) || exit 1
           done
           # The rolling-resolution record (see Setup MSys above): the exact
@@ -1517,6 +1529,20 @@ jobs:
           objdump -p "$dll" | grep -F "tebako_fs_mount" \
             || { echo "::error::$dll exports no tebako_fs_* surface (the export fragment did not land, issue 40)"; exit 1; }
           echo "ruby DLL wired: $(basename "$exe") imports it, it exports tebako_fs_*"
+          # tebako-runtime-ruby#392 (the 0.16.3 class): libyaml is STATIC
+          # in the closure — built from source in the deps stage, never
+          # msys2's package (the rolling repo dropped libyaml.a in
+          # 0.2.6-1). A dynamic reference imports libyaml-0-2.dll and
+          # dies exit 127 on a bare machine; assert no libyaml DLL name
+          # in either PE's import table.
+          for pe in "$exe" "$dll"; do
+            if objdump -p "$pe" | grep -i "DLL Name: libyaml" >/dev/null; then
+              objdump -p "$pe" | grep -i "DLL Name"
+              echo "::error::$pe imports libyaml dynamically — libyaml must link statically from the deps stage (#392)"
+              exit 1
+            fi
+          done
+          echo "libyaml static: no libyaml DLL import in the exe or the ruby DLL"
 
           # Issue 40's own proof class: the env image's dynamic
           # extensions (debug/racc/rbs -- the --disable-shared era had
