@@ -372,9 +372,13 @@ manifest derivation lands). Four grants, each load-bearing:
   tolerates the omission and no CI runner runs a stripping macOS. So
   the profile is asserted STATICALLY in-leg by
   `ci/macos-sign-notarize-runtime.sh` — count the `<true/>` values AND
-  grep each key by name (a count alone passes a wrong-keyed profile) —
-  and publish.yml's macos-14 acceptance leg is the stripping-platform
-  exec canary, with the boot smoke's `boot_head_insertion` sense (the
+  grep each key by name (a count alone passes a wrong-keyed profile).
+  publish.yml's macos acceptance leg pinned macos-14 as the
+  stripping-platform exec canary until GitHub retired the image
+  2026-11-02 — no current runner's dyld strips the variables without
+  the grant, so the static assertion now carries the class alone. The
+  leg rides macos-15, still gating the installed pair's boot on the
+  current OS, with the boot smoke's `boot_head_insertion` sense (the
   micro interpose dylib in dyld's own loaded-image list) carrying the
   named verdict.
 - **disable-library-validation** — the driver materializes in-image

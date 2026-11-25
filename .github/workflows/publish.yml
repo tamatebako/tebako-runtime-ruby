@@ -71,13 +71,16 @@
 # shim — tebako#1125 (the published 0.17.15 macos pair whose boot-head
 # insertion dyld stripped on macOS 14, the missing
 # allow-dyld-environment-variables grant) shipped green in the former
-# and died in the latter. The macos-arm64 acceptance leg pins macos-14
-# ON PURPOSE: macOS 15's dyld tolerates the omission (the blind spot
-# that shipped the class green), while macOS 14 strips
-# DYLD_INSERT_LIBRARIES without the grant — the entitlement class's
-# exec canary (the arch-independent backstop is
+# and died in the latter. The macos-arm64 acceptance leg pinned
+# macos-14 as the entitlement class's exec canary: macOS 15's dyld
+# tolerates the omission (the blind spot that shipped the class
+# green), while macOS 14 strips DYLD_INSERT_LIBRARIES without the
+# grant. That canary's home is gone — GitHub retired the macos-14
+# runner image 2026-11-02 (jobs on the label cancel at queue), and
+# macOS 15's dyld tolerance means macos-15 CANNOT canary the class:
 # ci/macos-sign-notarize-runtime.sh's static embedded-profile
-# assertion).
+# assertion now carries it alone. The arm64 leg still gates the
+# installed pair's boot on the current OS, so it rides macos-15.
 #
 # Spec 36 §6's topology: a CATALOG publish (ruby_filter=catalog, no
 # release_tag override) derives its per-(line x platform) shard tags
@@ -1094,17 +1097,22 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macos-14 ON PURPOSE (the header note): macOS 15's dyld
-          # tolerates a missing allow-dyld-environment-variables grant —
-          # the blind spot that shipped tebako#1125's class green on the
-          # published 0.17.15 pair — while macOS 14 strips
-          # DYLD_INSERT_LIBRARIES without it. This leg is the
-          # entitlement class's exec canary.
-          - { arch: arm64,  host: macos-14 }
+          # NOT a canary (the header note): the macos-14 exec canary's
+          # home is gone — GitHub retired the image 2026-11-02 — and
+          # macOS 15's dyld tolerates a missing
+          # allow-dyld-environment-variables grant (the blind spot that
+          # shipped tebako#1125's class green on the published 0.17.15
+          # pair), so no current runner strips DYLD_INSERT_LIBRARIES
+          # without it. The entitlement class rides
+          # ci/macos-sign-notarize-runtime.sh's static embedded-profile
+          # assertion alone; this leg gates the installed pair's boot
+          # on the current OS.
+          - { arch: arm64,  host: macos-15 }
           # The only Intel runner at or above the exe's 14.0 floor
           # (contract.yml's macos_deployment_target); the entitlement
-          # class rides the arm64 canary + the sign script's static
-          # assertion, both arch-independent.
+          # class rides the sign script's static assertion alone,
+          # arch-independent (the arm64 exec canary's home retired
+          # with macos-14).
           - { arch: x86_64, host: macos-15-intel }
     runs-on: ${{ matrix.host }}
     timeout-minutes: 30
