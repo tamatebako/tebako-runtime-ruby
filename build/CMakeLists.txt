@@ -262,6 +262,26 @@ endif()
 
 def_ext_prj_g(PATCHELF "65e14792061c298f1d2bc44becd48a10cbf0bc81")
 
+# libyaml 0.2.5, the version the rest of the fleet links (brew, the
+# linux containers' libyaml-dev/yaml-dev): built from the upstream
+# release tarball into the deps prefix on msys (the ExternalProject
+# below owns the why), never from msys2's package. The autotools
+# configure, not the tarball's CMakeLists: upstream's dist excludes
+# the CMake support files (cmake/config.h.in, yamlConfig.cmake.in are
+# in the git tree only), so the CMake path fails at configure_file.
+def_ext_prj_t(LIBYAML "0.2.5" "c642ae9b75fee120b2d96c712538bd2cf283228d2337df2cf2988e3c02678ef4")
+
+# libyaml's configure canonicalizes the same pinned triplet the ruby
+# build runs (RUBY_CONFIGURE_TRIPLET, Platform::CONFIGURE_TRIPLETS);
+# the tarball's config.sub (2018-02-22) canonicalizes both
+# x86_64-w64-mingw32 and aarch64-w64-mingw32 (probed directly — it
+# validates parts, not combinations). Bare invocations (no -D) keep
+# autoconf's guess, like the ruby build.
+set(LIBYAML_TRIPLE_OPTIONS "")
+if(DEFINED RUBY_CONFIGURE_TRIPLET)
+  set(LIBYAML_TRIPLE_OPTIONS "--build=${RUBY_CONFIGURE_TRIPLET} --host=${RUBY_CONFIGURE_TRIPLET}")
+endif()
+
 set(LIBYAML_RUBY_OPTION "")
 set(RUBY_LIBS "")
 if(${RUBY_VER} VERSION_LESS "3.2.0")
@@ -567,6 +587,35 @@ if(IS_GNU)
   )
 endif(IS_GNU)
 
+# libyaml, from source into the deps prefix (msys only) — psych's static
+# archive and yaml.h: MAINLIBS'/SOLIBS' LIBYAML token resolves
+# -l:libyaml.a from ${DEPS_LIB_DIR}, and the ext's find_header probes
+# ${DEPS_INCLUDE_DIR} off RUBY_C_FLAGS. tebako-runtime-ruby#392: msys2's
+# rolling repo dropped libyaml.a in mingw-w64-*-libyaml-0.2.6-1 (the
+# "MSYS2 rides the rolling repo" named gap firing — every windows link
+# died 'cannot find -l:libyaml.a'), so the archive is never the
+# package's contents again; the legs no longer install libyaml:p.
+# The ${GNU_BASH} -c invocation is the ruby ExternalProject's own
+# configure idiom (the msys legs run every autotools step through it);
+# CC pins the top build's compiler so the archive's objects are the
+# same toolchain's as every other deps artifact.
+if(IS_MSYS)
+  ExternalProject_Add(${LIBYAML_PRJ}
+    PREFIX ${DEPS}
+    URL https://pyyaml.org/download/libyaml/yaml-${LIBYAML_VER}.tar.gz
+    URL_HASH SHA256=${LIBYAML_HASH}
+    DOWNLOAD_NO_PROGRESS true
+    SOURCE_DIR ${LIBYAML_SOURCE_DIR}
+    BINARY_DIR ${LIBYAML_BINARY_DIR}
+    UPDATE_COMMAND ""
+    CONFIGURE_COMMAND ${GNU_BASH} -c "CC='${CMAKE_C_COMPILER}' ${LIBYAML_SOURCE_DIR}/configure --prefix=${DEPS} --disable-shared --enable-static ${LIBYAML_TRIPLE_OPTIONS}"
+    BUILD_COMMAND ${GNU_BASH} -c "make -j${NCORES}"
+    INSTALL_COMMAND ${GNU_BASH} -c "make install"
+    BUILD_BYPRODUCTS ${DEPS_LIB_DIR}/libyaml.a
+    TEST_COMMAND ""
+  )
+endif(IS_MSYS)
+
 # ...................................................................
 # Ruby (pre-patched source, tfs-ruby-<version>-src.tar.gz)
 
@@ -684,6 +733,9 @@ message(STATUS "Ruby build ${C_FLAGS_DEST}='${RUBY_C_FLAGS}'")
 message(STATUS "Ruby build LDFLAGS='${RUBY_L_FLAGS}'")
 message(STATUS "openssl Ruby option='${OPENSSL_RUBY_OPTION}'")
 message(STATUS "libyaml Ruby option='${LIBYAML_RUBY_OPTION}'")
+if(IS_MSYS)
+  message(STATUS "libyaml (deps stage): v${LIBYAML_VER} static, installed to ${DEPS} (tebako-runtime-ruby#392)")
+endif(IS_MSYS)
 message(STATUS "shared Ruby option='${RUBY_SHARED_OPTION}'")
 
 # The canonical configure triplet (-DRUBY_CONFIGURE_TRIPLET from
@@ -750,6 +802,12 @@ ExternalProject_Add(${RUBY_PRJ}
 )
 
 add_dependencies(${RUBY_PRJ} ${DWARFS_WR_PRJ})
+if(IS_MSYS)
+  # psych's extconf probes yaml.h/-lyaml when the exts build and the
+  # exe/DLL links resolve -l:libyaml.a — the deps-stage archive must be
+  # installed before any ruby build step runs (tebako-runtime-ruby#392).
+  add_dependencies(${RUBY_PRJ} ${LIBYAML_PRJ})
+endif(IS_MSYS)
 
 add_custom_target(setup
   ${CMAKE_COMMAND} -E echo "Tebako runtime setup has completed"

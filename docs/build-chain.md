@@ -187,7 +187,15 @@ The named gaps (recorded-not-pinned, by construction):
   snapshot URL 404s as the mirrors GC; a `--ignore` holdback of the
   runtime is an unsupported partial upgrade). The resolved package set
   is recorded (`pacman -Q` per leg, and its sha256 in the toolchain
-  identity).
+  identity). One member has left the class permanently
+  (tebako-runtime-ruby#392): **libyaml** — the rolling repo dropped
+  `libyaml.a` in `mingw-w64-*-libyaml-0.2.6-1` (2026-11-23, every
+  windows link died `cannot find -l:libyaml.a`), so the deps stage
+  builds it from the upstream 0.2.5 tarball into `deps/lib` (the
+  autotools configure — upstream's dist excludes the CMake support
+  files, so the CMake path fails at configure_file), and the legs no
+  longer install `libyaml:p`. The windows gate asserts no `libyaml`
+  DLL name in either shipped PE's import table.
 - **Signing** rewrites the exe after `exe_sha256_presign` is recorded
   (macOS codesign, windows Authenticode) — timestamped by design. The
   reproducibility claim is scoped to the pre-signing bytes.
