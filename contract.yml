@@ -267,7 +267,7 @@ macos_deployment_target: "14.0"
 # LoadError class) — the unit now rebinds the two symbols in-process at
 # boot (indirect-symbol rewrite + add-image callback), no insertion
 # needed. Contract unchanged (2).
-link_unit_release: "v2.8.83"
+link_unit_release: "v2.8.85"
 
 # The registry-render gate's reader pin (trr#241): the tamatebako/tebako
 # release whose CLI validates every accumulated registry mirror with
