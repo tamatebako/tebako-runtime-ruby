@@ -173,20 +173,21 @@ module TebakoRuntimeBuilder
     # (tebako#1125): the file-IO interpose family's in-process delivery
     # is platform truth, DERIVED here like the JIT expectations — ELF
     # links the family into the exe (libtfs_preload.a exe-shape, dynamic
-    # preemption), so the raw open is served on every linux leg ("ok");
-    # the macOS interpreter process carries no family today (the
-    # boot-head micro interpose dylib covers dlopen/dlerror only, the
-    # preload shim is armed for child processes only, and ruby's fs TU
-    # has no preload-shim re-exec — R's tebako_r_main.c shape), so the
-    # raw open answers "unsupported" there. The record is fail-closed
-    # BOTH ways: the day the product delivers the family into the macOS
-    # interpreter process (the rebind module gaining the file-IO
-    # tuples, or the fs TU gaining R's re-exec), the macOS legs go RED
-    # here until this record flips deliberately in the same PR.
-    # TEBAKO_SMOKE_EXPECT_NATIVE_OPEN overrides the derivation for probe
-    # rounds.
+    # preemption), so the raw open is served on every linux leg ("ok").
+    # macOS flipped to "ok" in the v2.8.85 pin roll (this PR): the
+    # v2.8.85 link unit's driver carries the boot-tail shim re-exec
+    # (tebako#1126 — R's two-incarnation model generalized into
+    # tebako_driver_boot), so the interpreter process runs with the
+    # preload shim's file-IO tuples armed and the raw open is served
+    # in-process — the PR's own macOS legs recorded it
+    # ("byte-identical via open(2)" on both the env-image and
+    # payload-image probes) as the tripwire this record was designed
+    # to be. The published-pair acceptance runs only in the publish
+    # pipeline against the fresh pair, so the flip has no old-pair
+    # window. TEBAKO_SMOKE_EXPECT_NATIVE_OPEN overrides the derivation
+    # for probe rounds.
     def expected_native_open_state
-      ENV.fetch("TEBAKO_SMOKE_EXPECT_NATIVE_OPEN", nil) || (@platform.macos? ? "unsupported" : "ok")
+      ENV.fetch("TEBAKO_SMOKE_EXPECT_NATIVE_OPEN", nil) || "ok"
     end
 
     # The leg's expectation for the boot-head insertion sense

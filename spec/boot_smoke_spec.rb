@@ -961,10 +961,9 @@ RSpec.describe TebakoRuntimeBuilder::BootSmoke, :boot_smoke do
       # raw-open checks assert against the leg's DERIVED expectation
       # (BootSmoke#expected_native_open_state — the file-IO interpose
       # family's platform truth): served on ELF (the exe-shape family's
-      # preemption), the recorded gap on macOS today (the micro
-      # interpose dylib covers dlopen only; the product's in-process
-      # file-IO delivery flips the record when it lands — the drift
-      # turns these examples red until it does, deliberately).
+      # preemption) and on macOS from the v2.8.85 line (the driver's
+      # boot-tail shim re-exec, tebako#1126 — the pin roll that adopts
+      # it flips this record in the same PR, as designed).
       #
       # The boot_head_insertion example is the entitlement plane's own
       # gate (tebako#1125's root; the tebako-runtime-r#5 precedent): on
