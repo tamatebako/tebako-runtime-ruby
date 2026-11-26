@@ -865,10 +865,20 @@ module BootSmokeProbe # rubocop:disable Metrics/ModuleLength
   def self.loaded_image_names
     require "fiddle"
     libsystem = Fiddle.dlopen("/usr/lib/libSystem.B.dylib")
-    count = Fiddle::Function.new(libsystem["_dyld_image_count"], [], Fiddle::TYPE_UINT32_T).call
-    name_at = Fiddle::Function.new(libsystem["_dyld_get_image_name"], [Fiddle::TYPE_UINT32_T], Fiddle::TYPE_VOIDP)
+    count = Fiddle::Function.new(libsystem["_dyld_image_count"], [], fiddle_uint32).call
+    name_at = Fiddle::Function.new(libsystem["_dyld_get_image_name"], [fiddle_uint32], Fiddle::TYPE_VOIDP)
     (0...count).map { |index| name_at.call(index).to_s }
   end
+
+  # Fiddle::TYPE_UINT32_T arrived with ruby 3.2's fiddle; the 3.1 line
+  # has only the C-width types, and int is 32-bit on every platform the
+  # probe runs on. (Surfaced by the full-catalog publish legs — the PR
+  # matrix builds the tidy set, so the 3.1.6 legs' NameError was
+  # publish-only.)
+  def self.fiddle_uint32
+    defined?(Fiddle::TYPE_UINT32_T) ? Fiddle::TYPE_UINT32_T : Fiddle::TYPE_INT
+  end
+  private_class_method :fiddle_uint32
 
   def self.macos_only!
     return if macos_host?
