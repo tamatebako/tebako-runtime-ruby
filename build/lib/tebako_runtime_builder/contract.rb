@@ -65,5 +65,25 @@ module TebakoRuntimeBuilder
         "#{@path} carries no macos_deployment_target pin — the macOS support floor is a product decision, never the runner image's accident (tebako-runtime-ruby#317)", 64
       )
     end
+
+    # macOS N ↔ darwin N+9 (11↔20 … 15↔24) — the ONE owner of the
+    # floor→kernel-major map (spec 00 §10). The builder's configure
+    # triplet and the abi sidecar's floor assertion both flow it; a
+    # second hand-written copy anywhere is a drift bug on arrival. The
+    # floor's archdir spelling is the ABI vocabulary itself: a build
+    # host's kernel release leaking in place of it IS the 0.17.14/0.17.15
+    # darwin-24 drift window. Fail-closed on a non-numeric major — the
+    # schema (schema/contract.schema.yml) locks the shape, this guards
+    # every read path that never runs the schema.
+    def darwin_kernel_major
+      major = macos_deployment_target.split(".", 2).first
+      unless major.match?(/\A\d+\z/)
+        raise TebakoRuntimeBuilder::Error.new(
+          "#{@path} macos_deployment_target '#{macos_deployment_target}' carries no numeric major — " \
+          "the darwin kernel major cannot be derived (macOS N ↔ darwin N+9)", 64
+        )
+      end
+      major.to_i + 9
+    end
   end
 end

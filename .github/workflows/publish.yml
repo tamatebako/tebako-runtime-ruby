@@ -134,6 +134,10 @@ on:
         description: 'Host the release under this tag instead of v<VERSION> — a release object caps at 1000 assets, so a catalog publish shards per ruby line x platform (v0.17.1-ruby4.0-macos, …). Artifact names stay version-branded; only the tag moves. Empty = v<VERSION>.'
         type: string
         default: ''
+      abi_bump:
+        description: 'Deliberate ABI-vocabulary bump (spec 05 §5 continuity): non-empty acknowledges a darwin abi segment move vs the previous published line (e.g. "macos:darwin-24->darwin-23 — <reason>"). The continuity gate fails closed on any move without it; its text is recorded into the registry bot PR body.'
+        type: string
+        default: ''
   repository_dispatch:
     types: ['tebako release']
 
@@ -597,6 +601,31 @@ jobs:
           "$RUNNER_TEMP/product-cli/$asset" registry validate "$acc"
           echo "the accumulated registry parses under the product reader ($pin)"
 
+      # The ABI continuity gate (the 0.17.14/0.17.15 darwin-24 drift
+      # window's lesson — a patch line silently changed the ABI vocabulary
+      # the resolver constrains native payloads by, and every
+      # darwin-24-pressed payload found out at smoke time; spec 05 §5's
+      # abi segment is resolution truth, so a move gets an era boundary's
+      # treatment): the render's darwin rows are compared against the
+      # previous line's rows on main. A move is legitimate ONLY as the
+      # deliberate abi_bump dispatch input, and the acknowledged tuples +
+      # the knob text are recorded into the registry bot PR body by the
+      # publish step. The floor spelling itself is gated at build time
+      # (Builder#assert_abi_floor!, docs/build-chain.md "The abi gates").
+      - name: Gate the darwin abi continuity vs the previous line
+        id: abi-gate
+        if: ${{ always() && !cancelled() && !inputs.audit && steps.render.outcome == 'success' }}
+        env:
+          ABI_BUMP: ${{ inputs.abi_bump }}
+        run: |
+          set -euo pipefail
+          acc="$RUNNER_TEMP/registry-accumulated.yaml"
+          [ -f "$acc" ] || { echo "::error::the render step left no accumulated registry (registry-accumulated.yaml missing)"; exit 1; }
+          git fetch --depth 1 origin main
+          git show origin/main:tpkg-registry.yaml > "$RUNNER_TEMP/main-registry.yaml"
+          ruby tools/registry_abi_gate.rb "$acc" "$RUNNER_TEMP/main-registry.yaml" "${ABI_BUMP:-}" \
+            | tee "$RUNNER_TEMP/abi-gate.out"
+
       # main is branch-protected: the registry lands by bot PR +
       # auto-merge, never by direct push. ONE PR per coordinator run
       # carrying every shard tag's accumulated render (#275: the per-tag
@@ -608,12 +637,16 @@ jobs:
       # already-merged PR is the converged state, never an error.
       # Gated on the render step's success: a failed render must surface
       # its own named error, never the publish step's "nothing rendered"
-      # (run 36363960486's masked failure, #218).
+      # (run 36363960486's masked failure, #218). Gated on the abi-gate
+      # step's success too: an unacknowledged ABI-vocabulary move must
+      # STOP the mirror here — a failed gate that still publishes is the
+      # drift window shipped twice.
       - name: Publish the registry via pull request
-        if: ${{ always() && !cancelled() && !inputs.audit && steps.render.outcome == 'success' }}
+        if: ${{ always() && !cancelled() && !inputs.audit && steps.render.outcome == 'success' && steps.abi-gate.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ steps.fleet.outputs.token }}
           REGISTRY_VERSION_INPUT: ${{ inputs.registry_version }}
+          ABI_BUMP: ${{ inputs.abi_bump }}
         run: |
           set -euo pipefail
           acc="$RUNNER_TEMP/registry-accumulated.yaml"
@@ -675,6 +708,18 @@ jobs:
           (spec 13 §2a's audit+registry job; spec 04 §2's mirror). main is
           protected, so the registry lands by PR.
           EOF
+            # The deliberate ABI-vocabulary bump (spec 05 §5 continuity):
+            # the abi gate's acknowledged tuples + the dispatch knob text
+            # ride the body, so the era-boundary treatment is visible at
+            # the registry PR itself. Recorded only when the knob was
+            # carried AND the gate acknowledged moves (a knob with no
+            # moves is operator noise, not a bump).
+            if [ -n "${ABI_BUMP:-}" ] && grep -q "^bump acknowledged:" "$RUNNER_TEMP/abi-gate.out" 2>/dev/null; then
+              {
+                printf '\n## ABI vocabulary bump (deliberate — the abi_bump dispatch input)\n\n'
+                cat "$RUNNER_TEMP/abi-gate.out"
+              } >> "$body"
+            fi
             if ! create_out="$(gh pr create --base main --head "$branch" \
                                 --title "publish v${version}: registry entries" \
                                 --body-file "$body" 2>&1)"; then

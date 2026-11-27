@@ -584,6 +584,56 @@ RSpec.describe "publish coordinator workflow" do
       .to be < release_step_names.index("Render the registry entries (per shard tag)")
   end
 
+  # The ABI continuity gate (the 0.17.14/0.17.15 darwin-24 drift window —
+  # a patch line silently changed the abi vocabulary the resolver
+  # constrains native payloads by). The deliberate-bump treatment is
+  # locked structurally: the knob exists, the gate runs between the
+  # product-reader validation and the bot PR, and the publish step can
+  # never run on a failed gate.
+  it "declares the abi_bump dispatch knob (the deliberate-bump vocabulary treatment)" do
+    # YAML 1.1: the `on:` key parses as boolean true
+    inputs = workflow.fetch(true).fetch("workflow_dispatch").fetch("inputs")
+    expect(inputs.dig("abi_bump", "type")).to eq("string")
+    expect(inputs.dig("abi_bump", "default")).to eq("")
+    expect(inputs.dig("abi_bump", "description")).to include("ABI-vocabulary bump")
+  end
+
+  it "gates the darwin abi continuity between the registry validation and the bot PR" do
+    validate = release_steps.find { |step| step["name"] == "Validate the accumulated registry with the product reader" }
+    gate = release_steps.find { |step| step["name"] == "Gate the darwin abi continuity vs the previous line" }
+    publish = release_steps.find { |step| step["name"] == "Publish the registry via pull request" }
+    [validate, gate, publish].each { |step| expect(step).not_to be_nil }
+
+    # The gate rides the render's success like the publish step does
+    # (always(): a flaked upstream leg strands neither), and wires the
+    # deliberate-bump knob from the dispatch input.
+    expect(gate.fetch("id")).to eq("abi-gate")
+    expect(gate["if"]).to include("always()", "!cancelled()", "!inputs.audit", "steps.render.outcome == 'success'")
+    expect(gate.dig("env", "ABI_BUMP")).to eq("${{ inputs.abi_bump }}")
+    # The comparison itself: the accumulated render vs origin/main's
+    # registry, executed by the owning script — never a shell reinvention.
+    run = gate.fetch("run")
+    expect(run).to include("git fetch", "origin/main:tpkg-registry.yaml",
+                           "ruby tools/registry_abi_gate.rb", "registry-accumulated.yaml",
+                           "${ABI_BUMP:-}")
+
+    # The order is the contract: validate → gate → publish.
+    order = ["Validate the accumulated registry with the product reader",
+             "Gate the darwin abi continuity vs the previous line",
+             "Publish the registry via pull request"].map { |name| release_step_names.index(name) }
+    expect(order[0]).to be < order[1]
+    expect(order[1]).to be < order[2]
+
+    # A failed gate STOPS the mirror — the publish step can never run on
+    # an unacknowledged move.
+    expect(publish["if"]).to include("steps.abi-gate.outcome == 'success'")
+    # The deliberate bump is recorded into the registry PR body when (and
+    # only when) the gate acknowledged moves under a carried knob.
+    expect(publish.dig("env", "ABI_BUMP")).to eq("${{ inputs.abi_bump }}")
+    expect(publish.fetch("run")).to include("abi-gate.out", "bump acknowledged:",
+                                            "ABI vocabulary bump (deliberate")
+  end
+
   # #207 (run 36290152760): a JSON literal inside ${SHARDS:-...} closes
   # the bash expansion at the JSON's first `}` — jq exit 5 in BOTH
   # branches. The default rides jq now; the trap must never come back.
