@@ -281,13 +281,14 @@ module TebakoRuntimeBuilder
     # (Platform::CONFIGURE_TRIPLETS owns the map — the shipped rbconfig's
     # CONFIG["build"]/build_os/archdir pin, never the build host's
     # config.guess). The darwin kernel major FLOWS from contract.yml's
-    # macos_deployment_target (macOS N ↔ darwin N+9: 11↔20 … 15↔24) — the
-    # same floor pin the macOS exe's LC_BUILD_VERSION stamps, so the
-    # recorded archdir and the recorded floor never disagree.
+    # macos_deployment_target (Contract#darwin_kernel_major owns the
+    # macOS N ↔ darwin N+9 map — the same floor pin the macOS exe's
+    # LC_BUILD_VERSION stamps, so the recorded archdir and the recorded
+    # floor never disagree).
     def configure_triplet
       @configure_triplet ||=
         if @platform.macos?
-          @platform.configure_triplet(darwin_major: contract.macos_deployment_target.split(".").first.to_i + 9)
+          @platform.configure_triplet(darwin_major: contract.darwin_kernel_major)
         else
           @platform.configure_triplet
         end
@@ -411,7 +412,13 @@ module TebakoRuntimeBuilder
     # `Gem::Platform.local.to_s`, the RbConfig arch with the darwin segment
     # hyphenated) as `<output>.abi`. Native-extension payloads constrain
     # BOTH the version line and this line; the release flow folds it into
-    # the manifest entry's additive `abi` key.
+    # the manifest entry's additive `abi` key. The darwin spelling is
+    # gated against the contract floor before it ships — see
+    # assert_abi_floor!.
+    # Public so the spec drives the sidecar writers against fixture
+    # trees directly (the ImageBuilder deploy-pass precedent).
+    public
+
     def write_abi_sidecar
       tree = File.join(output_folder, "s")
       rbconfig = Dir[File.join(tree, "lib", "ruby", "*", "*", "rbconfig.rb")].first
@@ -422,10 +429,41 @@ module TebakoRuntimeBuilder
 
       arch = File.basename(File.dirname(rbconfig))
       abi = arch.gsub(/darwin(\d+)/, 'darwin-\1')
+      assert_abi_floor!(abi)
       File.write("#{output.sub(/\.exe\z/, "")}.abi", "#{abi}\n")
     end
 
-    # The era-2 contract provenance (spec 18 C2) as `<output>.contract.yaml`,
+    # The ABI derivation gate (spec 00 §10's vocabulary guard): a darwin
+    # abi's kernel major must BE the contract floor's major
+    # (Contract#darwin_kernel_major owns the macOS N ↔ darwin N+9 map),
+    # never the build host's kernel release. Unpinned config.guess baked
+    # the macos-15 fleet's darwin-24 into the 0.17.14/0.17.15 archdirs —
+    # the drift window that silently broke every darwin-24-pressed
+    # native-extension payload when e21ac536's triplet pin restored the
+    # floor spelling (the registry's abi segment is resolution truth; a
+    # patch-line flip needs an era boundary's treatment). The assertion
+    # keys off the archdir the build ACTUALLY shipped, so a leak fails
+    # the leg here, before any publish — the publish-time continuity gate
+    # (tools/registry_abi_gate.rb) then polices deliberate moves against
+    # the previous line.
+    def assert_abi_floor!(abi) # rubocop:disable Metrics/MethodLength -- the gate's checks, one per line; splitting scatters the grammar
+      match = /\A(?<prefix>.+)-darwin-(?<major>\d+)\z/.match(abi)
+      return unless match
+
+      want = contract.darwin_kernel_major
+      got = match["major"].to_i
+      return if got == want
+
+      raise TebakoRuntimeBuilder::Error.new(
+        "the shipped archdir spells '#{abi}' — the abi's darwin kernel major #{got} is not the contract floor's " \
+        "#{want} (macos_deployment_target #{contract.macos_deployment_target} ↔ darwin #{want}, " \
+        "Contract#darwin_kernel_major). The build host's kernel release leaked into the ABI vocabulary " \
+        "(tebako-runtime-ruby#317's floor class; the 0.17.14/0.17.15 darwin-24 drift window) — the leg " \
+        "refuses to ship it", 134
+      )
+    end
+
+    # The leg's toolchain identity, composed by the CI legs via
     # folded into the release manifest entry by the tebako-release gem's
     # uploader (fail-closed there: a package without it is pre-era and
     # refused).
@@ -440,9 +478,6 @@ module TebakoRuntimeBuilder
     # composed by ci/record-toolchain.sh beside the toolchain it names;
     # the uploader tolerates the additive nested map — it folds
     # built_from verbatim).
-    # Public so the spec drives it against a fixture exe directly (the
-    # ImageBuilder deploy-pass precedent).
-    public
 
     def write_contract_sidecar(assets) # rubocop:disable Metrics/AbcSize,Metrics/MethodLength -- the card's fields, one line each; splitting scatters the grammar
       unless File.file?(output)

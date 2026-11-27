@@ -94,4 +94,55 @@ RSpec.describe TebakoRuntimeBuilder::Builder do
         .to raise_error(TebakoRuntimeBuilder::Error, /does not exist/)
     end
   end
+
+  describe "#write_abi_sidecar" do
+    # The floor flows from the repo's own contract.yml (bump-proof: a
+    # floor move must not require a spec edit). OFF_FLOOR is any major
+    # that is NOT the floor's — the drift-window spelling shape.
+    let(:floor_major) do
+      TebakoRuntimeBuilder::Contract.new(File.join(REPO_ROOT, "contract.yml")).darwin_kernel_major
+    end
+    let(:off_floor_major) { floor_major + 1 }
+
+    def stage_rbconfig(archdir)
+      dir = File.join(@dir, "prefix", "o", "s", "lib", "ruby", "4.0.0", archdir)
+      FileUtils.mkdir_p(dir)
+      File.write(File.join(dir, "rbconfig.rb"), "# rbconfig fixture\n")
+    end
+
+    def abi_text
+      File.read("#{exe}.abi")
+    end
+
+    it "hyphenates the shipped archdir's darwin segment (spec 05 §5's abi line)" do
+      stage_rbconfig("arm64-darwin#{floor_major}")
+      builder.write_abi_sidecar
+      expect(abi_text).to eq("arm64-darwin-#{floor_major}\n")
+    end
+
+    it "accepts the contract floor's darwin major (N ↔ darwin N+9, derived — never hardcoded)" do
+      stage_rbconfig("x86_64-darwin#{floor_major}")
+      expect { builder.write_abi_sidecar }.not_to raise_error
+      expect(abi_text).to eq("x86_64-darwin-#{floor_major}\n")
+    end
+
+    it "refuses a darwin major that is not the contract floor's — the drift-window guard, naming both" do
+      stage_rbconfig("arm64-darwin#{off_floor_major}")
+      expect { builder.write_abi_sidecar }
+        .to raise_error(TebakoRuntimeBuilder::Error,
+                        /'arm64-darwin-#{off_floor_major}'.*not the contract floor's #{floor_major}/)
+      expect(File.exist?("#{exe}.abi")).to be(false)
+    end
+
+    it "leaves a non-darwin archdir untouched (no floor applies)" do
+      stage_rbconfig("x86_64-linux")
+      builder.write_abi_sidecar
+      expect(abi_text).to eq("x86_64-linux\n")
+    end
+
+    it "refuses by name when the layout tree carries no rbconfig" do
+      expect { builder.write_abi_sidecar }
+        .to raise_error(TebakoRuntimeBuilder::Error, /no rbconfig\.rb under/)
+    end
+  end
 end

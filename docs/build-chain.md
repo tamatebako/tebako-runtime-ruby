@@ -251,6 +251,45 @@ by THE SCOPE LAW below, never the default branch's), watches the build,
 and fails on any byte-identity mismatch. It runs weekly as the drift
 watch and on dispatch for any tag.
 
+## The abi gates (the ABI vocabulary's contract guards)
+
+The registry's `abi` segment is resolution truth: native-extension
+payloads constrain BOTH the ruby version line and the abi line (spec 05
+§5), and `tools/registry_update.rb` mirrors the shard's abi verbatim
+(registry MINOR 11, tebako#1047). Until the 0.17.14/0.17.15 drift window
+proved it, nothing between the shard and the mirror asserted the
+vocabulary: unpinned `config.guess` spelled the macos-15 fleet's kernel
+release (darwin-24) into two published lines, and when e21ac536's
+triplet pin restored the contract floor spelling (darwin-23) in a patch
+line, every darwin-24-pressed native payload discovered the move at
+smoke time ("Could not find 'ox' (>= 0) among 316 total gem(s)" — the
+packed-metanorma#313 legs). A vocabulary move is legitimate ONLY as a
+deliberate act — the same treatment an era boundary gets. Two layers
+own the invariant now:
+
+- **The derivation gate (build time)** — `Builder#assert_abi_floor!`,
+  run inside `write_abi_sidecar` when the leg emits its `.abi`: a darwin
+  abi's kernel major must BE the contract floor's major
+  (`Contract#darwin_kernel_major`, the ONE owner of the macOS N ↔ darwin
+  N+9 map — the builder's configure triplet flows it too). A build
+  host's kernel release leaking in place of the floor fails the leg
+  before any publish, naming both spellings (exit 134). The assertion
+  keys off the archdir the build actually shipped, so it holds on any
+  fleet generation GitHub moves the runners to.
+- **The continuity gate (publish time)** — `tools/registry_abi_gate.rb`,
+  run as publish.yml's "Gate the darwin abi continuity vs the previous
+  line" step between the product-reader validation and the registry bot
+  PR. It compares the accumulated render's darwin rows against
+  origin/main's newest non-withdrawn row for the same (line × platform)
+  and fails closed naming every (line, platform, old → new) tuple —
+  unless the run carries the deliberate `abi_bump` dispatch input, whose
+  acknowledged tuples + text the publish step then records into the
+  registry bot PR body. The publish step is gated on the gate's success:
+  an unacknowledged move can never land on main. A (line × platform)
+  absent from main is an introduction (a new ruby line or platform row),
+  never a bump; a previous row with no abi (pre-MINOR-11) declares no
+  vocabulary to continue.
+
 ## THE SCOPE LAW (why a green key still misses)
 
 `actions/cache` scopes entries to the ref that wrote them:
@@ -416,6 +455,10 @@ the recorded expectation deliberately, in its own PR.
 - Configure pins (triplet, `-mcpu`, dldflags): `build/lib/tebako_runtime_builder/platform.rb`
   (`CONFIGURE_TRIPLETS` / `CONFIGURE_CPU_PINS` / `CONFIGURE_DLD_PINS`).
 - Toolchain container version: `contract.yml`.
+- macOS N ↔ darwin N+9 (the abi vocabulary's kernel-major map):
+  `build/lib/tebako_runtime_builder/contract.rb`
+  (`Contract#darwin_kernel_major`) — the configure triplet and
+  `Builder#assert_abi_floor!` both flow it.
 - msys support-DLL set: `build/lib/tebako_runtime_builder/support_dlls.rb`.
 - This architecture: `docs/build-chain.md`. The release process:
   `docs/release-runbook.md`.
